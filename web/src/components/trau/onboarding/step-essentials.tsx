@@ -7,9 +7,11 @@ import { writeConfig } from '@/lib/config'
 import {
   ensureGitignore,
   essentialsConfigWrites,
+  essentialsProjectKeys,
   type EssentialsFields,
   type MemberRepo,
 } from '@/lib/onboarding'
+import { writeProjectTracker } from '@/lib/projects'
 import { FieldLabel, Hint, TextInput, Toggle } from './ui'
 
 function detectedBranch(member: MemberRepo): string {
@@ -18,10 +20,12 @@ function detectedBranch(member: MemberRepo): string {
 
 export function StepEssentials({
   members,
+  project,
   onBack,
   onContinue,
 }: {
   members: MemberRepo[]
+  project: string | null
   onBack: () => void
   onContinue: (fields: EssentialsFields) => void
 }) {
@@ -53,8 +57,14 @@ export function StepEssentials({
   // queued behind it down with it.
   const commit = useMutation({
     mutationFn: async () => {
-      const pending: (() => Promise<unknown>)[] = essentialsConfigWrites(fields).map(
-        ({ root, ...write }) => () => writeConfig(root, write),
+      const pending: (() => Promise<unknown>)[] = []
+      if (project !== null) {
+        pending.push(() => writeProjectTracker(project, essentialsProjectKeys(fields)))
+      }
+      pending.push(
+        ...essentialsConfigWrites(fields, project).map(
+          ({ root, ...write }) => () => writeConfig(root, write),
+        ),
       )
       if (gitignore) {
         pending.push(...members.map((m) => () => ensureGitignore(m.root)))

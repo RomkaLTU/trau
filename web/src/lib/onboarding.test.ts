@@ -8,6 +8,7 @@ import {
   blankAppURLRow,
   credentialLayer,
   essentialsConfigWrites,
+  essentialsProjectKeys,
   joinProject,
   laterStep,
   onboardPath,
@@ -172,13 +173,38 @@ describe('trackerConfigValues', () => {
   })
 })
 
+describe('essentialsProjectKeys', () => {
+  it('carries the ready label and the epic-flow bool', () => {
+    expect(
+      essentialsProjectKeys({
+        baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
+        readyLabel: ' ship-it ',
+        epicFlow: true,
+      }),
+    ).toEqual({ READY_LABEL: 'ship-it', EPIC_FLOW: '1' })
+  })
+
+  it('leaves a blank label out and encodes epic flow off as 0', () => {
+    expect(
+      essentialsProjectKeys({
+        baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
+        readyLabel: '  ',
+        epicFlow: false,
+      }),
+    ).toEqual({ EPIC_FLOW: '0' })
+  })
+})
+
 describe('essentialsConfigWrites', () => {
   it('writes base branch, ready label, and the epic-flow bool for a lone repo', () => {
-    const writes = essentialsConfigWrites({
-      baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
-      readyLabel: 'ready-for-agent',
-      epicFlow: true,
-    })
+    const writes = essentialsConfigWrites(
+      {
+        baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
+        readyLabel: 'ready-for-agent',
+        epicFlow: true,
+      },
+      null,
+    )
     expect(writes).toEqual([
       { root: '/src/acme', key: 'BASE_BRANCH', value: 'develop', layer: 'project' },
       { root: '/src/acme', key: 'READY_LABEL', value: 'ready-for-agent', layer: 'project' },
@@ -186,47 +212,54 @@ describe('essentialsConfigWrites', () => {
     ])
   })
 
-  it('gives every member its own base branch and keeps the rest on the primary', () => {
-    const writes = essentialsConfigWrites({
-      baseBranches: [
-        { repo: 'api', root: '/src/api', branch: 'main' },
-        { repo: 'web', root: '/src/web', branch: ' master ' },
-      ],
-      readyLabel: 'ready-for-agent',
-      epicFlow: false,
-    })
+  it('leaves the project-wide keys to the project when there is one', () => {
+    const writes = essentialsConfigWrites(
+      {
+        baseBranches: [
+          { repo: 'api', root: '/src/api', branch: 'main' },
+          { repo: 'web', root: '/src/web', branch: ' master ' },
+        ],
+        readyLabel: 'ready-for-agent',
+        epicFlow: false,
+      },
+      'platform',
+    )
     expect(writes).toEqual([
       { root: '/src/api', key: 'BASE_BRANCH', value: 'main', layer: 'project' },
       { root: '/src/web', key: 'BASE_BRANCH', value: 'master', layer: 'project' },
-      { root: '/src/api', key: 'READY_LABEL', value: 'ready-for-agent', layer: 'project' },
-      { root: '/src/api', key: 'EPIC_FLOW', value: '0', layer: 'project' },
     ])
   })
 
   it('addresses members sharing a repo name by their own root', () => {
-    const writes = essentialsConfigWrites({
-      baseBranches: [
-        { repo: 'svc', root: '/src/dupA/svc', branch: 'main' },
-        { repo: 'svc', root: '/src/dupB/svc', branch: 'develop' },
-      ],
-      readyLabel: 'ready-for-agent',
-      epicFlow: false,
-    })
-    expect(writes.filter((w) => w.key === 'BASE_BRANCH')).toEqual([
+    const writes = essentialsConfigWrites(
+      {
+        baseBranches: [
+          { repo: 'svc', root: '/src/dupA/svc', branch: 'main' },
+          { repo: 'svc', root: '/src/dupB/svc', branch: 'develop' },
+        ],
+        readyLabel: 'ready-for-agent',
+        epicFlow: false,
+      },
+      'dupes',
+    )
+    expect(writes).toEqual([
       { root: '/src/dupA/svc', key: 'BASE_BRANCH', value: 'main', layer: 'project' },
       { root: '/src/dupB/svc', key: 'BASE_BRANCH', value: 'develop', layer: 'project' },
     ])
   })
 
   it('encodes epic flow off as 0 and skips only the members left blank', () => {
-    const writes = essentialsConfigWrites({
-      baseBranches: [
-        { repo: 'api', root: '/src/api', branch: '  ' },
-        { repo: 'web', root: '/src/web', branch: 'master' },
-      ],
-      readyLabel: 'ready-for-agent',
-      epicFlow: false,
-    })
+    const writes = essentialsConfigWrites(
+      {
+        baseBranches: [
+          { repo: 'api', root: '/src/api', branch: '  ' },
+          { repo: 'web', root: '/src/web', branch: 'master' },
+        ],
+        readyLabel: 'ready-for-agent',
+        epicFlow: false,
+      },
+      null,
+    )
     expect(writes.filter((w) => w.key === 'BASE_BRANCH')).toEqual([
       { root: '/src/web', key: 'BASE_BRANCH', value: 'master', layer: 'project' },
     ])

@@ -125,6 +125,7 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
           {step === 'essentials' && primary && (
             <StepEssentials
               members={members}
+              project={project}
               onBack={() => go('tracker')}
               onContinue={(fields) => {
                 setEssentials(fields)
