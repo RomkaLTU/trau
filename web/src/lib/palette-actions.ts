@@ -1,5 +1,8 @@
 import {
+  Archive,
+  ArrowUpRight,
   Download,
+  ListPlus,
   Moon,
   Play,
   Rocket,
@@ -97,10 +100,27 @@ export function paletteActions({
   return actions
 }
 
-export function matchActions(
-  actions: readonly PaletteAction[],
+export type IssueActionId = 'open' | 'queue' | 'archive'
+
+export interface IssueAction {
+  id: IssueActionId
+  label: string
+  icon: LucideIcon
+  keywords?: string[]
+}
+
+// issueActions is the submenu behind a result row: the row's own Enter, plus the
+// backlog's queue and archive gestures.
+export const issueActions: readonly IssueAction[] = [
+  { id: 'open', label: 'Open', icon: ArrowUpRight, keywords: ['issue'] },
+  { id: 'queue', label: 'Add to queue', icon: ListPlus, keywords: ['run'] },
+  { id: 'archive', label: 'Archive', icon: Archive, keywords: ['shelve'] },
+]
+
+export function matchActions<T extends { label: string; keywords?: string[] }>(
+  actions: readonly T[],
   query: string,
-): PaletteAction[] {
+): T[] {
   return actions.filter((action) =>
     matchesQuery(query, [action.label, ...(action.keywords ?? [])]),
   )

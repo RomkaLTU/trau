@@ -249,11 +249,29 @@ const globalResults = {
   ],
 }
 
+const issueHits = [
+  {
+    id: 'COD-1345',
+    title: 'Per-ticket actions submenu',
+    status: 'Todo',
+    group: 'unstarted',
+    source: 'linear',
+    labels: [],
+    has_children: false,
+  },
+]
+
 const hub = { draining: false }
 
 function payloadFor(url: string) {
   if (url.startsWith('/api/v1/search')) {
     return { query: 'palette', results: globalResults }
+  }
+  if (url.includes('/issues/search')) {
+    return { repo: 'loop', query: 'palette', results: issueHits }
+  }
+  if (url.includes('/archive')) {
+    return { id: 'COD-1343', archived: true, queue_removed: 1 }
   }
   if (url.includes('/config')) {
     return { repo: 'loop', layers: ['user'], providers: [], keys: configKeys }
@@ -270,6 +288,13 @@ function payloadFor(url: string) {
 
 function requestedUrls(): string[] {
   return vi.mocked(apiFetch).mock.calls.map(([url]) => url)
+}
+
+function sentWith(method: string): string[] {
+  return vi
+    .mocked(apiFetch)
+    .mock.calls.filter(([, init]) => init?.method === method)
+    .map(([url]) => url)
 }
 
 function renderPalette() {
@@ -299,10 +324,33 @@ function renderPalette() {
   return opens
 }
 
-function typeQuery(text: string) {
-  const input = document.body.querySelector(
+function paletteInput(): HTMLInputElement {
+  return document.body.querySelector(
     '[data-slot="command-input"]',
   ) as HTMLInputElement
+}
+
+function pressKey(key: string): KeyboardEvent {
+  const input = paletteInput()
+  const event = new KeyboardEvent('keydown', {
+    key,
+    bubbles: true,
+    cancelable: true,
+  })
+  act(() => {
+    input.dispatchEvent(event)
+  })
+  return event
+}
+
+function paletteRow(value: string): HTMLElement | null {
+  return document.body.querySelector<HTMLElement>(
+    `[cmdk-item=""][data-value="${value}"]`,
+  )
+}
+
+function typeQuery(text: string) {
+  const input = paletteInput()
   const setValue = Object.getOwnPropertyDescriptor(
     HTMLInputElement.prototype,
     'value',
@@ -489,4 +537,93 @@ it('switches to a cross-repo setting’s repo before landing on it', async () =>
   expect(navigations).toEqual([
     { to: '/settings', search: { q: 'LINEAR_API_KEY' } },
   ])
+})
+
+function paletteHighlight(): string | null {
+  return (
+    document.body
+      .querySelector('[cmdk-item=""][aria-selected="true"]')
+      ?.getAttribute('data-value') ?? null
+  )
+}
+
+function breadcrumb(): string {
+  return (
+    document.body.querySelector('[data-slot="command-input-wrapper"]')
+      ?.textContent ?? ''
+  )
+}
+
+it('queues a ticket from its actions submenu, keyboard only', async () => {
+  const opens = renderPalette()
+  typeQuery('palette')
+  await settleSearch()
+
+  pressKey('Tab')
+
+  expect(breadcrumb()).toContain('COD-1345')
+  expect(paletteRow('issue:COD-1345')).toBeNull()
+  expect(paletteHighlight()).toBe('issue-action:open')
+
+  pressKey('ArrowDown')
+  expect(paletteHighlight()).toBe('issue-action:queue')
+
+  pressKey('Enter')
+  await act(async () => {})
+
+  expect(sentWith('POST')).toEqual(['/api/v1/repos/loop/queue'])
+  expect(navigations).toEqual([])
+  expect(opens).toEqual([false])
+})
+
+// The hint on the highlighted row is the mouse path into the same submenu, and
+// it must not fire the row's own navigation on the way in.
+it('archives a cross-repo ticket in its own repo from the row hint', async () => {
+  active.isAll = true
+  const opens = renderPalette()
+  typeQuery('palette')
+  await settleSearch()
+
+  const hint = document.body.querySelector<HTMLElement>(
+    '[aria-label="Actions for COD-1343"]',
+  )
+  act(() => hint?.click())
+
+  expect(navigations).toEqual([])
+  expect(breadcrumb()).toContain('COD-1343')
+
+  act(() => paletteRow('issue-action:archive')?.click())
+  await act(async () => {})
+
+  expect(sentWith('PUT')).toEqual([
+    '/api/v1/repos/loop/issues/COD-1343/archive',
+  ])
+  expect(opens).toEqual([false])
+})
+
+it('steps back from the submenu to the results without closing the palette', async () => {
+  const opens = renderPalette()
+  typeQuery('palette')
+  await settleSearch()
+
+  pressKey('Tab')
+  expect(paletteRow('issue-action:open')).not.toBeNull()
+
+  pressKey('Escape')
+
+  expect(paletteRow('issue-action:open')).toBeNull()
+  expect(paletteRow('issue:COD-1345')).not.toBeNull()
+  expect(breadcrumb()).not.toContain('COD-1345')
+  expect(opens).toEqual([])
+
+  pressKey('Tab')
+  const back = pressKey('Backspace')
+
+  expect(paletteRow('issue-action:open')).toBeNull()
+  expect(paletteRow('issue:COD-1345')).not.toBeNull()
+  expect(opens).toEqual([])
+  // happy-dom runs no default action, so the restored query surviving here only
+  // proves the step back; the browser erasing a character from it does not.
+  expect(back.defaultPrevented).toBe(true)
+  expect(paletteInput().value).toBe('palette')
 })
