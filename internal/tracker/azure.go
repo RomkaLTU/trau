@@ -110,21 +110,53 @@ func (a *AzureDevOps) Pick(ctx context.Context, scope Scope) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if len(candidates) == 0 {
+		return "", nil
+	}
+	levels, err := a.levels(ctx, project)
+	if err != nil {
+		return "", err
+	}
 	for _, c := range candidates {
 		if leaves != nil && !leaves[c.ID] {
 			continue
 		}
-		if azureStartable(c) {
+		if azureStartable(c, levels.Of(c.Type)) {
 			return azureIdentifier(c.ID), nil
 		}
 	}
 	return "", nil
 }
 
-// azureStartable reports whether a candidate is work the loop may begin: an unstarted
-// leaf with every blocker resolved. A work item with children is a container
-// (epic or feature), never a slice to build.
-func azureStartable(c azureapi.Candidate) bool {
+// levels reads the backlog level every work-item type in the project sits on.
+// Where a Bug lands is a team setting, so the read is team-scoped.
+func (a *AzureDevOps) levels(ctx context.Context, project string) (azureapi.Levels, error) {
+	return a.api().BacklogLevels(ctx, project, levelTeam(a.Teams))
+}
+
+// levelTeam names the team whose backlog configuration decides the board's level
+// model: the first team the repo lists, or "" for the project's default team. A
+// repo mirroring two boards that disagree about where a Bug sits is not a case
+// worth modelling, so the first name wins and the choice is logged.
+func levelTeam(teams []string) string {
+	if len(teams) == 0 {
+		return ""
+	}
+	if len(teams) > 1 {
+		logger.Debugf("azure: repo names %d teams; backlog levels read from %q", len(teams), teams[0])
+	}
+	return strings.TrimSpace(teams[0])
+}
+
+// azureStartable reports whether a candidate is work the loop may begin: an
+// unstarted leaf at requirement level or below, with every blocker resolved. A
+// work item with children is a container, and so is anything the project's own
+// backlog configuration places above requirement — a childless Feature carrying
+// the ready tag is work nobody has broken down yet, not a slice to build.
+func azureStartable(c azureapi.Candidate, level azureapi.Level) bool {
+	if level == azureapi.LevelEpic || level == azureapi.LevelFeature {
+		return false
+	}
 	return c.Category() == azureapi.CategoryProposed && !c.HasChildren() && c.BlockersResolved
 }
 
@@ -302,7 +334,12 @@ func (a *AzureDevOps) IssueDetail(ctx context.Context, id string) (IssueDetail, 
 	if err != nil {
 		return IssueDetail{}, err
 	}
-	detail := IssueDetail{Title: item.Title, Description: item.Description, Labels: item.Tags}
+	detail := IssueDetail{Title: item.Title, Description: item.Description, Labels: item.Tags, Type: item.Type}
+	if levels, err := a.levels(ctx, a.Project); err != nil {
+		logger.Debugf("azure: read backlog levels for %s: %v", id, err)
+	} else {
+		detail.Level = string(levels.Of(item.Type))
+	}
 	// The discussion is an enrichment on top of an enrichment: losing it must not
 	// cost the prompt the description that already loaded.
 	comments, err := a.api().Comments(ctx, a.Project, n)
@@ -435,7 +472,12 @@ func (a *AzureDevOps) Quarantine(ctx context.Context, id, reason string) error {
 // failure the slice could not self-heal, even after comprehensive bugfix passes.
 func (a *AzureDevOps) FileBug(ctx context.Context, id, verdictPath string) (string, error) {
 	summary, description := bugContent(id, verdictPath)
-	n, err := a.api().CreateWorkItem(ctx, a.Project, "Bug", summary, description, []string{"HITL"})
+	n, err := a.api().CreateWorkItem(ctx, a.Project, azureapi.NewWorkItem{
+		Type:        "Bug",
+		Title:       summary,
+		Description: description,
+		Tags:        []string{"HITL"},
+	})
 	if err != nil {
 		return "", err
 	}

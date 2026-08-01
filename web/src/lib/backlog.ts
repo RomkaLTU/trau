@@ -26,6 +26,11 @@ export interface BacklogEntry {
   // provider_pin is the provider pinned on the issue, absent when it runs on the
   // repo default.
   provider_pin?: string
+  // type is the tracker's own work-item type name ("Feature", "User Story") and
+  // level the rung it sits on (epic | feature | requirement | task). Azure DevOps
+  // only; both absent everywhere else.
+  type?: string
+  level?: string
   parent?: string
   has_children: boolean
   children_settled?: number

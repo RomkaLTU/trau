@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 )
@@ -97,9 +96,7 @@ func (c *Client) TeamFieldValues(ctx context.Context, project, team string) (Tea
 			IncludeChildren bool   `json:"includeChildren"`
 		} `json:"values"`
 	}
-	path := "/" + url.PathEscape(strings.TrimSpace(project)) +
-		"/" + url.PathEscape(strings.TrimSpace(team)) +
-		"/_apis/work/teamsettings/teamfieldvalues"
+	path := workPath(project, team, "/teamsettings/teamfieldvalues")
 	if err := c.do(ctx, http.MethodGet, path, nil, &dst); err != nil {
 		return TeamAreas{}, err
 	}

@@ -45,12 +45,18 @@ const (
 // session anchored to a synced ticket, "internal" converts that ticket and its
 // subtree into internal issues and applies there. Assignee is who every issue the
 // apply creates is assigned to; omitting it leaves them unassigned.
+// WorkItemType and Parent are the Azure DevOps hierarchy choices a create carries:
+// the requirement-level type to file as (empty takes the project's default) and
+// the Feature to nest the new work item under, picked from the ones already on the
+// board (empty files it top-level).
 type GrillApplyRequest struct {
 	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
 	Destination         string          `json:"destination"`
 	Assignee            *grillAssignee  `json:"assignee"`
+	WorkItemType        string          `json:"work_item_type"`
+	Parent              string          `json:"parent"`
 }
 
 // grillAssignee is the person a create's issues land on. Only the id is written;
@@ -225,14 +231,16 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			title = outcome.Title
 		}
 		plan := grillCreatePlan{
-			title:       title,
-			description: description,
-			labels:      outcome.Labels,
-			comment:     comment,
-			subIssues:   grillPlanSubIssues(req.SubIssues, outcome.SubIssues),
-			readyLabel:  cfg.ReadyLabel,
-			destination: grillDestination(req.Destination, cfg),
-			assignee:    assignee,
+			title:        title,
+			description:  description,
+			labels:       outcome.Labels,
+			comment:      comment,
+			subIssues:    grillPlanSubIssues(req.SubIssues, outcome.SubIssues),
+			readyLabel:   cfg.ReadyLabel,
+			destination:  grillDestination(req.Destination, cfg),
+			assignee:     assignee,
+			workItemType: strings.TrimSpace(req.WorkItemType),
+			parent:       strings.TrimSpace(req.Parent),
 		}
 		// A stored anchor's empty destination predates destination tracking and
 		// belongs to the repo's own tracker; resolving it the same way the request
@@ -594,16 +602,19 @@ func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, roo
 // title, description, and labels, the summary comment, the resolved destination
 // the issue files in, the tracker id every created issue is assigned to, and —
 // when the work is epic-shaped — the proposed sub-issues and the label a sub-issue
-// defaults to.
+// defaults to. workItemType and parent carry the Azure DevOps hierarchy choices:
+// the type to file the new work item as and the Feature it hangs off.
 type grillCreatePlan struct {
-	title       string
-	description string
-	labels      []string
-	comment     string
-	subIssues   []grillSubIssue
-	readyLabel  string
-	destination string
-	assignee    string
+	title        string
+	description  string
+	labels       []string
+	comment      string
+	subIssues    []grillSubIssue
+	readyLabel   string
+	destination  string
+	assignee     string
+	workItemType string
+	parent       string
 }
 
 // applyGrillCreate files a brand-new issue (or epic) from an authoring session with
@@ -649,6 +660,8 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 			Description: plan.description,
 			Labels:      labels,
 			Epic:        epic,
+			Type:        plan.workItemType,
+			Parent:      plan.parent,
 		})
 		record(grillCreateParentStep(epic, plan.title), err)
 		if err != nil {
@@ -657,7 +670,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 		parentID = created.Identifier
 		steps = appendGrillAssign(ctx, writer, steps, parentID, plan.assignee)
 		s.anchorGrillSession(sess, parentID, plan.destination)
-		s.mirrorCreatedParent(root, provider, parentID, plan.title, plan.description, labels)
+		s.mirrorCreatedParent(root, provider, parentID, plan, labels)
 		s.bindUploadedAttachments(root, parentID, plan.description)
 	} else {
 		record(grillCreateParentStep(epic, plan.title), nil)
@@ -685,6 +698,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 			Description: sub.Description,
 			Labels:      labels,
 			Parent:      parentID,
+			Slice:       true,
 		})
 		record(grillSubIssueStep(sub.Title), err)
 		if err != nil {
@@ -752,13 +766,14 @@ func (s *Server) anchorGrillSession(sess *hubstore.GrillSession, issueID, destin
 // mirrorCreatedParent inserts a freshly created top-level issue (a single issue or
 // an epic parent) into the store so the board shows it at once and the next inbound
 // sync reconciles it in place rather than as a divergence (ADR 0007).
-func (s *Server) mirrorCreatedParent(root, provider, identifier, title, description string, labels []string) {
+func (s *Server) mirrorCreatedParent(root, provider, identifier string, plan grillCreatePlan, labels []string) {
 	if _, _, err := s.stores.Issues().Upsert(root, provider, []hubstore.Issue{{
 		Identifier:  identifier,
-		Title:       title,
-		Description: description,
+		Title:       plan.title,
+		Description: plan.description,
 		StatusGroup: "unstarted",
 		Labels:      labels,
+		Parent:      plan.parent,
 	}}); err != nil {
 		logger.Verbosef("grill apply: mirror created issue %s: %v", identifier, err)
 	}

@@ -593,7 +593,14 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
 // the issue files, and on an anchored rewrite or split "internal" converts the
 // anchored ticket and applies to the internal issue it becomes. assignee rides along
 // only when a person was picked, and every issue the apply creates lands on them.
-// Other dispositions carry none and let the hub fall back to the proposal.
+// hierarchy rides along on an Azure DevOps create: the work-item type to file as
+// and the Feature to nest it under. Other dispositions carry none and let the hub
+// fall back to the proposal.
+export interface AzureHierarchyChoice {
+  workItemType: string
+  parent: string
+}
+
 export async function applyGrill(
   sid: string,
   proposedDescription: string,
@@ -601,6 +608,7 @@ export async function applyGrill(
   title?: string,
   destination?: GrillDestination,
   assignee?: Assignee | null,
+  hierarchy?: AzureHierarchyChoice,
 ): Promise<GrillApplyResponse> {
   const body: {
     proposed_description: string
@@ -608,6 +616,8 @@ export async function applyGrill(
     title?: string
     destination?: GrillDestination
     assignee?: { id: string; name: string }
+    work_item_type?: string
+    parent?: string
   } = {
     proposed_description: proposedDescription,
   }
@@ -615,6 +625,8 @@ export async function applyGrill(
   if (title !== undefined) body.title = title
   if (destination) body.destination = destination
   if (assignee) body.assignee = { id: assignee.id, name: assignee.name }
+  if (hierarchy?.workItemType) body.work_item_type = hierarchy.workItemType
+  if (hierarchy?.parent) body.parent = hierarchy.parent
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

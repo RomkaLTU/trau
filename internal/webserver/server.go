@@ -318,6 +318,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/labels", s.handleLabels)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/assignees", s.handleAssignees)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/assignable-users", s.handleAssignableUsers)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/azure/create-options", s.handleAzureCreateOptions)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/epics/{epic}", s.handleEpicPreview)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/search", s.handleIssueSearch)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal", s.handleCreateInternalIssue)

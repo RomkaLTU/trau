@@ -32,6 +32,20 @@ func setField(field string, value any) patchOp {
 	return patchOp{Op: "add", Path: fieldPath + field, Value: value}
 }
 
+// relationOp links a work item to another by the target's REST resource URL, the
+// only form the API accepts for a relation. The URL is organization-scoped, so it
+// holds whichever team project either side lives in.
+func (c *Client) relationOp(rel string, target int) patchOp {
+	return patchOp{
+		Op:   "add",
+		Path: "/relations/-",
+		Value: map[string]string{
+			"rel": rel,
+			"url": c.baseURL + "/_apis/wit/workItems/" + strconv.Itoa(target),
+		},
+	}
+}
+
 // historyOp appends body to a work item's discussion. Azure DevOps still gates
 // its dedicated comments route behind a preview api-version, whereas writing
 // System.History through the work-item PATCH is GA and rides along on whatever
@@ -169,24 +183,56 @@ type Comment struct {
 	UpdatedAt string
 }
 
-// CreateWorkItem files a new work item of itemType and returns its id. The type
-// name is addressed as a "$Type" path segment, the shape Azure DevOps requires
-// for creates.
-func (c *Client) CreateWorkItem(ctx context.Context, project, itemType, title, description string, tags []string) (int, error) {
+// SetDescription replaces a work item's rich-text body, rendering the markdown
+// the hub holds back into the HTML the field stores.
+func (c *Client) SetDescription(ctx context.Context, project string, id int, body string) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	ops := []patchOp{setField("System.Description", textToHTML(body))}
+	return c.patch(ctx, workItemPath(project, id), ops, nil)
+}
+
+// LinkPredecessor records that blocker must finish before blocked can start — the
+// Dependency-Reverse relation the readers interpret as a blocked-by edge.
+func (c *Client) LinkPredecessor(ctx context.Context, project string, blocked, blocker int) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	return c.patch(ctx, workItemPath(project, blocked), []patchOp{c.relationOp(relPredecessor, blocker)}, nil)
+}
+
+// NewWorkItem is a work item to file: its type, title, markdown body, tags, and
+// the work item it hangs off (0 for top-level).
+type NewWorkItem struct {
+	Type        string
+	Title       string
+	Description string
+	Tags        []string
+	Parent      int
+}
+
+// CreateWorkItem files a new work item and returns its id. The type name is
+// addressed as a "$Type" path segment, the shape Azure DevOps requires for
+// creates.
+func (c *Client) CreateWorkItem(ctx context.Context, project string, item NewWorkItem) (int, error) {
 	if !c.enabled() {
 		return 0, ErrNotEnabled
 	}
-	ops := []patchOp{setField("System.Title", title)}
-	if body := strings.TrimSpace(description); body != "" {
+	ops := []patchOp{setField("System.Title", item.Title)}
+	if body := strings.TrimSpace(item.Description); body != "" {
 		ops = append(ops, setField("System.Description", textToHTML(body)))
 	}
-	if len(tags) > 0 {
-		ops = append(ops, setField("System.Tags", JoinTags(tags)))
+	if len(item.Tags) > 0 {
+		ops = append(ops, setField("System.Tags", JoinTags(item.Tags)))
+	}
+	if item.Parent > 0 {
+		ops = append(ops, c.relationOp(relParent, item.Parent))
 	}
 	var dst struct {
 		ID int `json:"id"`
 	}
-	path := projectPath(project, "/workitems/$"+url.PathEscape(strings.TrimSpace(itemType)))
+	path := projectPath(project, "/workitems/$"+url.PathEscape(strings.TrimSpace(item.Type)))
 	if err := c.patch(ctx, path, ops, &dst); err != nil {
 		return 0, err
 	}

@@ -162,6 +162,12 @@ type IssueDetail struct {
 	// Labels are the issue's label names. They never reach the prompt; skill
 	// routing matches its keywords against them alongside the title and body.
 	Labels []string
+	// Type and Level place the ticket in a typed backlog hierarchy — the tracker's
+	// own work-item type name and the normalized level it sits on — so the build
+	// knows whether it holds a slice or a rung above one. Azure DevOps only; every
+	// other provider leaves both empty and the prompt says nothing about hierarchy.
+	Type  string
+	Level string
 }
 
 // AttachmentRef is one of an issue's images or files. It aliases the type the

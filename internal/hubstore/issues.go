@@ -47,6 +47,11 @@ type Issue struct {
 	// Provider is the Provider pinned on the ticket, empty when unset. It is
 	// hub-local: no sync write touches it, so a pull never clears a pin.
 	Provider string
+	// Type and Level are the tracker's own work-item type name and the normalized
+	// backlog level it sits on (epic | feature | requirement | task). Azure DevOps
+	// only: every other provider leaves both empty.
+	Type     string
+	Level    string
 	Comments []Comment
 
 	// ChildrenSettled and ChildrenTotal are populated by BacklogPage for epic
@@ -151,8 +156,9 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 			`INSERT INTO issues(
 				repo, source, identifier, title, description, status, status_group,
 				priority, labels, parent, has_children, due_date, external_id, url,
-				created_at, updated_at, synced_at, assignee_id, assignee_name)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))
+				created_at, updated_at, synced_at, assignee_id, assignee_name,
+				work_item_type, backlog_level)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)
 			 ON CONFLICT(repo, identifier) DO UPDATE SET
 				source = excluded.source, title = excluded.title,
 				description = excluded.description, status = excluded.status,
@@ -162,13 +168,15 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 				external_id = excluded.external_id, url = excluded.url,
 				created_at = excluded.created_at, updated_at = excluded.updated_at,
 				synced_at = excluded.synced_at, deleted_at = '',
-				assignee_id = excluded.assignee_id, assignee_name = excluded.assignee_name
+				assignee_id = excluded.assignee_id, assignee_name = excluded.assignee_name,
+				work_item_type = excluded.work_item_type, backlog_level = excluded.backlog_level
 			 WHERE issues.source <> 'internal'
 			 RETURNING id`,
 			repo, source, iss.Identifier, iss.Title, iss.Description, iss.Status,
 			iss.StatusGroup, iss.Priority, string(labels), iss.Parent,
 			boolToInt(iss.HasChildren), iss.DueDate, iss.ExternalID, iss.URL,
 			iss.CreatedAt, iss.UpdatedAt, syncedAt, iss.AssigneeID, iss.AssigneeName,
+			iss.Type, iss.Level,
 		).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
@@ -199,7 +207,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 const issueColumns = `id, source, identifier, title, description, status, status_group,
 	priority, labels, parent, has_children, due_date, external_id, url,
 	created_at, updated_at, deleted_at, archived_at, assignee_id, assignee_name,
-	provider`
+	provider, work_item_type, backlog_level`
 
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
@@ -229,6 +237,30 @@ func (s *Issues) Children(repo, parent string) (issues []Issue, err error) {
 	rows, err := s.db.Query(
 		`SELECT `+issueColumns+` FROM issues WHERE repo = ? AND parent = ? ORDER BY identifier`,
 		repo, parent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	issues, _, err = scanIssues(repo, rows)
+	return issues, err
+}
+
+// AtLevel returns a repo's live issues sitting on a backlog level, ordered by
+// numeric-aware identifier. It is what the Azure create's Feature picker reads:
+// the mirror is already scoped to the slice of the board the repo covers, so the
+// picker cannot offer a parent the repo does not mirror, and it costs no tracker
+// budget. Comments are not attached; callers key on identifier and title.
+func (s *Issues) AtLevel(repo, level string) (issues []Issue, err error) {
+	if strings.TrimSpace(level) == "" {
+		return []Issue{}, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT `+issueColumns+` FROM issues
+		 WHERE repo = ? AND backlog_level = ? AND deleted_at = '' AND archived_at = ''
+		 ORDER BY `+numericIdentOrder("identifier"),
+		repo, level,
 	)
 	if err != nil {
 		return nil, err
@@ -695,6 +727,7 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
 			&iss.DeletedAt, &iss.ArchivedAt, &assigneeID, &assigneeNm, &iss.Provider,
+			&iss.Type, &iss.Level,
 		); err != nil {
 			return nil, nil, err
 		}
