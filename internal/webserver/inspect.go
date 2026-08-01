@@ -3,12 +3,18 @@ package webserver
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 )
 
 // InspectRequest is the body of POST /api/v1/repos/inspect: the absolute path to a
@@ -20,16 +26,28 @@ type InspectRequest struct {
 // RepoInspection is what the onboarding wizard learns about a candidate repo: its
 // git facts, whether a .trau.ini already configures it, which tracker credentials
 // exist and at which layer (presence only — never values), and, for a re-run over
-// an existing config, the values to pre-fill. It is the response of inspect.
+// an existing config, the values to pre-fill. A Folder repo has no git facts of
+// its own, so Kind says so and Children carries what its Child repos answered
+// instead. It is the response of inspect.
 type RepoInspection struct {
 	Path             string              `json:"path"`
 	RepoName         string              `json:"repo_name"`
+	Kind             string              `json:"kind"`
 	HasTrauIni       bool                `json:"has_trau_ini"`
 	DetectedProvider string              `json:"detected_provider,omitempty"`
 	Credentials      []InspectCredential `json:"credentials"`
 	DefaultBranch    string              `json:"default_branch"`
+	Children         []InspectChild      `json:"children,omitempty"`
 	Findings         []DetectionFinding  `json:"findings"`
 	Prefill          *InspectPrefill     `json:"prefill,omitempty"`
+}
+
+// InspectChild is one Child repo of a folder under inspection: its name, the
+// default branch it agrees or disagrees on, and whether it can be shipped to.
+type InspectChild struct {
+	Name          string `json:"name"`
+	DefaultBranch string `json:"default_branch"`
+	HasRemote     bool   `json:"has_remote"`
 }
 
 // InspectCredential records that a provider's credentials exist and the config
@@ -62,7 +80,13 @@ const (
 	findingWarn    = "warn"
 	findingMissing = "missing"
 	findingInfo    = "info"
+	findingFail    = "fail"
 )
+
+// childInspectConcurrency bounds the parallel git reads the folder scan spends.
+// Both reads are local, so it is process spawn — not git — that a serial scan of
+// fifty children would wait on.
+const childInspectConcurrency = 8
 
 // handleReposInspect reports what trau finds at a repo path so the wizard can show
 // an honest detection report before anything is written. Inspecting arbitrary host
@@ -107,20 +131,31 @@ func (s *Server) inspectRepo(ctx context.Context, root string) RepoInspection {
 		provider = strings.ToLower(strings.TrimSpace(cfg.TrackerProvider))
 	}
 
-	origin, branch := inspectGit(ctx, root)
-	if branch == "" {
-		branch = cfg.BaseBranch
-	}
-
 	insp := RepoInspection{
 		Path:             root,
 		RepoName:         repo.Name,
+		Kind:             repoKindRepo,
 		HasTrauIni:       hasTrauIni,
 		DetectedProvider: provider,
 		Credentials:      credentialList(cfg, sources),
-		DefaultBranch:    branch,
-		Findings:         inspectionFindings(cfg, sources, hasTrauIni, explicit, provider, origin, branch),
 	}
+	var head []DetectionFinding
+	if census := folderrepo.Scan(root); census.IsFolder {
+		children := inspectChildren(ctx, census.Children)
+		insp.Kind = repoKindFolder
+		insp.Children = children
+		insp.DefaultBranch = branchOr(majorityBranch(children), cfg.BaseBranch)
+		head = folderFindings(children, census.Truncated, insp.DefaultBranch)
+	} else {
+		origin, branch := inspectGit(ctx, root)
+		insp.DefaultBranch = branchOr(branch, cfg.BaseBranch)
+		head = []DetectionFinding{
+			gitFinding(origin),
+			{Label: "default branch", Value: insp.DefaultBranch, State: findingOK},
+		}
+	}
+	insp.Findings = inspectionFindings(cfg, sources, hasTrauIni, explicit, provider, head)
+
 	if hasTrauIni && explicit {
 		insp.Prefill = &InspectPrefill{
 			Provider:   provider,
@@ -153,14 +188,19 @@ func credentialList(cfg config.Config, sources map[string]config.Layer) []Inspec
 	return creds
 }
 
-func inspectionFindings(cfg config.Config, sources map[string]config.Layer, hasTrauIni, explicit bool, provider, origin, branch string) []DetectionFinding {
-	findings := []DetectionFinding{
-		gitFinding(origin),
-		{Label: "default branch", Value: branch, State: findingOK},
-		trauIniFinding(hasTrauIni, explicit),
-		providerFinding(cfg, explicit, provider),
-	}
+// inspectionFindings completes the report from head, the rows that answer for the
+// inspected root's own shape — the git facts for a repo, the child census for a
+// folder — with the config rows every kind of repo reports the same way.
+func inspectionFindings(cfg config.Config, sources map[string]config.Layer, hasTrauIni, explicit bool, provider string, head []DetectionFinding) []DetectionFinding {
+	findings := append(head, trauIniFinding(hasTrauIni, explicit), providerFinding(cfg, explicit, provider))
 	return append(findings, credentialFindings(cfg, sources, activeProvider(cfg, explicit, provider))...)
+}
+
+func branchOr(branch, fallback string) string {
+	if branch == "" {
+		return fallback
+	}
+	return branch
 }
 
 func gitFinding(origin string) DetectionFinding {
@@ -301,6 +341,112 @@ func credentialLocation(layer config.Layer) string {
 	default:
 		return "found"
 	}
+}
+
+// inspectChildren reads every Child repo behind a Folder repo, keeping the scan's
+// name order.
+func inspectChildren(ctx context.Context, found []folderrepo.Child) []InspectChild {
+	children := make([]InspectChild, len(found))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(childInspectConcurrency)
+	for i, c := range found {
+		g.Go(func() error {
+			children[i] = inspectChild(gctx, c)
+			return nil
+		})
+	}
+	_ = g.Wait()
+	return children
+}
+
+// inspectChild reads the two facts a run needs from a Child repo: the branch it
+// has to agree with the folder's base on, and whether there is an origin to open a
+// pull request against. A child whose reads fail carries its zero value rather
+// than cancelling the rest.
+func inspectChild(ctx context.Context, c folderrepo.Child) InspectChild {
+	branch := strings.TrimPrefix(gitOutput(ctx, c.Path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"), "origin/")
+	if branch == "" {
+		branch = gitOutput(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD")
+	}
+	return InspectChild{
+		Name:          c.Name,
+		DefaultBranch: branch,
+		HasRemote:     gitOutput(ctx, c.Path, "remote", "get-url", "origin") != "",
+	}
+}
+
+// majorityBranch is the default branch most Child repos sit on, ties broken
+// alphabetically so the same folder always reports the same answer. Reporting the
+// majority rather than nothing on disagreement is the point: an empty value only
+// makes the wizard fall back to main, which loses the real answer while keeping
+// the risk it carries.
+func majorityBranch(children []InspectChild) string {
+	counts := map[string]int{}
+	for _, c := range children {
+		if c.DefaultBranch != "" {
+			counts[c.DefaultBranch]++
+		}
+	}
+	best := ""
+	for _, branch := range slices.Sorted(maps.Keys(counts)) {
+		if counts[branch] > counts[best] {
+			best = branch
+		}
+	}
+	return best
+}
+
+// folderFindings replaces the single-repo git report for a Folder repo, which has
+// no origin or HEAD of its own to report. A run applies one base branch to every
+// child, so a child sitting on another one is off limits to every run and a change
+// landing there aborts it — a failure to fix before onboarding, not a warning.
+func folderFindings(children []InspectChild, truncated bool, base string) []DetectionFinding {
+	outliers, remoteless := []string{}, []string{}
+	for _, c := range children {
+		if c.DefaultBranch != "" && c.DefaultBranch != base {
+			outliers = append(outliers, c.Name+" on "+c.DefaultBranch)
+		}
+		if !c.HasRemote {
+			remoteless = append(remoteless, c.Name)
+		}
+	}
+	branchState := findingOK
+	if len(outliers) > 0 {
+		branchState = findingInfo
+	}
+	findings := []DetectionFinding{
+		childCountFinding(len(children), truncated),
+		{Label: "default branch", Value: base, State: branchState},
+	}
+	if len(outliers) > 0 {
+		findings = append(findings, DetectionFinding{
+			Label:  "branch disagreement",
+			Value:  strings.Join(outliers, ", "),
+			State:  findingFail,
+			Detail: "A run bases every child on " + base + ", so these are off limits to it — and a change landing in one aborts the run. Move them onto " + base + " before onboarding.",
+		})
+	}
+	if len(remoteless) > 0 {
+		findings = append(findings, DetectionFinding{
+			Label:  "children without a remote",
+			Value:  strings.Join(remoteless, ", "),
+			State:  findingWarn,
+			Detail: "A run cannot open a pull request in these — finished work is squash-merged into their default branch instead.",
+		})
+	}
+	return findings
+}
+
+func childCountFinding(count int, truncated bool) DetectionFinding {
+	if truncated {
+		return DetectionFinding{
+			Label:  "child repositories",
+			Value:  "more than " + strconv.Itoa(count),
+			State:  findingInfo,
+			Detail: "The scan stops there; the rest are neither listed nor shipped to.",
+		}
+	}
+	return DetectionFinding{Label: "child repositories", Value: strconv.Itoa(count), State: findingOK}
 }
 
 // inspectGit reads the repo's origin remote and default branch best-effort: a repo

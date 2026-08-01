@@ -228,6 +228,39 @@ func TestInstancesRetainsExitedRepos(t *testing.T) {
 	}
 }
 
+// TestInstancesReportsFolderRepoKind holds the repo list to the folder facts the
+// switcher labels a row with: a Folder repo says so and counts its children, an
+// ordinary repo carries no count at all, and both are derived on the read.
+func TestInstancesReportsFolderRepoKind(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	plain := gitRepo(t, base, "acme", "dir")
+	folder := filepath.Join(base, "services")
+	for _, name := range []string{"api", "docs", "web"} {
+		gitRepo(t, folder, name, "dir")
+	}
+	regs := testStoresAt(t, home).Registrations()
+	for _, root := range []string{plain, folder} {
+		if err := regs.Register(root); err != nil {
+			t.Fatalf("register %s: %v", root, err)
+		}
+	}
+
+	ts := instancesServer(t, home)
+	out := getInstances(t, ts)
+
+	views := make(map[string]RepoView, len(out.Repos))
+	for _, v := range out.Repos {
+		views[v.Name] = v
+	}
+	if got := views["services"]; got.Kind != repoKindFolder || got.ChildRepos != 3 {
+		t.Errorf("folder view = %+v, want kind %q holding 3 children", got, repoKindFolder)
+	}
+	if got := views["acme"]; got.Kind != repoKindRepo || got.ChildRepos != 0 {
+		t.Errorf("repo view = %+v, want kind %q with no child count", got, repoKindRepo)
+	}
+}
+
 func putJSON(t *testing.T, url string, body any) *http.Response {
 	t.Helper()
 	buf, err := json.Marshal(body)

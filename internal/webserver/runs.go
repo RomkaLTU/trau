@@ -174,13 +174,13 @@ func (s *Server) repoViews() []RepoView {
 	views := make([]RepoView, 0, len(known)+len(roots))
 	for _, repo := range known {
 		seen[repo.Root] = true
-		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: allowed[repo.Root], Registered: registered[repo.Root], Seeded: s.seeded(repo.Root)})
+		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: allowed[repo.Root], Registered: registered[repo.Root], Seeded: s.seeded(repo.Root)}.withKind())
 	}
 	for _, root := range roots {
 		if seen[root] {
 			continue
 		}
-		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: registered[root], Seeded: s.seeded(root)})
+		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: registered[root], Seeded: s.seeded(root)}.withKind())
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views

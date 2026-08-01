@@ -101,6 +101,7 @@ function repoView(name: string): RepoView {
     allowed: true,
     registered: true,
     seeded: false,
+    kind: "repo",
   };
 }
 
