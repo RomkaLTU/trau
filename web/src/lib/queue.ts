@@ -47,6 +47,9 @@ export interface QueueResponse {
   // stopping is set while a Stop is ending the child that was running, so the
   // row still reads running but the run is already on its way out.
   stopping: boolean
+  // releasing_epic names the epic whose release holds the queue: while it is set
+  // the hub starts no new run in the repo. Absent when nothing gates it.
+  releasing_epic?: string
   items: QueueItem[]
 }
 
@@ -338,6 +341,15 @@ export function queueLive(queue?: QueueResponse): boolean {
     queue.stopping ||
     queue.items.some((it) => it.status === 'running')
   )
+}
+
+// releaseGateLabel says what a gated queue is waiting for: while an epic's
+// release is still trau's to finish the hub starts nothing else in the repo, so
+// the drain names that epic instead of reading idle. Empty when nothing gates the
+// queue, a release handed to a human included.
+export function releaseGateLabel(queue?: QueueResponse): string {
+  const epic = queue?.releasing_epic
+  return epic ? `waiting for ${epic} to finish releasing` : ''
 }
 
 // queueTerminal reports whether an item has already settled: the drain only

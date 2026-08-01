@@ -12,6 +12,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/queue"
+	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -1027,5 +1028,96 @@ func TestQueueViewCarriesBlockers(t *testing.T) {
 	}
 	if !out.Items[1].Blocked || !reflect.DeepEqual(out.Items[1].Blockers, []string{"COD-9"}) {
 		t.Errorf("COD-2 = blocked %v blockers %v, want blocked by COD-9", out.Items[1].Blocked, out.Items[1].Blockers)
+	}
+}
+
+// TestQueueRunItemRefusedWhileEpicReleases is the one-shot half of the release
+// gate: an epic mid-release with no live instance behind it — the hub restarted,
+// or its heartbeat was lost — still refuses a run in that repo, and says which
+// epic holds it.
+func TestQueueRunItemRefusedWhileEpicReleases(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedReleasing(t, s, root, "COD-1", state.ReleaseActive)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-2"})
+
+	res, reason := runQueueItem(t, ts, "acme", "COD-2")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 — the repo is mid-release", res.StatusCode)
+	}
+	if !strings.Contains(reason, "COD-1") || !strings.Contains(reason, "releasing") {
+		t.Errorf("reason = %q, want it to name the releasing epic", reason)
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("spawns = %d, want none", len(fake.spawns))
+	}
+
+	getRes, view := getQueue(t, ts, "acme")
+	defer func() { _ = getRes.Body.Close() }()
+	if view.ReleasingEpic != "COD-1" {
+		t.Errorf("releasing_epic = %q, want COD-1 so the queue reads as waiting rather than idle", view.ReleasingEpic)
+	}
+}
+
+// TestQueueRunItemAllowedAfterHandOff proves the hand-off opens the gate: the
+// epic PR is a human's to land, so the queue runs its other items again.
+func TestQueueRunItemAllowedAfterHandOff(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedReleasing(t, s, root, "COD-1", state.ReleaseAwaitingHuman)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-2"})
+
+	res, reason := runQueueItem(t, ts, "acme", "COD-2")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200 — a handed-off release gates nothing", res.StatusCode, reason)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want the item launched", len(fake.spawns))
+	}
+
+	getRes, view := getQueue(t, ts, "acme")
+	defer func() { _ = getRes.Body.Close() }()
+	if view.ReleasingEpic != "" {
+		t.Errorf("releasing_epic = %q, want it absent once the release is a human's", view.ReleasingEpic)
+	}
+}
+
+// TestQueueRunItemRunsTheReleasingEpicItself proves the gate never blocks the
+// resume it exists for: the releasing epic's own finalize starts.
+func TestQueueRunItemRunsTheReleasingEpicItself(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedReleasing(t, s, root, "COD-1", state.ReleaseActive)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"})
+
+	res, reason := runQueueItem(t, ts, "acme", "COD-1")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200 — resuming the finalize is the exception", res.StatusCode, reason)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want the finalize resumed", len(fake.spawns))
+	}
+}
+
+// TestEnqueueDuringReleaseSucceeds is the regression the gate must not break:
+// registering work stays allowed mid-release — only starting it is held.
+func TestEnqueueDuringReleaseSucceeds(t *testing.T) {
+	s, _, root, ts := queueHub(t, "acme")
+	seedReleasing(t, s, root, "COD-1", state.ReleaseActive)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-2"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 — adding to the queue is never gated", res.StatusCode)
+	}
+	var out QueueResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Items) != 1 || out.Items[0].ID != "COD-2" {
+		t.Fatalf("items = %+v, want the queued COD-2", out.Items)
+	}
+	if out.ReleasingEpic != "COD-1" {
+		t.Errorf("releasing_epic = %q, want COD-1 — the add answers with the gate that holds the run", out.ReleasingEpic)
 	}
 }

@@ -1525,3 +1525,92 @@ func TestServerStartSettlesParkedMergedEpic(t *testing.T) {
 		t.Errorf("event msg = %q, want it to name the item and cite the checkpoint evidence", msg)
 	}
 }
+
+// seedReleasing writes the Epic checkpoint the release gate reads: the releasing
+// phase, with the hand-off marker beside it when the case sets one.
+func seedReleasing(t *testing.T, s *Server, root, epic, release string) {
+	t.Helper()
+	data := map[string]string{"PHASE": state.Releasing}
+	if release != "" {
+		data["RELEASE"] = release
+	}
+	if err := s.stores.Checkpoints().Upsert(root, epic, data); err != nil {
+		t.Fatalf("seed releasing checkpoint: %v", err)
+	}
+}
+
+// TestDrainHoldsForReleasingEpic proves the gate is finalize-aware rather than
+// liveness-aware: with an epic mid-release and no live instance at all — a hub
+// restart, or a heartbeat PUT that never landed — the drain refuses to spawn the
+// next item, and only the hand-off marker lets the queue move on.
+func TestDrainHoldsForReleasingEpic(t *testing.T) {
+	tests := []struct {
+		name    string
+		release string
+		want    drainAction
+	}{
+		{name: "trau owns the release", release: state.ReleaseActive, want: drainWait},
+		{name: "older checkpoint without a marker", release: "", want: drainWait},
+		{name: "handed off to a human", release: state.ReleaseAwaitingHuman, want: drainSpawn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, root := drainServer(t, "acme")
+			seedReleasing(t, s, root, "COD-1", tc.release)
+			seedQueue(t, s, root, true, queue.Item{ID: "COD-2"})
+
+			act, err := s.drain.tick(root)
+			if err != nil {
+				t.Fatalf("tick: %v", err)
+			}
+			if act != tc.want {
+				t.Fatalf("tick = %q, want %q", act, tc.want)
+			}
+			wantSpawns, wantStatus := 0, queue.StatusPending
+			if tc.want == drainSpawn {
+				wantSpawns, wantStatus = 1, queue.StatusRunning
+			}
+			if len(fake.spawns) != wantSpawns {
+				t.Errorf("spawns = %d, want %d", len(fake.spawns), wantSpawns)
+			}
+			if got := statusOf(t, s, root, "COD-2"); got != wantStatus {
+				t.Errorf("COD-2 = %q, want %q", got, wantStatus)
+			}
+			if !drainingOf(t, s, root) {
+				t.Error("queue disarmed, want the gate to leave it armed so it picks up once the release ends")
+			}
+		})
+	}
+}
+
+// TestDrainStartsTheReleasingEpicItself proves the gate's one exception: the epic
+// whose release holds the repo is exactly the run that must be able to start, so
+// a crashed finalize resumes — wherever the epic sits in run order, since a row
+// ahead of it only waits on the release it has to finish.
+func TestDrainStartsTheReleasingEpicItself(t *testing.T) {
+	epic := queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"}
+	ticket := queue.Item{ID: "COD-2"}
+	tests := []struct {
+		name  string
+		items []queue.Item
+	}{
+		{name: "epic first in run order", items: []queue.Item{epic, ticket}},
+		{name: "epic behind another runnable row", items: []queue.Item{ticket, epic}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, root := drainServer(t, "acme")
+			seedReleasing(t, s, root, "COD-1", state.ReleaseActive)
+			seedQueue(t, s, root, true, tc.items...)
+
+			if act, _ := s.drain.tick(root); act != drainSpawn {
+				t.Fatalf("tick = %q, want the releasing epic's own finalize spawned", act)
+			}
+			running, ok := runningItem(t, s, root)
+			if !ok || running.ID != "COD-1" {
+				t.Fatalf("spawned %+v, want COD-1", running)
+			}
+			assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--drain-report", "COD-1"})
+		})
+	}
+}

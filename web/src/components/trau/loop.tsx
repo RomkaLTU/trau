@@ -81,6 +81,7 @@ import {
   queueQueryOptions,
   queueRunnable,
   QUEUE_NOT_RUNNABLE,
+  releaseGateLabel,
   runNext as runNextRequest,
   runQueueItem,
   skipResumeApplies,
@@ -1808,6 +1809,9 @@ function RunningQueueView({
   const runningItem = running
     ? itemsById.get(running.epicId ?? running.id)
     : undefined;
+  // The releasing epic's own finalize is the one run the gate lets through, so
+  // the wait reads as a wait only while nothing is in flight.
+  const gate = running || timeline.finalize ? "" : releaseGateLabel(queue);
 
   return (
     <div className="flex flex-col gap-6">
@@ -1831,7 +1835,10 @@ function RunningQueueView({
                   </span>
                 </span>
               ) : null}
-              <StatusPill state="active" label={drainStep(timeline)} />
+              <StatusPill
+                state={gate ? "warn" : "active"}
+                label={gate || drainStep(timeline)}
+              />
             </div>
           </div>
 
@@ -1855,6 +1862,11 @@ function RunningQueueView({
                 now={now}
                 onPeek={onPeek}
               />
+            ) : gate ? (
+              <p className="font-sans text-sm text-muted-foreground">
+                Nothing new starts while {queue.releasing_epic} is releasing —
+                the queue picks up once its release lands or is handed off.
+              </p>
             ) : (
               <p className="font-sans text-sm text-muted-foreground">
                 Idle — picking the next ticket from the queue.

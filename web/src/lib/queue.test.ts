@@ -13,6 +13,7 @@ import {
   queueLive,
   queueQueryOptions,
   queueRunnable,
+  releaseGateLabel,
   runNext,
   runOnly,
   skipResumeApplies,
@@ -662,5 +663,23 @@ describe('skipResumeApplies', () => {
         [run({ ticket: 'COD-99', terminal: false })],
       ),
     ).toBe(false)
+  })
+})
+
+describe('releaseGateLabel', () => {
+  it('names the epic whose release holds the queue', () => {
+    expect(
+      releaseGateLabel(
+        queueResponse({ draining: true, releasing_epic: 'COD-1442' }),
+      ),
+    ).toBe('waiting for COD-1442 to finish releasing')
+  })
+
+  it('is empty while nothing gates the queue', () => {
+    expect(releaseGateLabel(queueResponse({ draining: true }))).toBe('')
+  })
+
+  it('is empty without a queue at all', () => {
+    expect(releaseGateLabel()).toBe('')
   })
 })
