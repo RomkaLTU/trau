@@ -214,6 +214,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		return &EpicUnfinalizedError{EpicID: p.EpicID, Open: open}
 	}
 	p.checkpointEpicReleasing(ctx)
+	p.abortHalfMerge(ctx)
 
 	epic, err := p.epicBranchName(ctx)
 	if err != nil {
@@ -440,11 +441,12 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 
 // checkpointEpicReleasing opens the epic's own run row the moment shipping starts.
 // Title and phase land together — a phase-less row reads as a run still in flight.
-// Releasing ranks above the resume scan's in-flight window, so naming the epic
-// here still never makes it a resume target. A shipped epic keeps its terminal
-// checkpoint: reopening the release would un-ship it, and the re-run that follows
-// usually fails on the branch it has already merged away, stranding the epic
-// non-terminal for good.
+// Releasing ranks above the resume scan's in-flight window, so the epic is never
+// picked up as ticket work; a release the run dies inside is re-entered through
+// ResumableRelease instead. A shipped epic keeps its terminal checkpoint:
+// reopening the release would un-ship it, and the re-run that follows usually
+// fails on the branch it has already merged away, stranding the epic non-terminal
+// for good.
 func (p *Pipeline) checkpointEpicReleasing(ctx context.Context) {
 	if p.State.Get(p.EpicID, "PHASE") == state.Merged {
 		return
@@ -455,6 +457,21 @@ func (p *Pipeline) checkpointEpicReleasing(ctx context.Context) {
 	}
 	p.stampEpicTitle(ctx)
 	_ = p.State.Set(p.EpicID, "RELEASE", state.ReleaseActive)
+}
+
+// ResumableRelease reports whether this run's epic sits at a release a dead
+// finalize left behind — a releasing checkpoint no hand-off parked and no failure
+// class ended. The loop re-enters FinalizeEpic for it rather than grazing for a
+// fresh ticket, which would reset a working tree the release still owns.
+func (p *Pipeline) ResumableRelease() bool {
+	if p.EpicID == "" {
+		return false
+	}
+	return state.ResumableRelease(
+		p.State.Get(p.EpicID, "PHASE"),
+		p.State.Get(p.EpicID, "RELEASE"),
+		p.State.Get(p.EpicID, "FAILURE_CLASS"),
+	)
 }
 
 // markEpicAwaitingHuman marks the release parked for a human — an unresolvable

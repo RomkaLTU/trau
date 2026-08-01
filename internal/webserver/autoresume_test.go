@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -184,6 +185,103 @@ func TestAutoResumeLeavesAHandedOffEpicAlone(t *testing.T) {
 	}
 	if len(fake.spawns) != 0 {
 		t.Fatalf("spawns = %d, want none — a human's merge is not a re-attempt", len(fake.spawns))
+	}
+}
+
+// A finalize that died mid-release is the one park the hub re-enters whether or
+// not the repo opted into auto-resume: that item's own checkpoint is what holds
+// every other item behind the release gate, so leaving it parked deadlocks the
+// queue. The re-attempt goes out as the epic flow, which lands the child in the
+// finalize rather than a ticket build, and the gate holds for everything else
+// meanwhile.
+func TestAutoResumeRearmsACrashedRelease(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.backoff = time.Minute
+	now := time.Now()
+	s.drain.now = func() time.Time { return now }
+	seedReleasing(t, s, root, "COD-1", state.ReleaseActive)
+	seedQueue(t, s, root, true,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7},
+	)
+
+	pauseRunningItem(t, s, root, "COD-1", classUnknown)
+
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("tick inside the backoff = %q, want wait", act)
+	}
+	now = now.Add(2 * time.Minute)
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("tick at the due time = %q, want wait — it re-arms and the next tick spawns", act)
+	}
+	if got := s.releasingEpic(root); got != "COD-1" {
+		t.Fatalf("releasing epic = %q, want the gate to hold until the release lands or hands off", got)
+	}
+	if act, _ := s.drain.tick(root); act != drainSpawn {
+		t.Fatalf("tick after the re-arm = %q, want spawn", act)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want only the release re-attempted", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--drain-report", "COD-1"})
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusPending {
+		t.Errorf("COD-2 = %q, want it still held behind the release", got)
+	}
+}
+
+// The re-attempts are bounded: a finalize that dies every time falls into the
+// faulted class rather than resume-looping, and a faulted release stops holding
+// the repo — the checkpoint keeps its releasing phase, but the gate opens and the
+// rest of the queue drains once it is armed again.
+func TestAutoResumeBoundsACrashedRelease(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.backoff = 0
+	seedReleasing(t, s, root, "COD-1", state.ReleaseActive)
+	seedQueue(t, s, root, true,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7},
+	)
+
+	for attempt := 1; attempt <= releaseResumeTries; attempt++ {
+		pauseRunningItem(t, s, root, "COD-1", classUnknown)
+		if act, _ := s.drain.tick(root); act != drainWait {
+			t.Fatalf("re-attempt %d: tick = %q, want wait", attempt, act)
+		}
+		if act, _ := s.drain.tick(root); act != drainSpawn {
+			t.Fatalf("re-attempt %d: tick = %q, want spawn", attempt, act)
+		}
+	}
+
+	pauseRunningItem(t, s, root, "COD-1", classUnknown)
+	if act, _ := s.drain.tick(root); act != drainStop {
+		t.Fatalf("tick after the budget = %q, want stop — the release is parked for a human", act)
+	}
+	if len(fake.spawns) != releaseResumeTries {
+		t.Fatalf("spawns = %d, want %d — the budget bounds the re-attempts", len(fake.spawns), releaseResumeTries)
+	}
+
+	row, found, err := s.stores.Checkpoints().One(root, "COD-1")
+	if err != nil || !found {
+		t.Fatalf("read epic checkpoint: found=%v err=%v", found, err)
+	}
+	if got := checkpointField(row.Data, "FAILURE_CLASS"); got != state.FailFaulted {
+		t.Errorf("FAILURE_CLASS = %q, want %q", got, state.FailFaulted)
+	}
+	if row.Phase != state.Releasing {
+		t.Errorf("PHASE = %q, want the release still recorded as unfinished", row.Phase)
+	}
+	if got := s.releasingEpic(root); got != "" {
+		t.Errorf("releasing epic = %q, want the gate open once nothing re-attempts the release", got)
+	}
+
+	if err := s.stores.Queue(root).Rearm(); err != nil {
+		t.Fatalf("rearm: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainSpawn {
+		t.Fatalf("tick after the gate opened = %q, want the queue to drain on", act)
+	}
+	if got := fake.spawns[len(fake.spawns)-1].Args; !slices.Contains(got, "COD-2") {
+		t.Errorf("spawn args = %v, want the item the release was holding", got)
 	}
 }
 

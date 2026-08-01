@@ -40,6 +40,7 @@ type loopEngine struct {
 
 func (l *loopEngine) ResumeTarget() (string, string)                  { return "", "" }
 func (l *loopEngine) InferredResume(context.Context) (string, string) { return "", "" }
+func (l *loopEngine) ResumableRelease() bool                          { return false }
 func (l *loopEngine) EnsureCleanBase(context.Context) error           { return nil }
 func (l *loopEngine) ExitCleanup(context.Context)                     {}
 func (l *loopEngine) Pick(context.Context) (string, error)            { return "", nil }
@@ -348,6 +349,47 @@ func TestRunLoopSurfacesUnfinalizedEpicOnlyWhenNothingLeft(t *testing.T) {
 				t.Fatalf("runLoop err = %v, want an *EpicUnfinalizedError: %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// releasingEngine is the relaunch of a repo whose epic sits at a release a dead
+// finalize left behind. Its pick queue still has work on offer, which the loop must
+// leave alone while the release is unfinished.
+type releasingEngine struct {
+	loopEngine
+	cleaned int
+	picked  int
+}
+
+func (e *releasingEngine) ResumableRelease() bool                { return true }
+func (e *releasingEngine) EnsureCleanBase(context.Context) error { e.cleaned++; return nil }
+func (e *releasingEngine) Pick(context.Context) (string, error)  { e.picked++; return "COD-2", nil }
+
+// A run relaunched against an epic mid-release re-enters the finalize and nothing
+// else: grazing would reset the working tree the release still owns, and picking a
+// ticket would start a build beside a half-merged epic branch.
+func TestRunLoopResumesReleaseStraightIntoFinalize(t *testing.T) {
+	eng := &releasingEngine{}
+	var recs []stateRec
+	processed, err := runLoop(context.Background(), eng, loopParams{Max: 5, EpicID: "COD-1", Report: recorder(&recs)}, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+		t.Fatalf("no ticket may run while the release is unfinished, got %s", id)
+		return console.TicketResult{}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	if !eng.finalized {
+		t.Fatal("expected the loop to re-enter the epic finalize")
+	}
+	if eng.cleaned != 0 || eng.picked != 0 {
+		t.Fatalf("clean-base runs = %d, picks = %d, want neither before the release lands", eng.cleaned, eng.picked)
+	}
+	if len(processed) != 0 {
+		t.Fatalf("processed = %v, want nothing but the release", processed)
+	}
+	want := []stateRec{{registry.StateWorking, "COD-1", ""}, {registry.StateGrazing, "", ""}}
+	if !reflect.DeepEqual(recs, want) {
+		t.Fatalf("transition sequence = %v, want %v", recs, want)
 	}
 }
 

@@ -172,6 +172,10 @@ type Git interface {
 	// MergeAbort aborts an in-progress conflicted merge (git merge --abort).
 	MergeAbort(ctx context.Context) error
 
+	// MergeInProgress reports whether the tree sits mid-merge — MERGE_HEAD written
+	// and the merge commit not made — however far a resolution got.
+	MergeInProgress(ctx context.Context) (bool, error)
+
 	// Unmerged returns the still-conflicted paths after a merge, empty when none
 	// remain (git diff --name-only --diff-filter=U).
 	Unmerged(ctx context.Context) (string, error)
@@ -5680,6 +5684,22 @@ func (g ExecGit) MergeRemote(ctx context.Context, remote, base string) (bool, er
 // MergeAbort aborts an in-progress conflicted merge (git merge --abort).
 func (g ExecGit) MergeAbort(ctx context.Context) error { return g.run(ctx, "merge", "--abort") }
 
+// MergeInProgress reports whether MERGE_HEAD is present — a merge started and
+// neither committed nor aborted. rev-parse exits 1 for a ref that resolves to
+// nothing, which is the expected "no merge here".
+func (g ExecGit) MergeInProgress(ctx context.Context) (bool, error) {
+	err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"rev-parse", "-q", "--verify", "MERGE_HEAD").Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git rev-parse --verify MERGE_HEAD: %w", err)
+}
+
 // Unmerged lists the still-conflicted paths after a merge (empty when none).
 func (g ExecGit) Unmerged(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
@@ -5694,8 +5714,7 @@ func (g ExecGit) Unmerged(ctx context.Context) (string, error) {
 // a no-op when MERGE_HEAD is absent, so a resolving agent that already committed
 // the merge does not cause a spurious empty-commit failure.
 func (g ExecGit) ContinueMerge(ctx context.Context) error {
-	if exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
-		"rev-parse", "-q", "--verify", "MERGE_HEAD").Run() != nil {
+	if mid, err := g.MergeInProgress(ctx); err != nil || !mid {
 		return nil
 	}
 	if err := g.run(ctx, "add", "-A"); err != nil {

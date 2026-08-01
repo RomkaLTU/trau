@@ -70,6 +70,31 @@ func TestAdvancedPhase(t *testing.T) {
 	}
 }
 
+// The one reading behind the loop's re-entry, the hub's re-arm and the queue's
+// release gate: a release trau still owns survives a crash, a hand-off or a fault
+// ends it, and no other phase is a release at all.
+func TestResumableRelease(t *testing.T) {
+	tests := []struct {
+		name                        string
+		phase, release, failedClass string
+		want                        bool
+	}{
+		{name: "a live release", phase: Releasing, release: ReleaseActive, want: true},
+		{name: "an older checkpoint without a marker", phase: Releasing, want: true},
+		{name: "a crash the loop only paused", phase: Releasing, release: ReleaseActive, failedClass: FailPaused, want: true},
+		{name: "a deliberate stop", phase: Releasing, release: ReleaseActive, failedClass: FailStopped, want: true},
+		{name: "handed to a human", phase: Releasing, release: ReleaseAwaitingHuman},
+		{name: "faulted out of re-attempts", phase: Releasing, release: ReleaseActive, failedClass: FailFaulted},
+		{name: "a shipped epic", phase: Merged, release: ReleaseActive},
+		{name: "a ticket mid-build", phase: Building},
+	}
+	for _, tc := range tests {
+		if got := ResumableRelease(tc.phase, tc.release, tc.failedClass); got != tc.want {
+			t.Errorf("%s: ResumableRelease(%q, %q, %q) = %v, want %v", tc.name, tc.phase, tc.release, tc.failedClass, got, tc.want)
+		}
+	}
+}
+
 // --- Reconcilable / StaleCheckpoint --------------------------------------
 
 func TestReconcilable(t *testing.T) {

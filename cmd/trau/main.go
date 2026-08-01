@@ -1647,6 +1647,8 @@ type engine interface {
 
 	InferredResume(ctx context.Context) (id, phase string)
 
+	ResumableRelease() bool
+
 	EnsureCleanBase(ctx context.Context) error
 
 	// ExitCleanup runs the session's exit hygiene: back to the branch the run started
@@ -1681,6 +1683,7 @@ func (e *realEngine) ResumeTarget() (string, string) {
 func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
 	return e.pipe.InferredResumeFunc(ctx, e.resumeKeep)
 }
+func (e *realEngine) ResumableRelease() bool                    { return e.pipe.ResumableRelease() }
 func (e *realEngine) EnsureCleanBase(ctx context.Context) error { return e.pipe.EnsureCleanBase(ctx) }
 func (e *realEngine) ExitCleanup(ctx context.Context)           { e.pipe.ExitCleanup(ctx) }
 func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.tracker.Pick(ctx, e.scope) }
@@ -1794,6 +1797,15 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			con.Logf("⏹ interrupted — stopping")
 			return processed, nil
 		default:
+		}
+
+		// A release a dead finalize left behind is the run's whole job, and grazing
+		// for a ticket first would run the clean-base reset over the epic branch that
+		// release is still mid-merge on.
+		if eng.ResumableRelease() {
+			con.Logf("↻ resuming the release of %s", p.EpicID)
+			ownsFinalize = true
+			break
 		}
 
 		if len(processed) >= p.Max {
