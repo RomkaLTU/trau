@@ -70,6 +70,19 @@ type GrillDeltaView struct {
 	Text string `json:"text"`
 }
 
+// GrillActivityView is one thing the agent did mid-turn — reaching for a tool,
+// thinking, a tool coming back — so a turn spent working still shows progress. Seq
+// numbers a turn's activity on its own count, apart from the deltas, and like a
+// delta the frame is never stored. Detail only ever summarizes a call (a path, a
+// query): tool inputs and results can carry secrets and stay in the child.
+type GrillActivityView struct {
+	Seq    int    `json:"seq"`
+	Kind   string `json:"kind"`
+	Name   string `json:"name,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	OK     *bool  `json:"ok,omitempty"`
+}
+
 // GrillDefaultsView is what a session of the requested mode started right now would
 // run on. Provider availability is mode-dependent, so it is only valid for that mode.
 type GrillDefaultsView struct {
@@ -715,6 +728,16 @@ func (s *Server) publishGrillDelta(sid int64, text string) {
 		SessionID: sid,
 		Event:     "delta",
 		Payload:   GrillDeltaView{Text: text},
+	})
+}
+
+// publishGrillActivity carries no frame id for the same reason a delta does not:
+// activity is progress, not transcript.
+func (s *Server) publishGrillActivity(sid int64, act GrillActivityView) {
+	s.grillEvents.publish(liveGrillEvent{
+		SessionID: sid,
+		Event:     "activity",
+		Payload:   act,
 	})
 }
 

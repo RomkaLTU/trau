@@ -29,6 +29,7 @@ import {
   isSettled,
   lastAnswer,
   mergeMessages,
+  NO_ACTIVITY,
   NO_REPLY,
   outcomePayload,
   pendingQuestion,
@@ -39,6 +40,7 @@ import {
   startGrillSession,
   upsertMessage,
   type DiffLine,
+  type GrillActivity,
   type GrillAwaitingResponse,
   type GrillDelta,
   type GrillListResponse,
@@ -608,6 +610,7 @@ describe('grillReducer', () => {
     messages: [],
     pending: [],
     streaming: NO_REPLY,
+    activity: NO_ACTIVITY,
   }
 
   it('hydrate seeds messages and adopts the session while not yet live', () => {
@@ -661,6 +664,7 @@ describe('streaming deltas', () => {
     messages: [],
     pending: [],
     streaming: NO_REPLY,
+    activity: NO_ACTIVITY,
   }
 
   const stream = (state: GrillLive, ...deltas: GrillDelta[]) =>
@@ -731,6 +735,71 @@ describe('streaming deltas', () => {
   })
 })
 
+describe('streaming activity', () => {
+  const initial: GrillLive = {
+    session: session({ state: 'running' }),
+    live: false,
+    hydrated: true,
+    messages: [],
+    pending: [],
+    streaming: NO_REPLY,
+    activity: NO_ACTIVITY,
+  }
+
+  const tool = (seq: number, name: string): GrillActivity => ({ seq, kind: 'tool', name })
+
+  const report = (state: GrillLive, ...frames: GrillActivity[]) =>
+    frames.reduce((s, activity) => grillReducer(s, { type: 'activity', activity }), state)
+
+  it('appends frames in the order the turn reported them', () => {
+    const next = report(initial, tool(1, 'Read'), { seq: 2, kind: 'thinking' })
+    expect(next.activity.items.map((a) => a.kind)).toEqual(['tool', 'thinking'])
+    expect(next.activity.seq).toBe(2)
+  })
+
+  it('keeps only the last 50 frames', () => {
+    const frames = Array.from({ length: 60 }, (_, i) => tool(i + 1, `T${i + 1}`))
+    const next = report(initial, ...frames)
+    expect(next.activity.items).toHaveLength(50)
+    expect(next.activity.items[0].name).toBe('T11')
+    expect(next.activity.items[49].name).toBe('T60')
+  })
+
+  it('the turn’s message clears the ring', () => {
+    const reported = report(initial, tool(1, 'Read'))
+    const next = grillReducer(reported, { type: 'message', message: question('7') })
+    expect(next.activity).toEqual(NO_ACTIVITY)
+  })
+
+  it('a state frame clears the ring and rebases the seq', () => {
+    const reported = report(initial, tool(1, 'Read'))
+    const settled = grillReducer(reported, {
+      type: 'state',
+      session: session({ state: 'waiting' }),
+    })
+    expect(settled.activity).toEqual(NO_ACTIVITY)
+
+    // The next turn's frames number from one again, so they must read as contiguous.
+    const resumed = grillReducer(settled, {
+      type: 'state',
+      session: session({ state: 'running' }),
+    })
+    expect(report(resumed, tool(1, 'Grep')).activity.items).toHaveLength(1)
+  })
+
+  it('a dropped frame clears the ring rather than leaving a hole in it', () => {
+    const holed = report(initial, tool(1, 'Read'), tool(2, 'Grep'), tool(5, 'Edit'))
+    expect(holed.activity.items).toEqual([])
+    expect(holed.activity.seq).toBe(5)
+    expect(report(holed, tool(6, 'Bash')).activity.items.map((a) => a.name)).toEqual(['Bash'])
+  })
+
+  it('ignores frames trailing a settled turn', () => {
+    const settled: GrillLive = { ...initial, session: session({ state: 'finished' }) }
+    expect(report(settled, tool(1, 'Read')).activity).toEqual(NO_ACTIVITY)
+  })
+})
+
 describe('optimistic send', () => {
   const initial: GrillLive = {
     session: session({ state: 'waiting' }),
@@ -739,6 +808,7 @@ describe('optimistic send', () => {
     messages: [],
     pending: [],
     streaming: NO_REPLY,
+    activity: NO_ACTIVITY,
   }
 
   const sent = (text = 'A') => grillReducer(initial, { type: 'send', id: 'p1', text })

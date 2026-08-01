@@ -63,6 +63,17 @@ export interface GrillDelta {
   text: string
 }
 
+// GrillActivity is one thing the agent did mid-turn — live-stream only on the same
+// terms as a delta, and numbered on its own count. detail only ever summarizes a call
+// (a path, a query); the hub keeps tool inputs and results off the stream.
+export interface GrillActivity {
+  seq: number
+  kind: string
+  name?: string
+  detail?: string
+  ok?: boolean
+}
+
 export interface GrillDetail {
   session: GrillSession
   messages: GrillMessage[]
@@ -831,6 +842,18 @@ export interface StreamingReply {
 
 export const NO_REPLY: StreamingReply = { seq: 0, text: '', holed: false }
 
+// LiveActivity is what the running turn has been doing so far: a bounded ring of the
+// most recent frames, following the reply's lifecycle — a message or state frame ends
+// it.
+export interface LiveActivity {
+  seq: number
+  items: GrillActivity[]
+}
+
+export const NO_ACTIVITY: LiveActivity = { seq: 0, items: [] }
+
+const ACTIVITY_RING = 50
+
 // GrillLive is the panel's merged view of one session: the authoritative session
 // plus its messages. live tracks whether a stream frame has set the session, so a
 // late GET hydrate never reverts a state the stream already advanced; hydrated
@@ -842,6 +865,7 @@ export interface GrillLive {
   messages: GrillMessage[]
   pending: PendingAnswer[]
   streaming: StreamingReply
+  activity: LiveActivity
 }
 
 export type GrillAction =
@@ -849,6 +873,7 @@ export type GrillAction =
   | { type: 'message'; message: GrillMessage }
   | { type: 'state'; session: GrillSession }
   | { type: 'delta'; delta: GrillDelta }
+  | { type: 'activity'; activity: GrillActivity }
   | { type: 'send'; id: string; text: string }
   | { type: 'send-failed'; id: string; text: string }
   | { type: 'send-retry'; id: string }
@@ -874,6 +899,7 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
           ? state.pending
           : retirePending(state.pending, action.message),
         streaming: NO_REPLY,
+        activity: NO_ACTIVITY,
       }
     // Every state frame either settles the running turn or opens the next one, so it
     // ends whatever was streaming and rebases the seq for the turn ahead.
@@ -883,11 +909,17 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
         session: action.session,
         live: true,
         streaming: NO_REPLY,
+        activity: NO_ACTIVITY,
       }
     case 'delta':
       return {
         ...state,
         streaming: appendDelta(state.streaming, action.delta, state.session.state),
+      }
+    case 'activity':
+      return {
+        ...state,
+        activity: appendActivity(state.activity, action.activity, state.session.state),
       }
     case 'send':
       return {
@@ -920,6 +952,20 @@ function appendDelta(reply: StreamingReply, delta: GrillDelta, state: GrillState
   if (state !== 'running') return reply
   if (delta.seq !== reply.seq + 1) return { seq: delta.seq, text: '', holed: true }
   return { seq: delta.seq, text: reply.text + delta.text, holed: reply.holed }
+}
+
+// appendActivity grows the turn's ring by one frame, dropping the oldest once it is
+// full. A seq that skips means the broadcaster dropped a frame, and the ring starts
+// over from there rather than reading as a complete account of the turn — activity is
+// never stored, so nothing will backfill the gap.
+function appendActivity(
+  feed: LiveActivity,
+  activity: GrillActivity,
+  state: GrillState,
+): LiveActivity {
+  if (state !== 'running') return feed
+  if (activity.seq !== feed.seq + 1) return { seq: activity.seq, items: [] }
+  return { seq: activity.seq, items: [...feed.items, activity].slice(-ACTIVITY_RING) }
 }
 
 function holds(list: GrillMessage[], msg: GrillMessage): boolean {
