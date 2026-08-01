@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -392,6 +393,97 @@ func TestFinalizeEpicBracketsShippingWithReleasing(t *testing.T) {
 	assertEpicCheckpointedMerged(t, p)
 	if got := p.State.Get("COD-1", "RELEASE"); got != "" {
 		t.Errorf("epic RELEASE after the merge = %q, want it cleared", got)
+	}
+}
+
+// resumedEpicGit is the repo a killed finalize leaves behind: the epic branch is
+// only discoverable by id (nothing cached it this run) and the tree still sits
+// mid-merge where the resolving agent died.
+type resumedEpicGit struct {
+	baseCurrentGit
+	branch      string
+	midMerge    bool
+	abortCalls  int
+	checkedOut  []string
+	mergedAfter bool
+}
+
+func (g *resumedEpicGit) FindEpicBranch(context.Context, string) (string, error) {
+	return g.branch, nil
+}
+func (g *resumedEpicGit) MergeInProgress(context.Context) (bool, error) { return g.midMerge, nil }
+func (g *resumedEpicGit) MergeAbort(context.Context) error {
+	g.abortCalls++
+	g.midMerge = false
+	return nil
+}
+func (g *resumedEpicGit) Checkout(_ context.Context, ref string, _ bool) error {
+	g.checkedOut = append(g.checkedOut, ref)
+	return nil
+}
+func (g *resumedEpicGit) MergeRemote(context.Context, string, string) (bool, error) {
+	g.mergedAfter = !g.midMerge
+	return false, nil
+}
+
+// adoptingEpicGitHub already has the epic PR an earlier finalize opened, so the
+// resume adopts it instead of opening a second one.
+type adoptingEpicGitHub struct {
+	epicGitHub
+	openURL string
+}
+
+func (g *adoptingEpicGitHub) PRURL(context.Context, string) (string, error) {
+	return g.openURL, nil
+}
+
+// A finalize killed mid-release resumes from its own checkpoint: the epic branch is
+// re-adopted by id, the half-merge the dead run left is aborted before the sync
+// starts over, the PR that run opened is adopted rather than duplicated, and the
+// epic ships. The release stops being resumable exactly when it lands.
+func TestFinalizeEpicResumesFromReleasingCheckpoint(t *testing.T) {
+	const epic = "epic/COD-1-checkout-rebuild"
+	tr := doneEpicTracker()
+	gh := &adoptingEpicGitHub{
+		epicGitHub: epicGitHub{checks: []Check{{Name: "ci/test", Bucket: "pass"}}},
+		openURL:    "https://github.test/pr/42",
+	}
+	git := &resumedEpicGit{branch: epic, midMerge: true}
+	p := shippableEpicPipeline(t, gh, tr)
+	p.Git = git
+	p.exit = exitState{}
+	if err := p.State.Set("COD-1", "PHASE", state.Releasing); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.State.Set("COD-1", "RELEASE", state.ReleaseActive); err != nil {
+		t.Fatal(err)
+	}
+	if !p.ResumableRelease() {
+		t.Fatal("a releasing checkpoint with no hand-off marker must be resumable")
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+
+	if git.abortCalls != 1 {
+		t.Errorf("MergeAbort calls = %d, want the half-merge aborted once on entry", git.abortCalls)
+	}
+	if !git.mergedAfter {
+		t.Error("the sync merged while the tree was still mid-merge, want it restarted clean")
+	}
+	if !slices.Contains(git.checkedOut, epic) {
+		t.Errorf("checkouts = %v, want the epic branch adopted by id", git.checkedOut)
+	}
+	if gh.createCalls != 0 {
+		t.Errorf("CreatePR calls = %d, want the open epic PR adopted", gh.createCalls)
+	}
+	if gh.mergeCalls != 1 {
+		t.Errorf("merge calls = %d, want the resumed release to ship", gh.mergeCalls)
+	}
+	assertEpicCheckpointedMerged(t, p)
+	if p.ResumableRelease() {
+		t.Error("a shipped epic must stop reading as a release to resume")
 	}
 }
 

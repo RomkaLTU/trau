@@ -30,8 +30,9 @@ import (
 // Checkpoint phase values written to the PHASE key. The loop advances a ticket
 // through these in order; Merged and Quarantined are terminal (resume skips them).
 // Releasing belongs to an Epic rather than a ticket — it brackets the shipping of
-// the epic branch itself — and is deliberately non-terminal without being
-// resumable.
+// the epic branch itself — so it is non-terminal without ever being ticket work
+// the resume scan may pick up: a release resumes through its Epic's own finalize
+// (ResumableRelease), never as a ticket.
 const (
 	Building    = "building"
 	Built       = "built"
@@ -153,6 +154,17 @@ func FailureClass(phase, stored, reason string) string {
 	default:
 		return ""
 	}
+}
+
+// ResumableRelease reports whether an Epic checkpoint is a release trau still
+// owns and may re-enter: the phase reads releasing, no hand-off marker parked it
+// on a human, and no fault ended it. A blameless park — a provider pause or a
+// deliberate stop — leaves the release trau's to pick back up, while a release
+// nothing will re-attempt must stop holding its repo's queue shut. The loop's
+// re-entry, the hub's automatic re-arm and the queue's release gate all read it,
+// so none of the three can drift from the others.
+func ResumableRelease(phase, release, failureClass string) bool {
+	return phase == Releasing && release != ReleaseAwaitingHuman && failureClass != FailFaulted
 }
 
 // ErrHubUnreachable is returned by a hub-backed Checkpoints implementation when

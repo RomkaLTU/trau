@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -23,35 +24,89 @@ type autoResume struct {
 	due      time.Time
 }
 
+// releaseResumeTries bounds the automatic re-attempts a finalize that died
+// mid-release gets. Unlike the repo's opt-in budget it is not optional: that
+// item's own checkpoint is what holds every other item in the repo behind the
+// release gate, so nobody but the hub can reopen it. It stays bounded, so a
+// finalize that dies every time ends parked for a human instead of looping.
+const releaseResumeTries = 2
+
 // planAutoResume schedules the next automatic re-attempt of an item the drain
-// just parked, when the repo opted in and the pause was blameless — a provider
-// rate/auth wall or an unreachable hub, never a fault, an unknown outcome, or a
-// deliberate stop. Each re-attempt waits longer than the last and the budget is
-// bounded, so an item whose condition never clears ends up parked for a human
-// exactly as it does today.
+// just parked, when the pause is one a re-attempt can clear: a blameless provider
+// rate/auth wall or an unreachable hub the repo opted into re-trying, or a
+// finalize that died mid-release, which strands its repo's queue until something
+// re-enters it. A fault, an unknown outcome and a deliberate stop otherwise stay
+// parked for a human. Each re-attempt waits longer than the last and the budget is
+// bounded, so an item whose condition never clears ends up parked exactly as it
+// does today — a release that spends its budget stamped faulted, which opens the
+// gate it was holding.
 func (d *drainer) planAutoResume(root string, it queue.Item, class string) {
-	if class != state.FailPaused {
-		d.forgetAutoResume(root, it.ID)
-		return
-	}
+	release := class != state.FailStopped && d.crashedRelease(root, it.ID)
 	tries := d.autoTries(root)
-	if tries <= 0 {
-		d.forgetAutoResume(root, it.ID)
+	switch {
+	case release && tries < releaseResumeTries:
+		tries = releaseResumeTries
+	case !release && class != state.FailPaused:
+		tries = 0
+	}
+	if tries > 0 && d.spendAutoResume(root, it.ID, tries) {
 		return
 	}
+	d.forgetAutoResume(root, it.ID)
+	if release {
+		d.stampReleaseSpent(root, it.ID, tries)
+	}
+}
+
+// spendAutoResume books one re-attempt of id against a budget of tries, reporting
+// whether there was one left to spend. A plan held for another item starts over,
+// so each item gets the whole budget.
+func (d *drainer) spendAutoResume(root, id string, tries int) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	plan, ok := d.resumes[root]
-	if !ok || plan.id != it.ID {
-		plan = autoResume{id: it.ID}
+	if !ok || plan.id != id {
+		plan = autoResume{id: id}
 	}
 	if plan.attempts >= tries {
-		delete(d.resumes, root)
-		return
+		return false
 	}
 	plan.attempts++
 	plan.due = d.now().Add(time.Duration(plan.attempts) * d.backoff)
 	d.resumes[root] = plan
+	return true
+}
+
+// crashedRelease reports whether the item the drain just parked left a release
+// behind that trau still owns — the checkpoint the release gate reads.
+func (d *drainer) crashedRelease(root, id string) bool {
+	row, found, err := d.srv.stores.Checkpoints().One(root, id)
+	if err != nil || !found {
+		return false
+	}
+	return liveRelease(row)
+}
+
+// stampReleaseSpent ends a release the hub re-entered as often as its budget
+// allows: the epic's checkpoint takes the same faulted class a dead ticket lands
+// in, which parks it for a human and — since nothing re-attempts a faulted
+// release — opens the gate its releasing phase held, so the rest of the queue
+// drains on. A release that settled in the meantime is left alone.
+func (d *drainer) stampReleaseSpent(root, id string, tries int) {
+	row, found, err := d.srv.stores.Checkpoints().One(root, id)
+	if err != nil || !found || !liveRelease(row) {
+		return
+	}
+	data := map[string]string{}
+	if row.Data != "" {
+		_ = json.Unmarshal([]byte(row.Data), &data)
+	}
+	data["FAILURE_CLASS"] = state.FailFaulted
+	data["FAILURE_REASON"] = fmt.Sprintf("the release died in %d automatic re-attempts — finish it by hand", tries)
+	data["UPDATED"] = d.now().UTC().Format("2006-01-02 15:04:05")
+	if err := d.srv.stores.Checkpoints().Upsert(root, id, data); err != nil {
+		logger.Verbosef("stamp spent release %s/%s: %v", root, id, err)
+	}
 }
 
 // holdForAutoResume keeps a disarmed repo's drain loop alive while a re-attempt
