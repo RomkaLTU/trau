@@ -104,6 +104,40 @@ func TestProjectCreateGroupsRegisteredRepos(t *testing.T) {
 	}
 }
 
+// A repo joining a configured project is set up like the members already in it:
+// the tracker and the project-wide answers land in its config as it arrives.
+func TestProjectAddSeedsTheJoinerWithTheProjectsKeys(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	api := gitRepo(t, base, "api", "dir")
+	web := gitRepo(t, base, "web", "dir")
+	cli := gitRepo(t, base, "cli", "dir")
+	_, ts := controlServer(t, home, nil)
+	for _, root := range []string{api, web, cli} {
+		registerRepoReq(t, ts, root)
+	}
+
+	project := createProjectReq(t, ts, "Platform")
+	for _, root := range []string{api, web} {
+		if res, body := addProjectRepo(t, ts, project.ID, root); res.StatusCode != http.StatusOK {
+			t.Fatalf("add %s = %d (%s)", root, res.StatusCode, body)
+		}
+	}
+	want := map[string]string{
+		"TRACKER_PROVIDER": "internal",
+		"READY_LABEL":      "ship-it",
+		"EPIC_FLOW":        "1",
+	}
+	if res, body := putProjectTrackerReq(t, ts, project.ID, want); res.StatusCode != http.StatusOK {
+		t.Fatalf("put tracker = %d (%s)", res.StatusCode, body)
+	}
+
+	if res, body := addProjectRepo(t, ts, project.ID, cli); res.StatusCode != http.StatusOK {
+		t.Fatalf("add %s = %d (%s)", cli, res.StatusCode, body)
+	}
+	wantINI(t, cli, want)
+}
+
 func TestProjectAddRejectsUnknownRepo(t *testing.T) {
 	_, ts := controlServer(t, t.TempDir(), nil)
 	project := createProjectReq(t, ts, "Platform")

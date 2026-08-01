@@ -7,43 +7,83 @@ import { writeConfig } from '@/lib/config'
 import {
   ensureGitignore,
   essentialsConfigWrites,
+  essentialsProjectKeys,
   type EssentialsFields,
-  type RepoInspection,
+  type MemberRepo,
 } from '@/lib/onboarding'
+import { writeProjectTracker } from '@/lib/projects'
 import { FieldLabel, Hint, TextInput, Toggle } from './ui'
 
+function detectedBranch(member: MemberRepo): string {
+  return member.inspection.default_branch || 'main'
+}
+
 export function StepEssentials({
-  inspection,
-  repo,
+  members,
+  project,
   onBack,
   onContinue,
 }: {
-  inspection: RepoInspection
-  repo: string
+  members: MemberRepo[]
+  project: string | null
   onBack: () => void
   onContinue: (fields: EssentialsFields) => void
 }) {
-  const [baseBranch, setBaseBranch] = useState(inspection.default_branch || 'main')
-  const [readyLabel, setReadyLabel] = useState(
-    inspection.prefill?.ready_label ?? 'ready-for-agent',
+  const primary = members[0]
+  const prefill = primary.inspection.prefill
+  const [branches, setBranches] = useState<Record<string, string>>(() =>
+    Object.fromEntries(members.map((m) => [m.root, detectedBranch(m)])),
   )
-  const [epicFlow, setEpicFlow] = useState(inspection.prefill?.epic_flow ?? false)
+  const [readyLabel, setReadyLabel] = useState(prefill?.ready_label ?? 'ready-for-agent')
+  const [epicFlow, setEpicFlow] = useState(prefill?.epic_flow ?? false)
   const [gitignore, setGitignore] = useState(true)
 
-  const fields: EssentialsFields = { baseBranch, readyLabel, epicFlow }
+  const fields: EssentialsFields = {
+    baseBranches: members.map((m) => ({
+      repo: m.repo,
+      root: m.root,
+      branch: branches[m.root],
+    })),
+    readyLabel,
+    epicFlow,
+  }
+
+  function setBranch(root: string, value: string) {
+    setBranches((prev) => ({ ...prev, [root]: value }))
+  }
 
   // Every field has a working default, so this advances on settle, not just success.
+  // The writes are independent: a member the hub rejects must not take the ones
+  // queued behind it down with it.
   const commit = useMutation({
     mutationFn: async () => {
-      for (const w of essentialsConfigWrites(fields)) {
-        await writeConfig(repo, w)
+      const pending: (() => Promise<unknown>)[] = []
+      if (project !== null) {
+        pending.push(() => writeProjectTracker(project, essentialsProjectKeys(fields)))
       }
-      if (gitignore) await ensureGitignore(repo)
+      pending.push(
+        ...essentialsConfigWrites(fields, project).map(
+          ({ root, ...write }) => () => writeConfig(root, write),
+        ),
+      )
+      if (gitignore) {
+        pending.push(...members.map((m) => () => ensureGitignore(m.root)))
+      }
+      const failures: unknown[] = []
+      for (const write of pending) {
+        try {
+          await write()
+        } catch (err) {
+          failures.push(err)
+        }
+      }
+      if (failures.length > 0) throw failures[0]
     },
     onSettled: () => onContinue(fields),
   })
 
-  const canContinue = baseBranch.trim() !== '' && readyLabel.trim() !== ''
+  const canContinue =
+    fields.baseBranches.every((b) => b.branch.trim() !== '') && readyLabel.trim() !== ''
 
   return (
     <div className="flex flex-col gap-5">
@@ -52,15 +92,37 @@ export function StepEssentials({
         <Hint>Sensible defaults are filled in — tweak only what you need, then carry on.</Hint>
       </div>
 
-      <div className="flex flex-col gap-2">
-        <FieldLabel htmlFor="base-branch">base branch</FieldLabel>
-        <TextInput
-          id="base-branch"
-          value={baseBranch}
-          onChange={(e) => setBaseBranch(e.target.value)}
-        />
-        <Hint>Detected default branch: {inspection.default_branch || 'main'}.</Hint>
-      </div>
+      {members.length > 1 ? (
+        <div className="flex flex-col gap-3">
+          <FieldLabel>base branch</FieldLabel>
+          {members.map((m, i) => (
+            <div key={m.root} className="flex flex-col gap-1.5">
+              <label
+                htmlFor={`base-branch-${i}`}
+                className="font-mono text-xs text-muted-foreground"
+              >
+                {m.repo}
+              </label>
+              <TextInput
+                id={`base-branch-${i}`}
+                value={branches[m.root]}
+                onChange={(e) => setBranch(m.root, e.target.value)}
+              />
+            </div>
+          ))}
+          <Hint>Each repo keeps its own base branch, prefilled from the one detected in it.</Hint>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <FieldLabel htmlFor="base-branch">base branch</FieldLabel>
+          <TextInput
+            id="base-branch"
+            value={branches[primary.root]}
+            onChange={(e) => setBranch(primary.root, e.target.value)}
+          />
+          <Hint>Detected default branch: {detectedBranch(primary)}.</Hint>
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <FieldLabel htmlFor="ready-label">ready label</FieldLabel>
@@ -85,7 +147,11 @@ export function StepEssentials({
         checked={gitignore}
         onChange={setGitignore}
         label="add .trau/ to .gitignore"
-        description="Keeps the local run store and generated config out of version control."
+        description={
+          members.length > 1
+            ? 'Keeps the local run store and generated config out of version control in every member repo.'
+            : 'Keeps the local run store and generated config out of version control.'
+        }
       />
 
       <a

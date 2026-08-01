@@ -18,6 +18,7 @@ runs/
 
 # Go build artifacts
 /trau
+/trau.exe
 /bin/
 /dist/
 *.test

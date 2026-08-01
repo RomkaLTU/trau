@@ -793,6 +793,12 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("SPLIT_LABEL", &c.SplitLabel)
 	str("PROJECT", &c.Project)
 	str("BASE_BRANCH", &c.BaseBranch)
+	// A detected branch keeps reporting as LayerDefault — no config file claimed it.
+	if _, src := get("BASE_BRANCH"); src.name == LayerDefault {
+		if branch := detectDefaultBranch(dirOf(projectPath)); branch != "" {
+			c.BaseBranch = branch
+		}
+	}
 	str("REMOTE", &c.Remote)
 	str("TRAU_REPO_ROOT", &c.RepoRoot)
 	str("PROVIDER", &c.Provider)
@@ -1417,6 +1423,22 @@ func GitToplevel() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// detectDefaultBranch reads the repo's default branch off origin/HEAD, the local
+// symbolic ref git records at clone time — a lookup, not a network call. An empty
+// dir inspects the working directory. It is best-effort: a missing ref, a
+// non-git directory, or no git at all yields "" so the caller keeps its default.
+func detectDefaultBranch(dir string) string {
+	args := []string{"symbolic-ref", "--short", "refs/remotes/origin/HEAD"}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
+}
+
 func resolveSiblingPath(basePath, p string) string {
 	if p == "" || filepath.IsAbs(p) || basePath == "" {
 		return p
@@ -2009,6 +2031,15 @@ var trackerConfigKeys = []string{
 
 // TrackerConfigKeys returns the keys that describe a repo's tracker.
 func TrackerConfigKeys() []string { return slices.Clone(trackerConfigKeys) }
+
+// projectSeededKeys are the settings a project owns on its members' behalf: the
+// tracker set plus the answers that describe how the whole project is worked. A
+// project stores them once and every member repo inherits them, late joiners
+// included, unless the repo sets one explicitly.
+var projectSeededKeys = slices.Concat(trackerConfigKeys, []string{"READY_LABEL", "EPIC_FLOW"})
+
+// ProjectSeededKeys returns the keys a project seeds into its member repos.
+func ProjectSeededKeys() []string { return slices.Clone(projectSeededKeys) }
 
 // ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
 // settings UI can offer valid pickers instead of free text. Models are

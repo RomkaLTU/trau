@@ -21,14 +21,17 @@ func (p *Pipeline) lintFix(ctx context.Context, id string) error {
 		return nil
 	}
 	p.setActivity(id, activity.LintFix, "")
+	if p.FolderRepo {
+		return p.folderLintFix(ctx, id)
+	}
 	if cmd := strings.TrimSpace(p.sliceLintFixCmd(ctx)); cmd != "" {
-		return p.lintFixCmd(ctx, cmd)
+		return p.lintFixCmd(ctx, p.RepoRoot, "lint-fix", cmd)
 	}
 	return p.lintFixAgent(ctx, id)
 }
 
-func (p *Pipeline) lintFixCmd(ctx context.Context, cmd string) error {
-	out, err := p.runRepoCmd(ctx, "lint-fix", cmd)
+func (p *Pipeline) lintFixCmd(ctx context.Context, dir, label, cmd string) error {
+	out, err := p.runDirCmd(ctx, dir, label, cmd)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -62,10 +65,16 @@ func lintFixInstruction(r prompts.Renderer, id string) string {
 // runRepoCmd runs one of the repo's own shell commands from its root, echoing it
 // under label so the run log shows what was invoked before its output.
 func (p *Pipeline) runRepoCmd(ctx context.Context, label, cmd string) ([]byte, error) {
+	return p.runDirCmd(ctx, p.RepoRoot, label, cmd)
+}
+
+// runDirCmd runs cmd from dir — the repo root, or one Child repo of a Folder
+// repo, which is the workspace its own checks and knobs belong to.
+func (p *Pipeline) runDirCmd(ctx context.Context, dir, label, cmd string) ([]byte, error) {
 	p.logf("  ↳ %s: %s", label, cmd)
 	c := shellCommand(ctx, cmd)
-	if p.RepoRoot != "" {
-		c.Dir = p.RepoRoot
+	if dir != "" {
+		c.Dir = dir
 	}
 	return c.CombinedOutput()
 }
