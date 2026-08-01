@@ -28,6 +28,7 @@ import {
 } from "@/components/trau/segmented-control";
 import { SteerComposer } from "@/components/trau/steer-notes";
 import { StatusPill } from "@/components/trau/status-pill";
+import { SyncStateBanner } from "@/components/trau/sync-state";
 import { TerminalCard } from "@/components/trau/terminal-card";
 import { Terminal } from "@/components/terminal";
 import { cn } from "@/lib/utils";
@@ -45,7 +46,9 @@ import {
   type Instance,
 } from "@/lib/instances";
 import { sessionStatePill } from "@/lib/overview";
+import { phaseLogsQueryOptions, type PhaseLog } from "@/lib/phaselogs";
 import { runDetailQueryOptions, type RunDetail } from "@/lib/rundetail";
+import { isSyncLog, syncState, type SyncState } from "@/lib/steps";
 import {
   deriveElapsedMs,
   deriveVariant,
@@ -458,6 +461,60 @@ function StoppedBanner() {
   );
 }
 
+// SyncLogs renders what the conflict-resolution attempts reported — the files
+// they resolved and how they verified the merge — once each attempt's phase log
+// lands.
+function SyncLogs({ logs }: { logs: PhaseLog[] }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-card">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors hover:bg-secondary/40"
+      >
+        <span className="flex min-w-0 items-center gap-3 font-mono text-xs">
+          <ChevronRight
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              open && "rotate-90",
+            )}
+            aria-hidden="true"
+          />
+          <span className="shrink-0 text-muted-foreground">
+            merge resolution ({logs.length})
+          </span>
+          {!open && (
+            <span className="truncate text-faint">
+              {logs.map((log) => log.phase).join(" · ")}
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 font-mono text-[0.65rem] uppercase tracking-[0.18em] text-faint">
+          {open ? "hide" : "show"}
+        </span>
+      </button>
+      {open && (
+        <ul className="flex flex-col border-t border-border">
+          {logs.map((log) => (
+            <li
+              key={log.phase}
+              className="flex flex-col gap-2 border-b border-border/60 px-4 py-3 last:border-0"
+            >
+              <span className="font-mono text-xs text-info">{log.phase}</span>
+              <pre className="overflow-x-auto whitespace-pre-wrap rounded-md border border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-foreground">
+                {log.content.trim() || "no output was captured"}
+              </pre>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 // MainPane stacks the run's transcript and its live diff behind one toggle. The
 // terminal stays mounted and CSS-hidden rather than unmounted, so flipping to the
 // diff never tears down its SSE transcript stream; the diff only mounts while it
@@ -467,11 +524,13 @@ function MainPane({
   ticket,
   glyph,
   terminal,
+  sync,
 }: {
   repo: string;
   ticket: string;
   glyph: EyebrowGlyph;
   terminal: React.ReactNode;
+  sync?: SyncState;
 }) {
   const [tab, setTab] = useQueryState("pane", paneParser);
   const diff = tab === "diff";
@@ -490,7 +549,7 @@ function MainPane({
       <div className={cn("flex flex-1 flex-col", diff && "hidden")}>
         {terminal}
       </div>
-      {diff && <RunDiff repo={repo} ticket={ticket} />}
+      {diff && <RunDiff repo={repo} ticket={ticket} sync={sync} />}
     </div>
   );
 }
@@ -523,6 +582,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const { data: checkpoint } = useQuery(
     runCheckpointQueryOptions(repo, ticket),
   );
+  const { data: phaseLogs } = useQuery(phaseLogsQueryOptions(repo, ticket));
   const feed = useEventFeed(repo);
 
   const instance: Instance | undefined = instData?.instances.find(
@@ -548,6 +608,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   });
   const activity = working ? instance.activity : undefined;
   const detail = working ? instance.detail : undefined;
+  const sync = syncState(activity, detail);
   const pill = takenOverHere
     ? sessionStatePill("takeover")
     : headerPill(variant, phase, run?.failure_class, activity);
@@ -564,6 +625,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     void queryClient.invalidateQueries({ queryKey: ["instances"] });
     void queryClient.invalidateQueries({ queryKey: ["run", repo, ticket] });
     void queryClient.invalidateQueries({ queryKey: ["run-diff", repo, ticket] });
+    void queryClient.invalidateQueries({
+      queryKey: ["phase-logs", repo, ticket],
+    });
   }, [latestPhaseEventId, queryClient, repo, ticket]);
 
   const invalidate = () => {
@@ -606,6 +670,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const noBrowser = feed.events.some(
     (ev) => ev.kind === "verify_no_browser" && fieldStr(ev, "ticket") === ticket,
   );
+  const syncLogs = (phaseLogs?.logs ?? [])
+    .filter((log) => isSyncLog(log.phase))
+    .sort((a, b) => a.phase.localeCompare(b.phase, undefined, { numeric: true }));
 
   const openPR =
     run && run.pr && run.pr_url ? (
@@ -735,6 +802,8 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
         {variant === "stopped" && !takenOverHere && <StoppedBanner />}
 
+        {sync && <SyncStateBanner sync={sync} />}
+
         {noSkills && <NoSkillsBanner />}
 
         {noBrowser && <NoBrowserBanner />}
@@ -744,6 +813,8 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             {(stop.error as Error).message}
           </p>
         )}
+
+        {syncLogs.length > 0 && <SyncLogs logs={syncLogs} />}
 
         {isRecap && run ? (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
@@ -763,6 +834,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
                 ticket={ticket}
                 glyph="partial"
                 terminal={<Terminal repo={repo} live={live} />}
+                sync={sync}
               />
               <SteerComposer
                 repo={repo}
@@ -791,6 +863,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
                     tall
                   />
                 }
+                sync={sync}
               />
             )}
 

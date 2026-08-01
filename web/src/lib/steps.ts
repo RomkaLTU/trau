@@ -72,6 +72,53 @@ export function activityText(activity: string, detail?: string): string {
   return base.replace(/([a-z])(\d)/i, '$1 $2')
 }
 
+// SYNC_TITLES names what a conflicted base sync is reconciling, keyed on the label
+// the pipeline passed to setActivity rather than on epic-ness, so the
+// feature-branch variant reads the same way.
+const SYNC_TITLES: Record<string, string> = {
+  'epic-sync': 'Syncing epic with its base',
+  'merge-sync': 'Syncing branch with its base',
+}
+
+export interface SyncState {
+  title: string
+  attempt: number
+  attempts: number
+}
+
+// An attempt is named twice on the wire: its phase log takes the bare call label
+// (epic-sync1), the heartbeat detail appends the loop's bound to that same label
+// (epic-sync1/2). Both patterns are built from one attempt pattern so the pair
+// cannot drift apart.
+const SYNC_ATTEMPT = `(${Object.keys(SYNC_TITLES).join('|')})(\\d+)`
+const SYNC_LOG = new RegExp(`^${SYNC_ATTEMPT}$`)
+const SYNC_DETAIL = new RegExp(`^${SYNC_ATTEMPT}(?:/(\\d+))?$`)
+
+// syncState reads a conflicted sync with the base out of a live heartbeat: the
+// Merge Activity under a sync label, whose detail carries the attempt and its
+// bound. Every other merge stays the generic phase.
+export function syncState(activity?: string, detail?: string): SyncState | undefined {
+  if (activity !== 'merge') return undefined
+  const m = SYNC_DETAIL.exec((detail ?? '').trim())
+  if (!m) return undefined
+  return {
+    title: SYNC_TITLES[m[1]],
+    attempt: Number(m[2]),
+    attempts: Number(m[3] ?? m[2]),
+  }
+}
+
+// syncHeadline is the explicit state a surface shows in place of the generic merge
+// phase, so a worktree full of conflict markers reads as work in progress.
+export function syncHeadline(sync: SyncState): string {
+  return `${sync.title}: resolving merge conflicts (attempt ${sync.attempt}/${sync.attempts}, agent running)`
+}
+
+// isSyncLog picks the conflict-resolution attempts out of a run's phase logs.
+export function isSyncLog(phase: string): boolean {
+  return SYNC_LOG.test(phase)
+}
+
 // stepName is the active Step under the corrected reading — the Activity when the
 // heartbeat carries one, else the checkpoint. Empty while queued or once merged.
 export function stepName(activity: string | undefined, phase: string): string {

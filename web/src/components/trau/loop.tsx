@@ -42,6 +42,7 @@ import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import type { PaneTab } from "@/components/trau/run-view";
 import { SegmentedControl } from "@/components/trau/segmented-control";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
+import { SyncStateLine } from "@/components/trau/sync-state";
 import { TerminalCard } from "@/components/trau/terminal-card";
 import { cn } from "@/lib/utils";
 import {
@@ -99,7 +100,7 @@ import {
   STOPPED_HEADLINE,
   STOPPED_HINT,
 } from "@/lib/runlive";
-import { stepName } from "@/lib/steps";
+import { stepName, syncState } from "@/lib/steps";
 import { runsQueryOptions, type PRStatus } from "@/lib/runs";
 import {
   builderView,
@@ -1365,6 +1366,22 @@ function FinishedSection({
   );
 }
 
+// LiveProgress is a live row's progress line: a base sync in flight names itself
+// and its attempt counter, every other phase walks the generic stepper.
+function LiveProgress({
+  phase,
+  activity,
+  detail,
+}: {
+  phase: string;
+  activity?: string;
+  detail?: string;
+}) {
+  const sync = syncState(activity, detail);
+  if (sync) return <SyncStateLine sync={sync} />;
+  return <PhaseStepper {...runSteps("live", phase, activity, detail)} />;
+}
+
 function RunningRow({
   repo,
   ticket,
@@ -1413,8 +1430,10 @@ function RunningRow({
         ) : null}
       </div>
       {phase || live?.activity ? (
-        <PhaseStepper
-          {...runSteps("live", phase ?? "", live?.activity, live?.detail)}
+        <LiveProgress
+          phase={phase ?? ""}
+          activity={live?.activity}
+          detail={live?.detail}
         />
       ) : (
         <p className="font-sans text-sm text-muted-foreground">
@@ -1510,8 +1529,10 @@ function FinalizeRow({
         <InternalTag source={finalize.source} />
       </div>
       {finalize.activity ? (
-        <PhaseStepper
-          {...runSteps("live", "", finalize.activity, finalize.detail)}
+        <LiveProgress
+          phase=""
+          activity={finalize.activity}
+          detail={finalize.detail}
         />
       ) : (
         <p className="font-sans text-sm text-muted-foreground">

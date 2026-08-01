@@ -2900,7 +2900,9 @@ func (p *Pipeline) checkoutExisting(ctx context.Context, branch string) error {
 // bounded repair-agent loop (labeled label<N>), then the merge is completed and
 // pushed. Returns false (with the merge aborted) when the conflicts could not be
 // resolved, so the caller leaves the PR to a human instead of shipping a broken
-// merge.
+// merge. The attempt counter it reports is live state, so it clears back to a bare
+// Merge on the way out — however the loop ended, the resolution is no longer in
+// flight and no caller is obliged to report something else next.
 func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, label string) (bool, error) {
 	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, base)
 	if err != nil {
@@ -2913,13 +2915,14 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 		return true, nil
 	}
 
-	p.setActivity(id, activity.Merge, label)
 	p.logf("  ⚠ %s conflicts with %s — resolving merge conflicts", branch, base)
 	maxAttempts := p.MaxRepairs
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
+	defer p.setActivity(id, activity.Merge, "")
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		p.setActivity(id, activity.Merge, fmt.Sprintf("%s%d/%d", label, attempt, maxAttempts))
 		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(p.prompts, id, base, branch)); err != nil {
 			return false, err
 		}
@@ -3744,7 +3747,9 @@ func providerOf(err error) string {
 // durable log, so per-activity wall-clock — including non-agent waits like CI,
 // invisible to agent_call durations — derives from event timestamp deltas. One
 // writer, two displays: the TUI stepper and the web read the same signal. detail
-// carries the raw call label (e.g. repair2), empty when there is none. Checkpoint
+// carries the raw call label (e.g. repair2), empty when there is none; a bounded
+// loop whose display names the attempt counter appends its bound to that label
+// (epic-sync1/2), leaving the call label recoverable as the prefix. Checkpoint
 // phases are untouched; Activity is its own signal.
 func (p *Pipeline) setActivity(id string, act activity.Activity, detail string) {
 	if p.Renderer != nil {
