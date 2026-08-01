@@ -80,11 +80,13 @@ function CommandDialog({
 function CommandInput({
   className,
   detachSearch,
+  leading,
   value,
   onValueChange,
   ...props
 }: React.ComponentProps<typeof CommandPrimitive.Input> & {
   detachSearch?: boolean
+  leading?: React.ReactNode
 }) {
   const inputClassName = cn(
     "placeholder:text-muted-foreground flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50",
@@ -96,6 +98,7 @@ function CommandInput({
       className="flex h-9 items-center gap-2 border-b px-3"
     >
       <Search className="size-4 shrink-0 opacity-50" />
+      {leading}
       {detachSearch ? (
         <input
           data-slot="command-input"
