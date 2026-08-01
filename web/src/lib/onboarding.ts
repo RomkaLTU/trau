@@ -269,21 +269,47 @@ export function trackerConfigValues(
   return keys
 }
 
+// One entry per member, carrying the root the write is addressed to alongside the
+// name it is labelled with: two members can share a basename, which the hub
+// resolves to neither repo.
+export interface MemberBaseBranch {
+  repo: string
+  root: string
+  branch: string
+}
+
 export interface EssentialsFields {
-  baseBranch: string
+  baseBranches: MemberBaseBranch[]
   readyLabel: string
   epicFlow: boolean
 }
 
-export function essentialsConfigWrites(fields: EssentialsFields): ConfigWrite[] {
-  const writes: ConfigWrite[] = []
-  if (fields.baseBranch.trim() !== '') {
-    writes.push({ key: 'BASE_BRANCH', value: fields.baseBranch.trim(), layer: 'project' })
+export interface EssentialsWrite extends ConfigWrite {
+  root: string
+}
+
+// Every member keeps its own BASE_BRANCH; the remaining keys land on the primary only.
+export function essentialsConfigWrites(fields: EssentialsFields): EssentialsWrite[] {
+  const primary = fields.baseBranches[0].root
+  const writes: EssentialsWrite[] = []
+  for (const { root, branch } of fields.baseBranches) {
+    if (branch.trim() === '') continue
+    writes.push({ root, key: 'BASE_BRANCH', value: branch.trim(), layer: 'project' })
   }
   if (fields.readyLabel.trim() !== '') {
-    writes.push({ key: 'READY_LABEL', value: fields.readyLabel.trim(), layer: 'project' })
+    writes.push({
+      root: primary,
+      key: 'READY_LABEL',
+      value: fields.readyLabel.trim(),
+      layer: 'project',
+    })
   }
-  writes.push({ key: 'EPIC_FLOW', value: fields.epicFlow ? '1' : '0', layer: 'project' })
+  writes.push({
+    root: primary,
+    key: 'EPIC_FLOW',
+    value: fields.epicFlow ? '1' : '0',
+    layer: 'project',
+  })
   return writes
 }
 

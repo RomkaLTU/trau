@@ -44,8 +44,10 @@ export function StepDone({
 
   const writtenKeys = [
     ...Object.keys(trackerConfigValues(provider, trackerFields)),
-    ...essentialsConfigWrites(essentials).map((w) => w.key),
+    ...new Set(essentialsConfigWrites(essentials).map((w) => w.key)),
   ]
+
+  const baseBranches = essentials.baseBranches
 
   const backlog =
     BACKLOG_NOTE[provider] ??
@@ -58,7 +60,13 @@ export function StepDone({
       label: 'tracker',
       value: trackerFields.binding ? `${provider} · ${trackerFields.binding}` : provider,
     },
-    { label: 'base branch', value: essentials.baseBranch },
+    {
+      label: 'base branch',
+      value:
+        baseBranches.length > 1
+          ? baseBranches.map((b) => `${b.repo}: ${b.branch}`).join(' · ')
+          : baseBranches[0].branch,
+    },
     { label: 'backlog', value: backlog },
   ]
 
