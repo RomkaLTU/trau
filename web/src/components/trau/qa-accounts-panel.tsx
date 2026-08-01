@@ -5,15 +5,24 @@ import { Check, Pencil, Plus, Trash2, TriangleAlert, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { TerminalCard } from '@/components/trau/terminal-card'
+import { WorkspaceBadge } from '@/components/trau/app-urls-panel'
 import { cn } from '@/lib/utils'
+import { appURLsQueryOptions, workspaceLabel, type AppURL } from '@/lib/app-urls'
 import {
+  attachedEntry,
   createQAAccount,
   deleteQAAccount,
   draftFor,
-  matchesQAAccount,
+  groupQAAccounts,
   qaAccountsQueryOptions,
   qaNotesQueryOptions,
   updateQAAccount,
@@ -24,27 +33,27 @@ import {
 
 const MASKED = '••••••••'
 
-export function QAAccountsSection({
-  repo,
-  query = '',
-}: {
-  repo: string
-  query?: string
-}) {
+const ANY_URL = 'any URL'
+
+// Radix rejects an empty option value, so the unattached choice carries a name.
+const UNATTACHED = 'any'
+
+export function QAAccountsSection({ repo }: { repo: string }) {
   const queryClient = useQueryClient()
   const accountsQuery = useQuery(qaAccountsQueryOptions(repo))
   const notesQuery = useQuery(qaNotesQueryOptions(repo))
+  const entriesQuery = useQuery(appURLsQueryOptions(repo))
   const [editing, setEditing] = useState<number | 'new' | null>(null)
   const [notesEditing, setNotesEditing] = useState(false)
 
   const accounts = accountsQuery.data ?? []
+  const entries = entriesQuery.data ?? []
   const notes = notesQuery.data?.notes ?? ''
-  const searching = query !== ''
-  const visible = accounts.filter((a) => matchesQAAccount(a, query))
-  if (searching && visible.length === 0) return null
+  const groups = groupQAAccounts(accounts, entries)
 
-  const error = accountsQuery.error ?? notesQuery.error
-  const isPending = accountsQuery.isPending || notesQuery.isPending
+  const error = accountsQuery.error ?? notesQuery.error ?? entriesQuery.error
+  const isPending =
+    accountsQuery.isPending || notesQuery.isPending || entriesQuery.isPending
 
   const done = () => {
     setEditing(null)
@@ -57,7 +66,9 @@ export function QAAccountsSection({
         <div className="flex flex-col">
           <p className="border-b border-border/60 px-4 py-2 text-xs leading-relaxed text-muted-foreground">
             Login accounts the verify phase uses to sign into the app in the
-            browser. Secrets are write-only: settable here, never shown back.
+            browser. An account attached to an app URL is offered only to the
+            verify driving it; one left on {ANY_URL} is offered to all of them.
+            Secrets are write-only: settable here, never shown back.
           </p>
           {error ? (
             <div className="flex flex-col items-start gap-2 px-4 py-3">
@@ -75,6 +86,7 @@ export function QAAccountsSection({
                 onClick={() => {
                   void accountsQuery.refetch()
                   void notesQuery.refetch()
+                  void entriesQuery.refetch()
                 }}
               >
                 retry
@@ -86,57 +98,65 @@ export function QAAccountsSection({
             </p>
           ) : (
             <>
-              {accounts.length === 0 && !searching && (
+              {accounts.length === 0 && entries.length === 0 && (
                 <p className="px-4 py-3 font-mono text-xs text-muted-foreground">
                   No QA accounts yet — add the logins the verify phase should
                   use to sign into the app in the browser.
                 </p>
               )}
-              {visible.map((a) => (
-                <AccountRow
-                  key={a.id}
-                  repo={repo}
-                  account={a}
-                  editing={editing === a.id}
-                  onToggle={() => setEditing(editing === a.id ? null : a.id)}
-                  onDone={done}
-                />
+              {groups.map((group) => (
+                <div key={group.entry?.id ?? 'unattached'}>
+                  {entries.length > 0 && (
+                    <GroupHeader
+                      entry={group.entry}
+                      empty={group.accounts.length === 0}
+                    />
+                  )}
+                  {group.accounts.map((a) => (
+                    <AccountRow
+                      key={a.id}
+                      repo={repo}
+                      account={a}
+                      entries={entries}
+                      editing={editing === a.id}
+                      onToggle={() => setEditing(editing === a.id ? null : a.id)}
+                      onDone={done}
+                    />
+                  ))}
+                </div>
               ))}
               {editing === 'new' && (
                 <div className="border-b border-border/60 px-4 py-2.5">
                   <AccountEditor
                     account={null}
+                    entries={entries}
                     write={(draft) => createQAAccount(repo, draft)}
                     onDone={done}
                     onCancel={() => setEditing(null)}
                   />
                 </div>
               )}
-              {!searching && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setEditing(editing === 'new' ? null : 'new')}
-                    aria-expanded={editing === 'new'}
-                    className="flex w-full items-center gap-2 border-b border-border/60 px-4 py-2 font-mono text-xs text-faint transition-colors hover:bg-secondary/40 hover:text-muted-foreground"
-                  >
-                    <Plus className="size-3.5" aria-hidden="true" />
-                    add account
-                  </button>
-                  <NotesRow
-                    repo={repo}
-                    notes={notes}
-                    editing={notesEditing}
-                    onToggle={() => setNotesEditing(!notesEditing)}
-                    onDone={() => {
-                      setNotesEditing(false)
-                      void queryClient.invalidateQueries({
-                        queryKey: ['qa-notes', repo],
-                      })
-                    }}
-                  />
-                </>
-              )}
+              <button
+                type="button"
+                onClick={() => setEditing(editing === 'new' ? null : 'new')}
+                aria-expanded={editing === 'new'}
+                className="flex w-full items-center gap-2 border-b border-border/60 px-4 py-2 font-mono text-xs text-faint transition-colors hover:bg-secondary/40 hover:text-muted-foreground"
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+                add account
+              </button>
+              <NotesRow
+                repo={repo}
+                notes={notes}
+                editing={notesEditing}
+                onToggle={() => setNotesEditing(!notesEditing)}
+                onDone={() => {
+                  setNotesEditing(false)
+                  void queryClient.invalidateQueries({
+                    queryKey: ['qa-notes', repo],
+                  })
+                }}
+              />
             </>
           )}
         </div>
@@ -145,15 +165,92 @@ export function QAAccountsSection({
   )
 }
 
+function GroupHeader({
+  entry,
+  empty,
+}: {
+  entry: AppURL | null
+  empty: boolean
+}) {
+  return (
+    <div className="flex items-center gap-2.5 border-b border-border/60 bg-secondary/20 px-4 py-1.5">
+      {entry ? (
+        <>
+          <WorkspaceBadge workspace={entry.workspace} />
+          <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
+            {entryName(entry)}
+          </span>
+        </>
+      ) : (
+        <span className="font-mono text-xs text-muted-foreground">{ANY_URL}</span>
+      )}
+      {empty && (
+        <span className="ml-auto shrink-0 font-mono text-[0.7rem] text-faint">
+          no accounts
+        </span>
+      )}
+    </div>
+  )
+}
+
+function AttachmentSelect({
+  entries,
+  selected,
+  onChange,
+}: {
+  entries: AppURL[]
+  selected: AppURL | null
+  onChange: (id: number | null) => void
+}) {
+  return (
+    <Select
+      value={selected === null ? UNATTACHED : String(selected.id)}
+      onValueChange={(v) => onChange(v === UNATTACHED ? null : Number(v))}
+    >
+      <SelectTrigger
+        size="sm"
+        className="w-full font-mono text-xs"
+        aria-label="QA account app URL"
+      >
+        {selected ? entryOption(selected) : ANY_URL}
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={UNATTACHED} className="font-mono text-xs">
+          {ANY_URL}
+        </SelectItem>
+        {entries.map((entry) => (
+          <SelectItem
+            key={entry.id}
+            value={String(entry.id)}
+            className="font-mono text-xs"
+          >
+            {entryOption(entry)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+function entryName(entry: AppURL): string {
+  return entry.label !== '' ? entry.label : entry.url
+}
+
+function entryOption(entry: AppURL): string {
+  return `${workspaceLabel(entry.workspace)} · ${entryName(entry)}`
+}
+
 function AccountRow({
   repo,
   account,
+  entries,
   editing,
   onToggle,
   onDone,
 }: {
   repo: string
   account: QAAccount
+  entries: AppURL[]
   editing: boolean
   onToggle: () => void
   onDone: () => void
@@ -167,7 +264,7 @@ function AccountRow({
   return (
     <div
       className={cn(
-        'group border-b border-border/60 px-4 py-2.5 last:border-0',
+        'group border-b border-border/60 px-4 py-2.5',
         editing && 'bg-secondary/20',
       )}
     >
@@ -234,6 +331,7 @@ function AccountRow({
         <div className="mt-2">
           <AccountEditor
             account={account}
+            entries={entries}
             write={(draft) => updateQAAccount(repo, account.id, draft)}
             onDone={onDone}
             onCancel={onToggle}
@@ -257,18 +355,21 @@ function AccountRow({
 
 function AccountEditor({
   account,
+  entries,
   write,
   onDone,
   onCancel,
 }: {
   account: QAAccount | null
+  entries: AppURL[]
   write: (draft: QAAccountDraft) => Promise<void>
   onDone: () => void
   onCancel: () => void
 }) {
   const [draft, setDraft] = useState(() => draftFor(account))
+  const attached = attachedEntry(entries, draft.app_url_id)
   const save = useMutation({
-    mutationFn: () => write(draft),
+    mutationFn: () => write({ ...draft, app_url_id: attached?.id ?? null }),
     onSuccess: onDone,
   })
 
@@ -315,6 +416,15 @@ function AccountEditor({
             autoComplete="new-password"
             aria-label="QA account secret"
             className={fieldClass}
+          />
+        </FieldLabel>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <FieldLabel text="app url">
+          <AttachmentSelect
+            entries={entries}
+            selected={attached}
+            onChange={(id) => set({ app_url_id: id })}
           />
         </FieldLabel>
       </div>

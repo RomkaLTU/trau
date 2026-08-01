@@ -252,7 +252,9 @@ VERIFY_PROOFS=on             # on = when browser verify drives the app, record a
 PROOF_RETENTION_DAYS=14      # days the hub keeps a run's raw local trace and its trau-proofs branch images
                              # before the daily sweep prunes them. 0 = keep forever. Hub-stored screenshots
                              # and rendered videos are small and always kept.
-APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
+APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify). Fallback
+                             # only: app URL entries stored on the hub for the repo replace this and
+                             # APP_URLS wholesale (ADR 0026).
 APP_URLS=                    # multi-app monorepos: per-workspace app URLs as comma-separated
                              # <workspace>=<url> pairs (e.g. web=http://localhost:3000,api=http://localhost:3001).
                              # A workspace is named by its manifest package name, directory path, or

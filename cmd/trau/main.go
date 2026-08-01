@@ -1208,6 +1208,17 @@ func newQAFetcher(cfg config.Config, repoRoot string) func(context.Context) (hub
 	}
 }
 
+// newAppURLFetcher reads the repo's stored app URL entries from the serve hub.
+// The pipeline calls it once at every ticket-run start; entries replace the
+// configured APP_URL/APP_URLS wholesale and a failure there falls back to them
+// with one logged warning (ADR 0026).
+func newAppURLFetcher(cfg config.Config, repoRoot string) func(context.Context) ([]hubclient.AppURL, error) {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context) ([]hubclient.AppURL, error) {
+		return hub.AppURLs(ctx, repoName(repoRoot))
+	}
+}
+
 // newQASaver stores a credential the verifier discovered inside the repo under
 // test on the serve hub, stamped agent-captured, so the next run's roster is
 // prefilled.
@@ -1516,6 +1527,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Events:               log,
 		FetchPrompts:         newPromptFetcher(cfg, repoRoot),
 		FetchQAAccounts:      newQAFetcher(cfg, repoRoot),
+		FetchAppURLs:         newAppURLFetcher(cfg, repoRoot),
 		SaveQAAccount:        newQASaver(cfg, repoRoot),
 		UploadProofs:         newProofUploader(cfg, repoRoot),
 		PublishProofs:        newProofsPublisher(cfg, repoRoot),

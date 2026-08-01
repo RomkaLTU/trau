@@ -20,6 +20,7 @@ import {
   shadowNote,
   themeRoleLabel,
   valueWarning,
+  visibleKeys,
 } from '@/lib/settings'
 
 function key(overrides: Partial<ConfigKey> & { key: string }): ConfigKey {
@@ -369,6 +370,18 @@ describe('comboboxFreeEntry', () => {
   it('offers nothing for a blank query', () => {
     expect(comboboxFreeEntry('', models)).toBeNull()
     expect(comboboxFreeEntry('   ', models)).toBeNull()
+  })
+})
+
+describe('visibleKeys', () => {
+  it('drops the app URL fallback keys, which the App URLs page now owns', () => {
+    const kept = visibleKeys([
+      key({ key: 'APP_URL', group: 'Verification' }),
+      key({ key: 'APP_URLS', group: 'Verification' }),
+      key({ key: 'BROWSER_VERIFY', group: 'Verification' }),
+    ])
+
+    expect(kept.map((k) => k.key)).toEqual(['BROWSER_VERIFY'])
   })
 })
 

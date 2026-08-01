@@ -13,7 +13,11 @@ import {
 import { toast } from 'sonner'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
-import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
+import {
+  NAV_GROUPS,
+  UNLISTED_ITEMS,
+  type NavItem,
+} from '@/components/trau/nav-items'
 import { StatusPill } from '@/components/trau/status-pill'
 import { useResolvedTheme, useTheme } from '@/components/trau/theme-toggle'
 import {
@@ -78,7 +82,10 @@ import { checkForUpdates, updateQueryOptions } from '@/lib/update'
 const GROUP_HEADING =
   '[&_[cmdk-group-heading]]:font-mono [&_[cmdk-group-heading]]:text-[0.65rem] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.2em] [&_[cmdk-group-heading]]:font-normal'
 
-const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
+const NAV_ITEMS = [
+  ...NAV_GROUPS.flatMap((group) => group.items),
+  ...UNLISTED_ITEMS,
+]
 
 type IssueRow = SearchResult & { repo?: string }
 type RunRow = Run & { repo?: string }

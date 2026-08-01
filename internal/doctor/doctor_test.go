@@ -744,8 +744,9 @@ func TestCheckBrowserVerify(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TRAU_HOME", t.TempDir())
 			rr := newTestRunner()
-			checkBrowserVerify(tc.cfg, rr)
+			checkBrowserVerify(tc.cfg, "/repos/acme", rr)
 			if tc.status == "" {
 				if len(rr.r.Checks) != 0 {
 					t.Fatalf("expected no check, got %+v", rr.r.Checks)
@@ -763,6 +764,59 @@ func TestCheckBrowserVerify(t *testing.T) {
 				t.Errorf("message %q should contain %q", c.Message, tc.wantMsg)
 			}
 		})
+	}
+}
+
+// TestCheckBrowserVerifyStoredAppURLs covers the hub-managed surface: an app URL
+// entry for the repo is a browser target on its own, and with neither surface
+// carrying one the warning names both.
+func TestCheckBrowserVerifyStoredAppURLs(t *testing.T) {
+	const repoRoot = "/repos/acme"
+
+	t.Run("stored entry passes without APP_URL", func(t *testing.T) {
+		t.Setenv("TRAU_HOME", t.TempDir())
+		seedAppURL(t, repoRoot, "http://localhost:3000")
+
+		rr := newTestRunner()
+		checkBrowserVerify(config.Config{BrowserVerify: "always"}, repoRoot, rr)
+
+		c := lastCheck(t, rr)
+		if c.Status != pass {
+			t.Fatalf("status = %q, want pass (%s)", c.Status, c.Message)
+		}
+		if !strings.Contains(c.Message, "hub-managed app URL") {
+			t.Errorf("message %q should name the hub-managed surface", c.Message)
+		}
+	})
+
+	t.Run("another repo's entry does not count", func(t *testing.T) {
+		t.Setenv("TRAU_HOME", t.TempDir())
+		seedAppURL(t, "/repos/other", "http://localhost:3000")
+
+		rr := newTestRunner()
+		checkBrowserVerify(config.Config{BrowserVerify: "always"}, repoRoot, rr)
+
+		c := lastCheck(t, rr)
+		if c.Status != warn {
+			t.Fatalf("status = %q, want warn (%s)", c.Status, c.Message)
+		}
+		if !strings.Contains(c.Message, "hub stores no app URL") || !strings.Contains(c.Message, "APP_URL is empty") {
+			t.Errorf("message %q should name both surfaces", c.Message)
+		}
+	})
+}
+
+// seedAppURL brings the hub database into existence the way serve does and files
+// one app URL entry for repoRoot, so the check reads a real store.
+func seedAppURL(t *testing.T, repoRoot, url string) {
+	t.Helper()
+	db, err := hubdb.Open(registry.Home())
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := hubstore.NewAppURLs(db.SQL()).Create(repoRoot, hubstore.AppURLInput{URL: url}); err != nil {
+		t.Fatalf("seed app url: %v", err)
 	}
 }
 

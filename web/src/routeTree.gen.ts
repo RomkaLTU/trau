@@ -23,6 +23,7 @@ import { Route as InboxRouteImport } from './routes/inbox'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as BacklogRouteImport } from './routes/backlog'
 import { Route as AtlasRouteImport } from './routes/atlas'
+import { Route as AppUrlsRouteImport } from './routes/app-urls'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProjectsNewRouteImport } from './routes/projects.new'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
@@ -99,6 +100,11 @@ const AtlasRoute = AtlasRouteImport.update({
   path: '/atlas',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppUrlsRoute = AppUrlsRouteImport.update({
+  id: '/app-urls',
+  path: '/app-urls',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -128,6 +134,7 @@ const TeamRunsRepoWriterTicketRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/app-urls': typeof AppUrlsRoute
   '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
@@ -149,6 +156,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/app-urls': typeof AppUrlsRoute
   '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
@@ -171,6 +179,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/app-urls': typeof AppUrlsRoute
   '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
@@ -194,6 +203,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/app-urls'
     | '/atlas'
     | '/backlog'
     | '/costs'
@@ -215,6 +225,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/app-urls'
     | '/atlas'
     | '/backlog'
     | '/costs'
@@ -236,6 +247,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/app-urls'
     | '/atlas'
     | '/backlog'
     | '/costs'
@@ -258,6 +270,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AppUrlsRoute: typeof AppUrlsRoute
   AtlasRoute: typeof AtlasRoute
   BacklogRoute: typeof BacklogRoute
   CostsRoute: typeof CostsRoute
@@ -378,6 +391,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AtlasRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/app-urls': {
+      id: '/app-urls'
+      path: '/app-urls'
+      fullPath: '/app-urls'
+      preLoaderRoute: typeof AppUrlsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -418,6 +438,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AppUrlsRoute: AppUrlsRoute,
   AtlasRoute: AtlasRoute,
   BacklogRoute: BacklogRoute,
   CostsRoute: CostsRoute,

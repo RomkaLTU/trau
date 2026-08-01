@@ -30,7 +30,8 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
   'Per-phase routing':
     'Override model, effort, and tool restrictions per pipeline phase.',
   'Pipeline behavior': 'Iteration limits and optional pipeline phases.',
-  Verification: 'How finished work is checked before handoff.',
+  Verification:
+    'How finished work is checked before handoff. The URLs browser verify drives live on the App URLs card on Overview.',
   'Cost caps': 'Hard spend limits per ticket and per day.',
   'Grilling & triage': 'Pre-run readiness checks on incoming tickets.',
   Skills: 'Skills required for runs and how they are installed.',
@@ -259,6 +260,14 @@ export function comboboxFreeEntry(
   const trimmed = query.trim()
   if (trimmed === '') return null
   return suggestions.includes(trimmed) ? null : trimmed
+}
+
+// App URLs are edited as hub entries on their own page, so their ini fallback
+// keys stay out of Settings even though they remain editable in the file.
+const HIDDEN_KEYS = new Set(['APP_URL', 'APP_URLS'])
+
+export function visibleKeys(keys: ConfigKey[]): ConfigKey[] {
+  return keys.filter((k) => !HIDDEN_KEYS.has(k.key))
 }
 
 export function deriveSections(keys: ConfigKey[]): Section[] {

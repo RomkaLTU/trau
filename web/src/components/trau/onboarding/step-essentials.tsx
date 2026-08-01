@@ -49,7 +49,7 @@ export function StepEssentials({
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1.5">
         <h2 className="font-mono text-base text-foreground">The essentials</h2>
-        <Hint>Sensible defaults are filled in — tweak only what you need, then seed the backlog.</Hint>
+        <Hint>Sensible defaults are filled in — tweak only what you need, then carry on.</Hint>
       </div>
 
       <div className="flex flex-col gap-2">
@@ -101,7 +101,7 @@ export function StepEssentials({
           Back
         </Button>
         <Button type="button" onClick={() => commit.mutate()} disabled={!canContinue || commit.isPending}>
-          {commit.isPending ? 'Saving…' : 'Save & seed backlog'}
+          {commit.isPending ? 'Saving…' : 'Save & continue'}
           <ArrowRight className="size-4" />
         </Button>
       </div>

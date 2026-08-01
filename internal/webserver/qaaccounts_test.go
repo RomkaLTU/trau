@@ -187,8 +187,9 @@ func TestQANotesRoundTrip(t *testing.T) {
 }
 
 func TestQARosterReturnsFullSecrets(t *testing.T) {
-	_, base := qaServer(t)
-	createQAAccount(t, base, QAAccountRequest{Label: "admin", Username: "admin@example.test", Secret: "full-secret", Description: "billing"})
+	ts, base := qaServer(t)
+	entry := createAppURL(t, appURLBase(ts), AppURLRequest{URL: "http://localhost:3000"})
+	createQAAccount(t, base, QAAccountRequest{Label: "admin", Username: "admin@example.test", Secret: "full-secret", Description: "billing", AppURLID: &entry.ID})
 	res := putJSON(t, base+"/notes", QANotesRequest{Notes: "login at /auth"})
 	_ = res.Body.Close()
 
@@ -204,9 +205,58 @@ func TestQARosterReturnsFullSecrets(t *testing.T) {
 	if len(roster.Accounts) != 1 || roster.Accounts[0].Secret != "full-secret" {
 		t.Fatalf("roster did not return the full secret: %+v", roster.Accounts)
 	}
+	if roster.Accounts[0].AppURLID != entry.ID {
+		t.Errorf("roster account app url = %d, want %d", roster.Accounts[0].AppURLID, entry.ID)
+	}
+	if len(roster.AppURLs) != 1 || roster.AppURLs[0].ID != entry.ID {
+		t.Errorf("roster app urls = %+v, want the repo's one entry", roster.AppURLs)
+	}
 	if roster.Notes != "login at /auth" {
 		t.Errorf("roster notes = %q", roster.Notes)
 	}
+}
+
+// TestQAAccountAppURLAttachment covers the link to the app a login opens: a
+// create and an update take an entry the repo holds, a null clears it, and an id
+// the repo does not hold is refused rather than stored.
+func TestQAAccountAppURLAttachment(t *testing.T) {
+	ts, base := qaServer(t)
+	entry := createAppURL(t, appURLBase(ts), AppURLRequest{URL: "http://localhost:3000"})
+
+	created := createQAAccount(t, base, QAAccountRequest{Label: "shopper", Secret: "pw", AppURLID: &entry.ID})
+	if created.AppURLID == nil || *created.AppURLID != entry.ID {
+		t.Fatalf("created attachment = %v, want %d", created.AppURLID, entry.ID)
+	}
+
+	account := base + "/accounts/" + strconv.FormatInt(created.ID, 10)
+	res := patchJSON(t, account, QAAccountRequest{Label: "shopper"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("detach status = %d, want 200", res.StatusCode)
+	}
+	var detached QAAccountView
+	if err := json.NewDecoder(res.Body).Decode(&detached); err != nil {
+		t.Fatalf("decode detached account: %v", err)
+	}
+	if detached.AppURLID != nil {
+		t.Errorf("detached attachment = %v, want null", *detached.AppURLID)
+	}
+
+	ghost := entry.ID + 99
+	unknown := postJSON(t, base+"/accounts", QAAccountRequest{Label: "ghost", AppURLID: &ghost})
+	_ = unknown.Body.Close()
+	if unknown.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("create with unknown app url status = %d, want 422", unknown.StatusCode)
+	}
+	unknownUpdate := patchJSON(t, account, QAAccountRequest{Label: "shopper", AppURLID: &ghost})
+	_ = unknownUpdate.Body.Close()
+	if unknownUpdate.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("update with unknown app url status = %d, want 422", unknownUpdate.StatusCode)
+	}
+}
+
+func appURLBase(ts *httptest.Server) string {
+	return ts.URL + APIPrefix + "/repos/acme/app-urls"
 }
 
 func TestQAAccountUnknownRepo(t *testing.T) {
