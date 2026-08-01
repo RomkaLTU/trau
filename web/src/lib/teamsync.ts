@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { matchesTerms } from './settings'
 
 export interface TeamSyncStatus {
   repo: string
@@ -57,9 +58,7 @@ const TEAM_SYNC_TERMS = [
 ]
 
 export function matchesTeamSync(query: string): boolean {
-  if (query === '') return true
-  const q = query.toLowerCase()
-  return TEAM_SYNC_TERMS.some((term) => term.includes(q))
+  return matchesTerms(query, TEAM_SYNC_TERMS)
 }
 
 export function lastSyncLabel(status: TeamSyncStatus): string {
