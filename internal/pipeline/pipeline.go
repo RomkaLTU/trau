@@ -1536,16 +1536,37 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	defer cancel()
 
 	branch := p.featureBranch(ctx, id)
-	_, _ = p.checkoutBase(ctx, true)
-	if branch != "" && branch != p.Base {
-		_ = p.Git.DeleteBranch(ctx, branch)
-		_ = p.Git.DeletePushedBranch(ctx, p.Remote, branch)
+	for _, a := range p.attempts(id) {
+		_ = p.baseCheckout(ctx, a, true)
+		if branch != "" && branch != p.Base {
+			_ = a.git.DeleteBranch(ctx, branch)
+			_ = a.git.DeletePushedBranch(ctx, p.Remote, branch)
+		}
 	}
+	p.discardFolderWork(ctx, id)
 	p.clearLocalState(id)
 	if branch != "" {
 		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
 	} else {
 		p.logf("  reset %s: cleared saved state", id)
+	}
+}
+
+// discardFolderWork throws away the loose work a folder run left behind: branches
+// are cut only at ship time, so a run reset while parked in build has nothing to
+// delete but plenty still uncommitted in the children it touched. Only the run's
+// own footprint is cleaned, so a child holding an operator's WIP is left exactly as
+// it was found. A ticket that never reached a phase recorded no census, and nothing
+// in any child is known to be its.
+func (p *Pipeline) discardFolderWork(ctx context.Context, id string) {
+	if !p.FolderRepo || p.State.Get(id, "PHASE") == "" {
+		return
+	}
+	p.startFolderRun(ctx, id, true)
+	for _, c := range p.folderRunFootprint(ctx, id) {
+		g := p.childGit(c)
+		_ = g.Checkout(ctx, p.Base, true)
+		_ = g.Clean(ctx)
 	}
 }
 
@@ -1566,23 +1587,28 @@ func (p *Pipeline) clearLocalState(id string) {
 // PurgeLocal drops what a hard-deleted ticket left on this machine: its feature
 // branch, local and remote, and its run directory. It is deliberately narrower
 // than a reset — the hub's run history (checkpoint, phase logs, artifacts) stays,
-// so what ran is still browsable once the ticket it ran for is gone, and the
-// tracker is never touched because a tombstoned ticket's upstream issue is not
-// trau's to reset. It returns the cleanup steps that failed so the hub that
-// ordered it can log them; the purge itself has already happened either way.
+// so what ran is still browsable once the ticket it ran for is gone; no Child
+// repo's uncommitted work is discarded, since a purge undoes a ticket rather than
+// a working tree; and the tracker is never touched because a tombstoned ticket's
+// upstream issue is not trau's to reset. It returns the cleanup steps that failed
+// so the hub that ordered it can log them; the purge itself has already happened
+// either way.
 func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
 	ctx, cancel := detachedCleanup(ctx)
 	defer cancel()
 
 	branch := p.featureBranch(ctx, id)
-	_, _ = p.checkoutBase(ctx, true)
 
 	var errs []error
-	if branch != "" && branch != p.Base {
-		if err := p.Git.DeleteBranch(ctx, branch); err != nil {
-			errs = append(errs, fmt.Errorf("delete branch %s: %w", branch, err))
+	for _, a := range p.attempts(id) {
+		_ = p.baseCheckout(ctx, a, false)
+		if branch == "" || branch == p.Base {
+			continue
 		}
-		if err := p.dropPushedBranch(ctx, branch); err != nil {
+		if err := a.git.DeleteBranch(ctx, branch); err != nil {
+			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.inRepo(), err))
+		}
+		if err := p.dropPushedBranch(ctx, a, branch); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -1602,19 +1628,20 @@ func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
 	return nil
 }
 
-// dropPushedBranch deletes branch from the remote, when the remote still has it.
-// A remote that pruned it already is nothing to report; one that cannot be reached
-// is, since the branch then outlives the ticket unseen.
-func (p *Pipeline) dropPushedBranch(ctx context.Context, branch string) error {
-	exists, err := p.Git.RemoteBranchExists(ctx, p.Remote, branch)
+// dropPushedBranch deletes branch from the attempt's remote, when the remote still
+// has it. A remote that pruned it already is nothing to report; one that cannot be
+// reached is, since the branch then outlives the ticket unseen — and a folder run
+// has one remote per child, so the failure names the child it came from.
+func (p *Pipeline) dropPushedBranch(ctx context.Context, a attempt, branch string) error {
+	exists, err := a.git.RemoteBranchExists(ctx, p.Remote, branch)
 	if err != nil {
-		return fmt.Errorf("look up %s/%s: %w", p.Remote, branch, err)
+		return fmt.Errorf("look up %s/%s%s: %w", p.Remote, branch, a.inRepo(), err)
 	}
 	if !exists {
 		return nil
 	}
-	if err := p.Git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
-		return fmt.Errorf("delete %s/%s: %w", p.Remote, branch, err)
+	if err := a.git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
+		return fmt.Errorf("delete %s/%s%s: %w", p.Remote, branch, a.inRepo(), err)
 	}
 	return nil
 }

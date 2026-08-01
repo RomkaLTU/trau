@@ -165,7 +165,7 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
+	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); queueStartConflict(err) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	} else if err != nil {
@@ -173,6 +173,14 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.writeQueue(w, http.StatusOK, root)
+}
+
+// queueStartConflict reports the refusals a queue start answers 409 to rather
+// than 500: a queue with nothing runnable in it, and a repo whose working tree
+// another loop already holds.
+func queueStartConflict(err error) bool {
+	var collision folderCollisionError
+	return errors.Is(err, queue.ErrNoRunnableItems) || errors.As(err, &collision)
 }
 
 func normalizeOnFault(raw string) (string, error) {
@@ -190,8 +198,9 @@ func normalizeOnFault(raw string) (string, error) {
 // route and the MCP start_queue/pause_queue tools. A start is refused with
 // queue.ErrNoRunnableItems unless the queue holds a pending or paused item, so an
 // empty or fully settled queue is never left armed waiting for work a later add
-// would silently pick up. Pausing only clears the flag, so the loop stops after
-// the current child exits. onFault must already be normalized.
+// would silently pick up, and with a folderCollisionError when a loop already
+// holds a working tree this repo shares. Pausing only clears the flag, so the loop
+// stops after the current child exits. onFault must already be normalized.
 func (s *Server) setDraining(root string, draining, noResume bool, onFault string) error {
 	store := s.stores.Queue(root)
 	if !draining {
@@ -199,6 +208,9 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
 			return fmt.Errorf("set draining: %w", err)
 		}
 		return nil
+	}
+	if collision, blocked := s.folderCollision(root); blocked {
+		return collision
 	}
 	if err := store.Arm(noResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
 		return err
@@ -307,6 +319,10 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.drain.repoLive(root) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "a loop is already running in this repo — wait for it to finish"})
+		return
+	}
+	if collision, blocked := s.folderCollision(root); blocked {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": collision.Error()})
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))

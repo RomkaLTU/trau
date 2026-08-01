@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/forkpoint"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -29,8 +32,12 @@ const diffHeader = "diff --git "
 
 // errNoDiffSource is the diff endpoint's 404: the run left neither a worktree on its
 // branch nor the branch itself, or its base shares no history with it, so there is
-// nothing to diff.
-var errNoDiffSource = errors.New("no worktree or branch to diff for this run")
+// nothing to diff. errNoDiffBase is its sibling: nothing the run could be diffed
+// against resolves to a commit.
+var (
+	errNoDiffSource = errors.New("no worktree or branch to diff for this run")
+	errNoDiffBase   = errors.New("no base branch to diff this run against")
+)
 
 // RunDiff is the /api/v1/repos/{repo}/runs/{ticket}/diff resource: everything a run
 // has changed against the branch it diverged from. Source is "live" while the
@@ -49,10 +56,13 @@ type RunDiff struct {
 
 // RunDiffFile is one changed file: its post-image path (with OldPath carrying the
 // pre-image of a rename), its line counts, and its unified patch. Patch is empty for
-// a binary file and for every file past the response's byte caps.
+// a binary file and for every file past the response's byte caps. Repo names the
+// Child repo the file came from in a Folder repo run, whose paths are prefixed
+// with it, and is absent for a plain Repo.
 type RunDiffFile struct {
 	Path      string `json:"path"`
 	OldPath   string `json:"old_path,omitempty"`
+	Repo      string `json:"repo,omitempty"`
 	Status    string `json:"status"`
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
@@ -82,13 +92,8 @@ func (s *Server) handleRunDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no branch recorded for this run"})
 		return
 	}
-	anchor, ok := s.diffAnchor(r.Context(), repo, row.Data)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no base branch to diff this run against"})
-		return
-	}
-	diff, err := runDiff(r.Context(), repo.Root, anchor, row.Branch)
-	if errors.Is(err, errNoDiffSource) {
+	diff, err := s.runDiffFor(r.Context(), repo, row)
+	if errors.Is(err, errNoDiffSource) || errors.Is(err, errNoDiffBase) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
@@ -99,17 +104,112 @@ func (s *Server) handleRunDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, diff)
 }
 
-// diffAnchor reads the run's anchor off its checkpoint. The base is its BASE for as
+// runDiffFor computes the run's diff in the repo it ran in: the repo itself for a
+// plain Repo, and every Child repo a Folder repo run left work in.
+func (s *Server) runDiffFor(ctx context.Context, repo registry.Repo, row hubstore.CheckpointRow) (RunDiff, error) {
+	if census := folderrepo.Scan(repo.Root); census.IsFolder {
+		return s.folderRunDiff(ctx, repo, census.Children, row)
+	}
+	anchor, ok := s.diffAnchor(ctx, repo, repo.Root, row.Data)
+	if !ok {
+		return RunDiff{}, errNoDiffBase
+	}
+	diff, err := rawRunDiff(ctx, repo.Root, anchor, row.Branch)
+	if err != nil {
+		return RunDiff{}, err
+	}
+	diff.Truncated = capPatches(diff.Files)
+	return diff, nil
+}
+
+// folderRunDiff merges one diff per Child repo the run left work in into a single
+// flat response, each file's path rooted under the child it came from so the
+// pane's tree shows every changed child as a top-level folder. The two SHAs stay
+// empty — N repositories have N of each — while base and branch are the one base
+// and the one branch name every child shares. The byte caps apply to the merged
+// response, not to each child's share of it.
+func (s *Server) folderRunDiff(ctx context.Context, repo registry.Repo, children []folderrepo.Child, row hubstore.CheckpointRow) (RunDiff, error) {
+	merged := RunDiff{Source: "committed", Branch: row.Branch, Files: []RunDiffFile{}}
+	targets, shipped := folderDiffChildren(ctx, children, row)
+	// A folder run cuts each child's branch at ship time, so until then its work is
+	// still loose in the children's trees and the worktree is the only place it can
+	// be read — there is no ref for rawRunDiff to find.
+	childDiff := worktreeDiff
+	if shipped {
+		childDiff = rawRunDiff
+	}
+	answered := false
+	for _, c := range targets {
+		anchor, ok := s.diffAnchor(ctx, repo, c.Path, row.Data)
+		if !ok {
+			continue
+		}
+		diff, err := childDiff(ctx, c.Path, anchor, row.Branch)
+		if errors.Is(err, errNoDiffSource) {
+			continue
+		}
+		if err != nil {
+			return RunDiff{}, err
+		}
+		answered = true
+		if diff.Source == "live" {
+			merged.Source = "live"
+		}
+		if merged.Base == "" {
+			merged.Base = diff.Base
+		}
+		merged.Files = append(merged.Files, prefixDiffFiles(c.Name, diff.Files)...)
+	}
+	if !answered {
+		return RunDiff{}, errNoDiffSource
+	}
+	merged.Truncated = capPatches(merged.Files)
+	return merged, nil
+}
+
+// folderDiffChildren names the Child repos a folder run's diff covers, and
+// whether ship is what named them: the ship set once ship has run, and otherwise
+// every child still carrying the run's work — the same reading the run itself
+// makes of its children.
+func folderDiffChildren(ctx context.Context, children []folderrepo.Child, row hubstore.CheckpointRow) ([]folderrepo.Child, bool) {
+	if shipped := checkpointField(row.Data, "SHIP_TARGETS"); shipped != "" {
+		named := strings.Split(shipped, ",")
+		return slices.DeleteFunc(slices.Clone(children), func(c folderrepo.Child) bool {
+			return !slices.Contains(named, c.Name)
+		}), true
+	}
+	start := folderrepo.ParseCensus(checkpointField(row.Data, "START_DIRT"))
+	return folderrepo.Carrying(ctx, children, start, row.Branch, folderrepo.ReadState), false
+}
+
+// prefixDiffFiles roots one Child repo's files under its own name. Only the path
+// fields move — the patch text keeps the a/… b/… headers git wrote, which are
+// relative to the child.
+func prefixDiffFiles(name string, files []RunDiffFile) []RunDiffFile {
+	out := make([]RunDiffFile, 0, len(files))
+	for _, f := range files {
+		f.Repo = name
+		f.Path = name + "/" + f.Path
+		if f.OldPath != "" {
+			f.OldPath = name + "/" + f.OldPath
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// diffAnchor reads the run's anchor off its checkpoint, resolved in root — the
+// repo itself, or one Child repo of a Folder repo. The base is its BASE for as
 // long as that branch resolves — an epic branch is deleted once its epic merges —
 // and the repo's configured base branch otherwise.
-func (s *Server) diffAnchor(ctx context.Context, repo registry.Repo, data string) (forkpoint.Anchor, bool) {
+func (s *Server) diffAnchor(ctx context.Context, repo registry.Repo, root, data string) (forkpoint.Anchor, bool) {
 	anchor := forkpoint.Anchor{Pin: checkpointField(data, "BASE_SHA")}
-	if base := checkpointField(data, "BASE"); resolvesToCommit(ctx, repo.Root, base) {
+	if base := checkpointField(data, "BASE"); resolvesToCommit(ctx, root, base) {
 		anchor.Base = base
 		return anchor, true
 	}
 	anchor.Base = s.configuredBase(repo)
-	return anchor, resolvesToCommit(ctx, repo.Root, anchor.Base)
+	return anchor, resolvesToCommit(ctx, root, anchor.Base)
 }
 
 // repoGit answers a fork point's git questions by running git in a repo root.
@@ -153,25 +253,18 @@ func (s *Server) configuredBase(repo registry.Repo) string {
 	return cfg.BaseBranch
 }
 
-// runDiff computes branch's changes against its anchor in root, preferring the
+// rawRunDiff computes branch's changes against its anchor in root, preferring the
 // working tree and falling back to branch's committed history when the worktree has
-// moved to another branch.
-func runDiff(ctx context.Context, root string, anchor forkpoint.Anchor, branch string) (RunDiff, error) {
-	var diff RunDiff
-	var err error
+// moved to another branch. Its patches are uncapped: the caps belong to the
+// response, which a Folder repo run assembles from several of these.
+func rawRunDiff(ctx context.Context, root string, anchor forkpoint.Anchor, branch string) (RunDiff, error) {
 	switch {
 	case gitOutput(ctx, root, "rev-parse", "--abbrev-ref", "HEAD") == branch:
-		diff, err = worktreeDiff(ctx, root, anchor, branch)
+		return worktreeDiff(ctx, root, anchor, branch)
 	case gitOutput(ctx, root, "rev-parse", "--verify", "refs/heads/"+branch) != "":
-		diff, err = committedDiff(ctx, root, anchor, branch)
-	default:
-		return RunDiff{}, errNoDiffSource
+		return committedDiff(ctx, root, anchor, branch)
 	}
-	if err != nil {
-		return RunDiff{}, err
-	}
-	diff.Truncated = capPatches(diff.Files)
-	return diff, nil
+	return RunDiff{}, errNoDiffSource
 }
 
 // worktreeDiff diffs from the fork point rather than base's tip: base advances every

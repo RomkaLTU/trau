@@ -67,7 +67,7 @@ func runTakeover(ctx context.Context, args []string, stdout, stderr io.Writer) e
 	}
 	logger.Init(stderr, verbose, debug)
 
-	repoRoot, err := config.ResolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+	repoRoot, err := resolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"))
 	if err != nil {
 		return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 	}

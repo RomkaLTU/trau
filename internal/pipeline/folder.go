@@ -2,15 +2,9 @@ package pipeline
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
-	"slices"
 	"strings"
-
-	"golang.org/x/sync/errgroup"
 
 	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/checks"
@@ -19,11 +13,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
-
-// childSweepConcurrency bounds the parallel git calls the child sweeps spend. The
-// sweeps are two cheap reads per child, but a folder holds around fifty of them
-// and process spawn — not git — is what a serial sweep would wait on.
-const childSweepConcurrency = 8
 
 // offLimitsKey and startDirtKey carry the start-of-run sweep on the ticket's
 // checkpoint — which children may not be changed and how dirty each one already
@@ -34,71 +23,74 @@ const (
 	startDirtKey = "START_DIRT"
 )
 
-// childState is a Child repo's condition at the start of a run: the branch it
-// sits on and a fingerprint of the uncommitted work its tree already carries.
-type childState struct {
-	folderrepo.Child
-	Branch string
-	Dirt   string
-	Err    error
-}
-
-// offLimitsReason names why this child may not be changed, or "" when it may.
-func (s childState) offLimitsReason(base string) string {
-	switch {
-	case s.Err != nil:
-		return "its git state could not be read"
-	case s.Dirt != "":
-		return "it has uncommitted changes"
-	case s.Branch != base:
-		return "it sits on " + s.Branch + ", not " + base
-	}
-	return ""
-}
-
 // childDirt fingerprints a Child repo's uncommitted work, untracked files
 // included. Both the start-of-run sweep and the changed-children check read it,
 // so a stray file an operator left behind cannot read as clean to one and as this
-// run's work to the other. A clean tree fingerprints as "".
-//
-// Each named path's size and mtime go into the fingerprint because the status
-// line alone does not move when a file that already read as dirty is written
-// again: without them, a build editing the very file an operator left behind
-// would slip past the off-limits guard.
+// run's work to the other.
 func childDirt(ctx context.Context, g Git, dir string) (string, error) {
 	status, err := g.WorktreeStatus(ctx)
-	if err != nil || status == "" {
+	if err != nil {
 		return "", err
 	}
-	sum := sha256.New()
-	for _, line := range strings.Split(status, "\n") {
-		var size, modified int64
-		if fi, err := os.Stat(filepath.Join(dir, statusPath(line))); err == nil {
-			size, modified = fi.Size(), fi.ModTime().UnixNano()
-		}
-		fmt.Fprintf(sum, "%s\x00%d\x00%d\x00", line, size, modified)
-	}
-	return hex.EncodeToString(sum.Sum(nil))[:16], nil
-}
-
-// statusPath is the working-tree path a porcelain status line names: what follows
-// the two status columns, or the arrow when the entry is a rename. A path this
-// misreads simply contributes no size or mtime — both readings misread it alike.
-func statusPath(line string) string {
-	path := strings.TrimSpace(line)
-	if len(line) > 3 {
-		path = strings.TrimSpace(line[3:])
-	}
-	if _, renamed, ok := strings.Cut(path, " -> "); ok {
-		path = renamed
-	}
-	return strings.Trim(path, `"`)
+	return folderrepo.Fingerprint(dir, status), nil
 }
 
 // shipTarget is a Child repo a run changed, with the PR its branch carries.
 type shipTarget struct {
 	folderrepo.Child
 	PRURL string
+}
+
+// attempt is one repo a run's undo has to act in: the target repo itself on a
+// plain Repo, one per recorded ship target in a Folder repo, each with the PR its
+// branch carries. Reset, PurgeLocal and Requeue all act on the whole set, so a
+// folder run's every branch and every PR is undone rather than only the first.
+type attempt struct {
+	repo   string // Child repo name, empty for the target repo itself
+	git    Git
+	github GitHub
+	pr     string
+}
+
+// inRepo names the Child repo an attempt acted in as a message suffix — " in
+// api-billing" — for a message that has to say which of several it means. The
+// target repo itself needs no naming and contributes nothing.
+func (a attempt) inRepo() string {
+	if a.repo == "" {
+		return ""
+	}
+	return " in " + a.repo
+}
+
+func (p *Pipeline) attempts(id string) []attempt {
+	if !p.FolderRepo {
+		return []attempt{{git: p.Git, github: p.GitHub, pr: p.State.Get(id, "PR")}}
+	}
+	targets := p.shipTargets(id)
+	out := make([]attempt, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, attempt{
+			repo:   t.Name,
+			git:    p.childGit(t.Child),
+			github: p.childGitHub(t.Child),
+			pr:     prNumber(t.PRURL),
+		})
+	}
+	return out
+}
+
+// baseCheckout puts an attempt's repo back on the base branch before its branch
+// is deleted. Only the target repo's own checkout can collide with another
+// worktree holding the base, so only it goes through checkoutBase. discard says
+// what a Child repo's uncommitted work is up against: a reset throws it away on
+// purpose, while a purge leaves it standing and lets the branch it could not
+// leave be reported instead.
+func (p *Pipeline) baseCheckout(ctx context.Context, a attempt, discard bool) error {
+	if a.repo == "" {
+		_, err := p.checkoutBase(ctx, true)
+		return err
+	}
+	return a.git.Checkout(ctx, p.Base, discard)
 }
 
 // RefuseEpic answers ErrFolderRepoEpic when a Folder repo is asked to run the epic
@@ -162,8 +154,8 @@ func (p *Pipeline) folderChildren() []folderrepo.Child {
 // them off limits.
 func (p *Pipeline) startFolderRun(ctx context.Context, id string, resumed bool) {
 	if resumed {
-		p.offLimits = parseCensus(p.State.Get(id, offLimitsKey))
-		p.startDirt = parseCensus(p.State.Get(id, startDirtKey))
+		p.offLimits = folderrepo.ParseCensus(p.State.Get(id, offLimitsKey))
+		p.startDirt = folderrepo.ParseCensus(p.State.Get(id, startDirtKey))
 		return
 	}
 	p.sweepChildren(ctx)
@@ -172,29 +164,9 @@ func (p *Pipeline) startFolderRun(ctx context.Context, id string, resumed bool) 
 }
 
 func (p *Pipeline) recordCensus(id, key string, census map[string]string) {
-	if err := p.State.Set(id, key, formatCensus(census)); err != nil {
+	if err := p.State.Set(id, key, folderrepo.FormatCensus(census)); err != nil {
 		p.logf("  ⚠ could not record %s for %s: %v", key, id, err)
 	}
-}
-
-// formatCensus renders a per-child census as name=value entries. The separator is
-// "; " because a reason naming the branch a child sits on carries a comma of its own.
-func formatCensus(census map[string]string) string {
-	entries := make([]string, 0, len(census))
-	for _, name := range sortedNames(census) {
-		entries = append(entries, name+"="+census[name])
-	}
-	return strings.Join(entries, "; ")
-}
-
-func parseCensus(recorded string) map[string]string {
-	census := map[string]string{}
-	for _, entry := range strings.Split(recorded, "; ") {
-		if name, value, ok := strings.Cut(entry, "="); ok {
-			census[name] = value
-		}
-	}
-	return census
 }
 
 // sweepChildren takes the census the whole run is judged against: which Child
@@ -208,8 +180,8 @@ func (p *Pipeline) sweepChildren(ctx context.Context) {
 		return
 	}
 	off, dirt := map[string]string{}, map[string]string{}
-	for _, st := range readChildren(ctx, p.folderChildren(), p.readChildState) {
-		if reason := st.offLimitsReason(p.Base); reason != "" {
+	for _, st := range folderrepo.Sweep(ctx, p.folderChildren(), p.readChildState) {
+		if reason := st.OffLimitsReason(p.Base); reason != "" {
 			off[st.Name] = reason
 		}
 		if st.Dirt != "" {
@@ -232,26 +204,9 @@ func (p *Pipeline) folderStartDirt(ctx context.Context) map[string]string {
 	return p.startDirt
 }
 
-// readChildren reads one value per Child repo, concurrently but bounded, and
-// returns them in child order. Every sweep here is a couple of cheap git reads, so
-// a read that fails carries its own zero value rather than cancelling the rest.
-func readChildren[T any](ctx context.Context, children []folderrepo.Child, read func(context.Context, folderrepo.Child) T) []T {
-	out := make([]T, len(children))
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(childSweepConcurrency)
-	for i, c := range children {
-		g.Go(func() error {
-			out[i] = read(gctx, c)
-			return nil
-		})
-	}
-	_ = g.Wait()
-	return out
-}
-
-func (p *Pipeline) readChildState(ctx context.Context, c folderrepo.Child) childState {
+func (p *Pipeline) readChildState(ctx context.Context, c folderrepo.Child) folderrepo.State {
 	g := p.childGit(c)
-	st := childState{Child: c}
+	st := folderrepo.State{Child: c}
 	branch, err := g.CurrentBranch(ctx)
 	if err != nil {
 		st.Err = err
@@ -275,7 +230,7 @@ func (p *Pipeline) sweepFolder(ctx context.Context) error {
 	}
 	off := p.folderOffLimits(ctx)
 	p.logf("  ⓘ %s: %d child repos, %d ready", p.repoLabel(), len(children), len(children)-len(off))
-	for _, name := range sortedNames(off) {
+	for _, name := range folderrepo.SortedNames(off) {
 		p.logf("      off limits: %s — %s", name, off[name])
 	}
 	return nil
@@ -283,26 +238,11 @@ func (p *Pipeline) sweepFolder(ctx context.Context) error {
 
 // changedChildren lists the Child repos the build actually touched: the ones
 // whose working tree no longer reads as the start-of-run sweep found it. A folder
-// run commits nothing until ship, so the change is still loose in the tree — but
-// so is whatever an operator left there, and that is theirs, not this run's. A
-// child whose status cannot be read now stays as the sweep found it.
+// run commits nothing until ship — the branch it would have committed to is no
+// part of the reading — so the change is still loose in the tree, but so is
+// whatever an operator left there, and that is theirs, not this run's.
 func (p *Pipeline) changedChildren(ctx context.Context) []folderrepo.Child {
-	children := p.folderChildren()
-	start := p.folderStartDirt(ctx)
-	dirt := readChildren(ctx, children, func(ctx context.Context, c folderrepo.Child) string {
-		d, err := childDirt(ctx, p.childGit(c), c.Path)
-		if err != nil {
-			return start[c.Name]
-		}
-		return d
-	})
-	changed := make([]folderrepo.Child, 0, len(children))
-	for i, c := range children {
-		if dirt[i] != start[c.Name] {
-			changed = append(changed, c)
-		}
-	}
-	return changed
+	return folderrepo.Carrying(ctx, p.folderChildren(), p.folderStartDirt(ctx), "", p.readChildState)
 }
 
 // folderBuildNote tells the build agent it is working across a folder of
@@ -321,7 +261,7 @@ func (p *Pipeline) folderBuildNote(ctx context.Context) string {
 		return b.String()
 	}
 	b.WriteString("\n\nOff limits — leave every file in these untouched, they were not clean when the run started:\n")
-	for _, name := range sortedNames(off) {
+	for _, name := range folderrepo.SortedNames(off) {
 		b.WriteString("- " + name + " (" + off[name] + ")\n")
 	}
 	return b.String()
@@ -419,7 +359,12 @@ func (p *Pipeline) checksLibrary() []checks.Check {
 
 // folderShip is the Folder repo's commit and PR phase. The branch is cut lazily —
 // only in the children the build actually changed, and with the same name in each
-// — so a run never touches a checkout the ticket had no business in.
+// — so a run never touches a checkout the ticket had no business in. A child whose
+// commit cannot be made — an unreadable .gitconfig.repo is the way that happens —
+// fails on its own: its siblings are still committed and recorded as ship targets,
+// so nothing this run cut is left outside SHIP_TARGETS, and the run is then given
+// up naming the children it could not commit in. Nothing is pushed: the cross-repo
+// change is incomplete, and no part of it may reach a remote or a merge.
 func (p *Pipeline) folderShip(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Commit, "")
 	if err := p.assertChildrenInBounds(ctx, id); err != nil {
@@ -432,14 +377,20 @@ func (p *Pipeline) folderShip(ctx context.Context, id string) error {
 	branch := p.State.Get(id, "BRANCH")
 	message := deterministicCommitMessage(id, p.commitTitle(ctx, id))
 	targets := make([]shipTarget, 0, len(changed))
+	refused := []string{}
 	for _, c := range changed {
 		if err := p.commitChild(ctx, c, branch, message); err != nil {
-			return fmt.Errorf("commit %s in %s: %w", id, c.Name, err)
+			p.logf("  ✗ %s: %v", c.Name, err)
+			refused = append(refused, c.Name+" ("+err.Error()+")")
+			continue
 		}
 		targets = append(targets, shipTarget{Child: c})
 	}
 	if err := p.recordShipTargets(id, targets); err != nil {
 		return err
+	}
+	if len(refused) > 0 {
+		return &GiveUpError{ID: id, Reason: "could not commit " + id + " in " + strings.Join(refused, ", ")}
 	}
 	if p.localDelivery(ctx) {
 		return p.recordLocalDelivery(ctx, id)
@@ -480,6 +431,9 @@ func (p *Pipeline) folderShip(ctx context.Context, id string) error {
 // slice on it. The branch is created here and not at build time: a child the
 // ticket never reached is never left holding an empty branch.
 func (p *Pipeline) commitChild(ctx context.Context, c folderrepo.Child, branch, message string) error {
+	if _, err := EnsureChildConfigInclude(ctx, p.RepoRoot, c.Path); err != nil {
+		return fmt.Errorf("wire %s: %w", RepoConfigFile, err)
+	}
 	g := p.childGit(c)
 	if exists, _ := g.BranchExists(ctx, branch); exists {
 		if err := g.Checkout(ctx, branch, false); err != nil {
@@ -559,6 +513,23 @@ func (p *Pipeline) shipTargets(id string) []shipTarget {
 		})
 	}
 	return targets
+}
+
+// folderRunFootprint names every Child repo this run left work in. Once ship has
+// recorded a set that set is the whole footprint: the run's work is committed on
+// those branches, so anything still loose in any child by then is the operator's,
+// not the run's. Before ship it is every child dirtied since the start-of-run
+// census — the only reading of the run's work there is.
+func (p *Pipeline) folderRunFootprint(ctx context.Context, id string) []folderrepo.Child {
+	targets := p.shipTargets(id)
+	if len(targets) == 0 {
+		return p.changedChildren(ctx)
+	}
+	children := make([]folderrepo.Child, 0, len(targets))
+	for _, t := range targets {
+		children = append(children, t.Child)
+	}
+	return children
 }
 
 // folderCIAndMerge is the all-green gate: every changed Child repo's PR has to go
@@ -652,13 +623,4 @@ func targetURLs(targets []shipTarget) []string {
 		urls = append(urls, t.PRURL)
 	}
 	return urls
-}
-
-func sortedNames(m map[string]string) []string {
-	names := make([]string, 0, len(m))
-	for name := range m {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
 }

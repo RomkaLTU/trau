@@ -29,6 +29,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
@@ -1398,18 +1399,66 @@ func exploreAllowed(disallowed string) bool {
 }
 
 // ResolveRepoRoot locates the target app repo, per ADR 0001 §2: the --repo flag
-// wins, else TRAU_REPO_ROOT (env/trau.ini, passed
-// as envRoot), else the current directory's git top-level via gitTop. gitTop is
-// injected so the fallback is testable without a real repo; production callers pass
-// GitToplevel. All git/gh operations act on the resolved root, never the trau tree.
-func ResolveRepoRoot(flagRepo, envRoot string, gitTop func() (string, error)) (string, error) {
+// wins, else TRAU_REPO_ROOT (env/trau.ini, passed as envRoot), else the current
+// directory. gitTop and registered are injected so the fallback is testable
+// without a real repo or a hub; production callers pass GitToplevel and a reader
+// of the hub's registered set. All git/gh operations act on the resolved root,
+// never the trau tree.
+func ResolveRepoRoot(flagRepo, envRoot string, gitTop func() (string, error), registered func() ([]string, error)) (string, error) {
 	if flagRepo != "" {
 		return flagRepo, nil
 	}
 	if envRoot != "" {
 		return envRoot, nil
 	}
-	return gitTop()
+	return resolveFromCwd(gitTop, registered)
+}
+
+// resolveFromCwd resolves the working directory to a repo: its git top-level, or
+// the nearest Folder repo above it when there is none — a folder root and any
+// non-git directory under it both land on the folder. Standing inside a Child
+// repo is the ambiguous case, and registration breaks the tie: the child when it
+// is registered in its own right, the folder holding it otherwise. A registered
+// set that is empty or unreadable leaves the git top-level, so registration is
+// never what stands between an operator and the folder they are standing in.
+func resolveFromCwd(gitTop func() (string, error), registered func() ([]string, error)) (string, error) {
+	top, err := gitTop()
+	if err != nil {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return "", err
+		}
+		if folder := folderrepo.Nearest(cwd); folder != "" {
+			return folder, nil
+		}
+		return "", err
+	}
+	folder := folderrepo.Nearest(filepath.Dir(top))
+	if folder == "" {
+		return top, nil
+	}
+	roots := registeredRoots(registered)
+	if !roots[filepath.Clean(top)] && roots[filepath.Clean(folder)] {
+		return folder, nil
+	}
+	return top, nil
+}
+
+// registeredRoots reads the hub's registered set into a cleaned lookup. A set
+// that cannot be read is empty, which leaves the structural rule to decide.
+func registeredRoots(registered func() ([]string, error)) map[string]bool {
+	if registered == nil {
+		return nil
+	}
+	roots, err := registered()
+	if err != nil {
+		return nil
+	}
+	set := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		set[filepath.Clean(root)] = true
+	}
+	return set
 }
 
 // GitToplevel returns the current directory's git top-level (git rev-parse

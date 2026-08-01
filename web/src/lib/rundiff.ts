@@ -7,6 +7,9 @@ export type RunDiffStatus = 'added' | 'modified' | 'deleted' | 'renamed'
 export interface RunDiffFile {
   path: string
   old_path?: string
+  // Folder repo runs only: the child repo the file came from, whose name already
+  // roots path.
+  repo?: string
   status: RunDiffStatus
   additions: number
   deletions: number

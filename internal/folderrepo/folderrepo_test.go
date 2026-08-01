@@ -43,3 +43,32 @@ func TestChildrenFindsTheGitRepositoriesInsideAFolder(t *testing.T) {
 		t.Error("Is(child) = true, want false for a git repository")
 	}
 }
+
+// TestCollidesPairsAFolderWithTheRepositoriesInsideIt is the worktree-sharing
+// rule both the hub and the CLI refuse runs on: a Folder repo and a repository
+// inside it collide in either direction, while two siblings and a root against
+// itself do not.
+func TestCollidesPairsAFolderWithTheRepositoriesInsideIt(t *testing.T) {
+	root := t.TempDir()
+	children := []string{"api-companies", "api-billing"}
+	for _, name := range children {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	companies := filepath.Join(root, "api-companies")
+	billing := filepath.Join(root, "api-billing")
+
+	if !Collides(root, companies) {
+		t.Error("a folder repo does not collide with a repository inside it")
+	}
+	if !Collides(companies, root) {
+		t.Error("a child repo does not collide with the folder repo holding it")
+	}
+	if Collides(companies, billing) {
+		t.Error("two sibling child repos collide, but they share no working tree")
+	}
+	if Collides(root, root) {
+		t.Error("a root collides with itself, but that is the same repo")
+	}
+}

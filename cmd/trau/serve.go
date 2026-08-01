@@ -259,7 +259,7 @@ func grillReachableHost(bind string) string {
 // serveConfigPaths resolves the three config layers a serve-side command reads,
 // mirroring the loop's repo/user/local precedence.
 func serveConfigPaths(repo string) (projectEnv, userEnv, localEnv string) {
-	repoRoot, _ := config.ResolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+	repoRoot, _ := resolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"))
 	if home, err := os.UserHomeDir(); err == nil {
 		userEnv = config.ProjectConfigPath(home)
 	}

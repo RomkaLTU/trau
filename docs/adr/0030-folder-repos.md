@@ -100,3 +100,44 @@ nothing about the single-repo path changes.
 - Out of scope and unchanged: nested Folder repos, children deeper than the
   folder's immediate subdirectories, and migrating an existing 44-member Project
   into a Folder repo — register the folder and forget the members by hand.
+
+## Amendment (2026-08-01): a Folder repo outside the hub's drain
+
+TRAU-20 made a Folder repo runnable through the hub, which execs
+`trau --repo <root>`. Reaching it any other way — from the working directory, from
+`trau doctor`, from a reset — still assumed the root was a git repository. Four
+decisions close that:
+
+- **Resolution from the working directory.** A folder root, and any non-git
+  directory under it, resolves to the nearest ancestor Folder repo. Standing
+  inside a Child repo is the ambiguous case, and registration breaks the tie: the
+  child when it is registered in its own right, otherwise the Folder repo that
+  holds it. Registration is only ever the tie-breaker — a registered set that is
+  empty or unreadable leaves the git top-level, so it never stands between an
+  operator and an unregistered folder they are standing in.
+- **`.gitconfig.repo` is wired per ship-target child.** A folder root has no git
+  config to hold an `include.path`, so the identity is pinned inside each child
+  the ticket reached, at commit time: the child's own `.gitconfig.repo` when it
+  has one, the folder root's otherwise — the same child-overrides-folder grain as
+  `.trau/checks` and `LINT_FIX_CMD`.
+- **Reset acts on the recorded children.** Every `SHIP_TARGETS` entry loses its
+  branch locally and on the remote. Branches are cut lazily, so a run reset while
+  parked in build has none — it has loose work instead, and that is discarded in
+  exactly the children that changed since `START_DIRT`. The start-of-run census is
+  what tells this run's work from the operator's, so a child holding unrelated WIP
+  is left as it was found. `PurgeLocal` drops the same branches and no loose work;
+  `Requeue` closes every PR in `PR_URLS`, not only the first; `Clear` still
+  touches nothing.
+- **A Folder repo and a repo inside it never run at once.** They share a working
+  tree, so a Folder repo run is refused while any live entry sits in one of its
+  children, and a child's run while one sits in the folder. Every live entry
+  blocks, `StateTakeover` included — a terminal takeover holds that tree just as
+  firmly as a loop. The hub answers 409 at queue start so the board states the
+  reason before spawning; the CLI refuses again just before the run starts, which
+  is the guard nothing bypasses.
+
+The web diff pane runs the existing per-root diff machinery once per changed child
+and merges the results into one flat `files[]`, each path rooted under the child's
+name and each entry carrying `repo`. `head_sha` and `base_sha` are empty for a
+folder run — N repositories have N of each — while `base` and `branch` stay as
+they are, one of each shared by every child.

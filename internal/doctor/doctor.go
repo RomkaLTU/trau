@@ -21,6 +21,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/launchd"
@@ -244,11 +245,9 @@ func checkConfig(ctx context.Context, cfg config.Config, provider string, source
 		rr.add("repo", fail, fmt.Sprintf("repo root %q does not exist or is not a directory", repoRoot), "check --repo / TRAU_REPO_ROOT")
 		return
 	}
-	if err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--git-dir").Run(); err != nil {
-		rr.add("repo", fail, fmt.Sprintf("%q is not a git repository", repoRoot), "point --repo at a git checkout")
+	if !checkRepoRoot(ctx, cfg, repoRoot, rr) {
 		return
 	}
-	rr.add("repo", pass, repoRoot, "")
 
 	switch provider {
 	case "internal":
@@ -289,6 +288,75 @@ func checkConfig(ctx context.Context, cfg config.Config, provider string, source
 			continue
 		}
 		rr.add(r.name, pass, fmt.Sprintf("%s=%s (%s)", r.key, value, sources[r.key]), "")
+	}
+}
+
+// checkRepoRoot passes the repo check for a git checkout and for a Folder repo —
+// a folder of git repositories, which has no git of its own — and reports whether
+// the target is a repo trau can run in at all.
+func checkRepoRoot(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) bool {
+	if census := folderrepo.Scan(repoRoot); census.IsFolder {
+		rr.add("repo", pass, fmt.Sprintf("%s (folder repo, %d child repos)", repoRoot, len(census.Children)), "")
+		checkChildRepos(ctx, cfg, census.Children, rr)
+		return true
+	}
+	if err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--git-dir").Run(); err != nil {
+		rr.add("repo", fail, fmt.Sprintf("%q is not a git repository", repoRoot), "point --repo at a git checkout")
+		return false
+	}
+	rr.add("repo", pass, repoRoot, "")
+	return true
+}
+
+// childState is one Child repo's readiness for a run: the condition a run's own
+// sweep would read, plus whether it has a remote to open a pull request against.
+type childState struct {
+	folderrepo.State
+	hasRemote bool
+}
+
+// checkChildRepos reports how much of a Folder repo a run could actually ship to:
+// the children that are clean and on the base branch, and the ones the
+// start-of-run sweep would put off limits. None of it is ever a failure — ADR 0030
+// leaves an off-limits child out of the run rather than aborting one — so a dirty
+// child, an off-base child and a child with no remote are all warnings.
+func checkChildRepos(ctx context.Context, cfg config.Config, children []folderrepo.Child, rr *runner) {
+	base := strings.TrimSpace(cfg.BaseBranch)
+	remote := strings.TrimSpace(cfg.Remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	states := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) childState {
+		return childState{
+			State:     folderrepo.ReadState(ctx, c),
+			hasRemote: hasGitRemote(ctx, c.Path, remote),
+		}
+	})
+
+	offLimits, noRemote := []string{}, []string{}
+	for _, c := range states {
+		if reason := c.OffLimitsReason(base); reason != "" {
+			offLimits = append(offLimits, c.Name+" ("+reason+")")
+		}
+		if !c.hasRemote {
+			noRemote = append(noRemote, c.Name)
+		}
+	}
+
+	message := fmt.Sprintf("%d of %d clean and on %s", len(children)-len(offLimits), len(children), base)
+	if len(offLimits) > 0 {
+		message += "\n    off limits to a run: " + strings.Join(offLimits, ", ")
+	}
+	if len(noRemote) > 0 {
+		message += fmt.Sprintf("\n    no %s remote (local delivery only): %s", remote, strings.Join(noRemote, ", "))
+	}
+	switch {
+	case len(offLimits) > 0:
+		rr.add("child repos", warn, message, "commit or stash their work, or put them back on "+base+" — a run ships to the rest and leaves these untouched")
+	case len(noRemote) > 0:
+		rr.add("child repos", warn, message, fmt.Sprintf("add a %s remote to those children to get pull requests and CI from them", remote))
+	default:
+		rr.add("child repos", pass, message, "")
 	}
 }
 
@@ -417,9 +485,11 @@ func teamSyncState(repoRoot string) (hubstore.TeamSyncState, error) {
 
 // checkRemote reports whether the configured remote actually exists — a non-empty
 // REMOTE key says nothing about the repo. A repo without one is a local-only
-// project, not a broken one, so this always passes and only names the mode.
+// project, not a broken one, so this always passes and only names the mode. A
+// Folder repo has no remote of its own and the child repos row already names
+// which of its children have one.
 func checkRemote(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) {
-	if repoRoot == "" {
+	if repoRoot == "" || folderrepo.Is(repoRoot) {
 		return
 	}
 	remote := strings.TrimSpace(cfg.Remote)
