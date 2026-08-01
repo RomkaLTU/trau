@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -955,6 +956,56 @@ func (e *epicTracker) IssueStatus(_ context.Context, id string) (tracker.IssueSt
 		return tracker.StatusUnknown, e.statusErr
 	}
 	return e.status[id], nil
+}
+
+// redThenGreenGitHub fails the epic's first CI poll and passes every one after, so
+// the gate drives exactly one repair attempt before the merge.
+type redThenGreenGitHub struct {
+	epicGitHub
+	polls int
+}
+
+func (g *redThenGreenGitHub) Checks(context.Context, string) ([]Check, error) {
+	g.polls++
+	if g.polls == 1 {
+		return []Check{{Name: "ci/test", Bucket: "fail"}}, nil
+	}
+	return []Check{{Name: "ci/test", Bucket: "pass"}}, nil
+}
+
+// The CI gate, every repair attempt and the merge report under the epic's own id,
+// so the stepper follows the epic to the base instead of going silent after the
+// last child.
+func TestEpicCIAndMergeReportsActivities(t *testing.T) {
+	rec := &activityRecorder{}
+	gh := &redThenGreenGitHub{}
+	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
+	p.GitHub = gh
+	p.Remote = "origin"
+	p.EpicID = "COD-7110"
+	p.exit.epicBranch = "epic/COD-7110-thing"
+	p.AutoMerge = true
+	p.MergeMethod = "squash"
+	p.MaxRepairs = 1
+	p.OnActivity = rec.hook()
+
+	merged, err := p.epicCIAndMerge(context.Background(), "https://github.test/pr/7")
+	if err != nil {
+		t.Fatalf("epicCIAndMerge err = %v", err)
+	}
+	if !merged {
+		t.Fatal("expected the epic to merge once the repair turned CI green")
+	}
+
+	want := []reportedActivity{
+		{"COD-7110", "ci-wait", ""},
+		{"COD-7110", "merge", "epic-repair1/1"},
+		{"COD-7110", "ci-wait", ""},
+		{"COD-7110", "merge", ""},
+	}
+	if !reflect.DeepEqual(rec.seen, want) {
+		t.Fatalf("activity reports = %+v, want %+v", rec.seen, want)
+	}
 }
 
 type epicGitHub struct {

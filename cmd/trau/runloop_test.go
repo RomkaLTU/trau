@@ -351,6 +351,109 @@ func TestRunLoopSurfacesUnfinalizedEpicOnlyWhenNothingLeft(t *testing.T) {
 	}
 }
 
+// finalizeSpyEngine works its scripted picks and remembers the session state in
+// force at the moment the loop ran the finalize.
+type finalizeSpyEngine struct {
+	loopEngine
+	picks      []string
+	recs       *[]stateRec
+	atFinalize stateRec
+}
+
+func (e *finalizeSpyEngine) Pick(context.Context) (string, error) {
+	if len(e.picks) == 0 {
+		return "", nil
+	}
+	id := e.picks[0]
+	e.picks = e.picks[1:]
+	return id, nil
+}
+
+func (e *finalizeSpyEngine) Finalize(context.Context) error {
+	e.finalized = true
+	if n := len(*e.recs); n > 0 {
+		e.atFinalize = (*e.recs)[n-1]
+	}
+	return nil
+}
+
+// However the ticket loop ended, the heartbeat names the epic while its finalize
+// runs and drops off it afterwards; a run with no epic reports nothing extra.
+func TestRunLoopPinsFinalizeToTheEpic(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  loopParams
+		during  stateRec
+		wantSeq []stateRec
+	}{
+		{
+			name:   "drained pick",
+			params: loopParams{Max: 5, EpicID: "COD-1"},
+			during: stateRec{registry.StateWorking, "COD-1", ""},
+			wantSeq: []stateRec{
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-1", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+		{
+			name:   "--once child spawned by the drain",
+			params: loopParams{Max: 5, Once: true, ForcedID: "COD-2", EpicID: "COD-1"},
+			during: stateRec{registry.StateWorking, "COD-1", ""},
+			wantSeq: []stateRec{
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateWorking, "COD-1", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+		{
+			name:   "iteration cap",
+			params: loopParams{Max: 1, EpicID: "COD-1"},
+			during: stateRec{registry.StateWorking, "COD-1", ""},
+			wantSeq: []stateRec{
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateWorking, "COD-1", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+		{
+			name:   "standalone run",
+			params: loopParams{Max: 5},
+			during: stateRec{registry.StateGrazing, "", ""},
+			wantSeq: []stateRec{
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recs []stateRec
+			eng := &finalizeSpyEngine{picks: []string{"COD-2"}, recs: &recs}
+			params := tt.params
+			params.Report = recorder(&recs)
+			if _, err := runLoop(context.Background(), eng, params, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+				return console.TicketResult{ID: id}
+			}); err != nil {
+				t.Fatalf("runLoop returned error: %v", err)
+			}
+			if !eng.finalized {
+				t.Fatal("expected the loop to attempt the epic finalize")
+			}
+			if eng.atFinalize != tt.during {
+				t.Errorf("state during finalize = %v, want %v", eng.atFinalize, tt.during)
+			}
+			if !reflect.DeepEqual(recs, tt.wantSeq) {
+				t.Errorf("transition sequence = %v, want %v", recs, tt.wantSeq)
+			}
+		})
+	}
+}
+
 func TestLeafSubsFiltersNestedEpics(t *testing.T) {
 	subs := []tracker.SubIssue{
 		{ID: "COD-500", HasChildren: true},
