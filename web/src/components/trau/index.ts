@@ -13,7 +13,6 @@ export {
 } from './created-banner'
 export { RepoSwitcher } from './repo-switcher'
 export { ThemeToggle, useTheme } from './theme-toggle'
-export { GlobalSearch } from './global-search'
 export { ProjectScopeGate } from './project-scope-gate'
 export { RepoHealthGate } from './repo-health-gate'
 export { BacklogSyncControl } from './backlog-sync-control'
@@ -40,7 +39,6 @@ export { ConfigExperiments } from './config-experiments'
 export { EmptyState } from './empty-state'
 export { ConfirmDialog } from './confirm-dialog'
 export { AddTicketDialog } from './add-ticket-dialog'
-export { ForceResetDialog } from './force-reset-dialog'
 export { SteerComposer, SteerNotesTimeline } from './steer-notes'
 export { HandbackDialog, useHandback } from './handback-dialog'
 export { NoSkillsBanner } from './no-skills-banner'
@@ -49,10 +47,4 @@ export { RemovedBanner } from './removed-banner'
 export { AppURLsSection } from './app-urls-panel'
 export { AppURLsCard } from './app-urls-card'
 export { RunPageHeader } from './run-page-header'
-export {
-  RunActionsMenu,
-  RunActionsRow,
-  RunResetButton,
-  NoticeBanner,
-  type CheckpointNotice,
-} from './checkpoint-actions'
+export { NoticeBanner, type RunNotice } from './notice-banner'

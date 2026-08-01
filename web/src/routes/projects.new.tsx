@@ -13,7 +13,7 @@ export const Route = createFileRoute('/projects/new')({
 })
 
 function NewProjectPage() {
-  usePageTitle(standardTitle('Add a project'))
+  usePageTitle(standardTitle('New project'))
   const { path } = Route.useSearch()
   return (
     <div className="flex flex-col gap-8">
@@ -22,11 +22,11 @@ function NewProjectPage() {
           ONBOARDING
         </Eyebrow>
         <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
-          Add a project
+          New project
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          From a repo path to a live backlog — register, configure the tracker, and seed the
-          issue store.
+          From one repo path — or several under a project name — to a live backlog: register,
+          configure the tracker, and seed the issue store.
         </p>
       </header>
 

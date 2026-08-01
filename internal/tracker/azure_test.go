@@ -104,10 +104,10 @@ func TestWorkItemIDRoundTrip(t *testing.T) {
 			t.Errorf("workItemID(%q) = %d, want %d", tc.id, got, tc.want)
 		}
 	}
-	if got := azureIdentifier("TRAU", 1234); got != "TRAU-1234" {
-		t.Errorf("azureIdentifier = %q, want TRAU-1234", got)
+	if got := azureIdentifier(1234); got != "1234" {
+		t.Errorf("azureIdentifier = %q, want 1234", got)
 	}
-	if got := azureParentIdentifier("TRAU", 0); got != "" {
+	if got := azureParentIdentifier(0); got != "" {
 		t.Errorf("azureParentIdentifier(0) = %q, want empty", got)
 	}
 }
@@ -164,8 +164,8 @@ func TestAzurePickSkipsContainersBlockedAndStartedWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pick returned error: %v", err)
 	}
-	if got != "CON-4" {
-		t.Errorf("Pick = %q, want CON-4 (1 is a container, 2 is started, 3 is blocked)", got)
+	if got != "4" {
+		t.Errorf("Pick = %q, want 4 (1 is a container, 2 is started, 3 is blocked)", got)
 	}
 }
 
@@ -201,8 +201,8 @@ func TestAzurePickEpicScopeKeepsOnlyLeaves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pick returned error: %v", err)
 	}
-	if got != "CON-12" {
-		t.Errorf("Pick = %q, want CON-12 (11 is already closed, 13 is outside the epic)", got)
+	if got != "12" {
+		t.Errorf("Pick = %q, want 12 (11 is already closed, 13 is outside the epic)", got)
 	}
 }
 
@@ -239,18 +239,18 @@ func TestAzureListEligibleKeepsContainers(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("got %d tickets, want 2: %+v", len(list), list)
 	}
-	if list[0].ID != "CON-1" || !list[0].HasChildren {
-		t.Errorf("first ticket = %+v, want CON-1 with children", list[0])
+	if list[0].ID != "1" || !list[0].HasChildren {
+		t.Errorf("first ticket = %+v, want 1 with children", list[0])
 	}
-	if list[1].ID != "CON-2" || list[1].Parent != "CON-1" {
-		t.Errorf("second ticket = %+v, want CON-2 parented to CON-1", list[1])
+	if list[1].ID != "2" || list[1].Parent != "1" {
+		t.Errorf("second ticket = %+v, want 2 parented to 1", list[1])
 	}
 	if !slices.Equal(list[1].Labels, []string{"ready-for-agent", "ui"}) {
 		t.Errorf("labels = %v, want [ready-for-agent ui]", list[1].Labels)
 	}
 }
 
-func TestAzureSubIssuesUsesTheIDsOwnPrefix(t *testing.T) {
+func TestAzureSubIssuesAreWorkItemNumbers(t *testing.T) {
 	az, _ := azureServer(t, map[string]string{
 		"/workitems/10": `{"id":10,"fields":{},"relations":[
 			{"rel":"System.LinkTypes.Hierarchy-Forward","url":"` + azureRelBase + `11"},
@@ -268,11 +268,11 @@ func TestAzureSubIssuesUsesTheIDsOwnPrefix(t *testing.T) {
 	if len(subs) != 2 {
 		t.Fatalf("got %d sub-issues, want 2", len(subs))
 	}
-	if subs[0].ID != "WIDGET-11" || !subs[0].HasChildren || subs[0].Done {
-		t.Errorf("first sub-issue = %+v, want WIDGET-11 with children and not done", subs[0])
+	if subs[0].ID != "11" || !subs[0].HasChildren || subs[0].Done {
+		t.Errorf("first sub-issue = %+v, want 11 with children and not done", subs[0])
 	}
-	if subs[1].ID != "WIDGET-12" || !subs[1].Done {
-		t.Errorf("second sub-issue = %+v, want WIDGET-12 done", subs[1])
+	if subs[1].ID != "12" || !subs[1].Done {
+		t.Errorf("second sub-issue = %+v, want 12 done", subs[1])
 	}
 }
 
@@ -292,8 +292,8 @@ func TestAzureTitleAndProjectAndParent(t *testing.T) {
 		t.Errorf("IssueProject = (%q, %v), want (Contoso, nil)", project, err)
 	}
 	parent, err := az.ParentIssue(ctx, "CON-7")
-	if err != nil || parent != "CON-3" {
-		t.Errorf("ParentIssue = (%q, %v), want (CON-3, nil)", parent, err)
+	if err != nil || parent != "3" {
+		t.Errorf("ParentIssue = (%q, %v), want (3, nil)", parent, err)
 	}
 }
 
@@ -414,7 +414,7 @@ func TestAzureSetStatusResolvesLoopTargetOnScrumTemplate(t *testing.T) {
 		"patch": `{"id":7}`,
 	})
 
-	if err := az.SetStatus(context.Background(), "CON-7", "In Review", "PR is up."); err != nil {
+	if err := az.SetStatus(context.Background(), "CON-7", StageInReview, "PR is up."); err != nil {
 		t.Fatalf("SetStatus returned error: %v", err)
 	}
 	if len(*patches) != 1 {
@@ -456,8 +456,8 @@ func TestAzureFileBugCreatesTaggedWorkItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FileBug returned error: %v", err)
 	}
-	if bug != "CON-500" {
-		t.Errorf("FileBug = %q, want CON-500", bug)
+	if bug != "500" {
+		t.Errorf("FileBug = %q, want 500", bug)
 	}
 	if len(*patches) != 1 {
 		t.Fatalf("got %d patches, want 1", len(*patches))

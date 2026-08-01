@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -395,7 +396,7 @@ func TestJiraSetStatusRESTOnlySurfacesAuthError(t *testing.T) {
 	defer srv.Close()
 
 	j := &Jira{Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "bad"}
-	if err := j.SetStatus(context.Background(), "PROJ-7", "In Review", ""); !errors.Is(err, jiraapi.ErrUnauthorized) {
+	if err := j.SetStatus(context.Background(), "PROJ-7", StageInReview, ""); !errors.Is(err, jiraapi.ErrUnauthorized) {
 		t.Fatalf("SetStatus err = %v, want ErrUnauthorized (no MCP fallback, no panic)", err)
 	}
 }
@@ -435,6 +436,41 @@ func TestJiraPickEpicUsesAPI(t *testing.T) {
 	}
 	if runner.calls["pick"] != 0 {
 		t.Errorf("expected no MCP fallback, got %d pick calls", runner.calls["pick"])
+	}
+}
+
+// An epic with two ready children carrying a single "PROJ-1 blocks PROJ-2" link —
+// served from both ends, as Jira does — picks the blocker first even though the
+// blocked child outranks it in the JQL order.
+func TestJiraPickEpicDrainsBlockerBeforeBlockedChild(t *testing.T) {
+	const children = `{"issues":[
+		{"key":"PROJ-1","fields":{"summary":"A","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}},
+		{"key":"PROJ-2","fields":{"summary":"B","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}}
+	]}`
+	const eligible = `{"issues":[
+		{"key":"PROJ-2","fields":{"summary":"B","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},
+			"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},"inwardIssue":{"key":"PROJ-1","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}},
+		{"key":"PROJ-1","fields":{"summary":"A","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},
+			"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},"outwardIssue":{"key":"PROJ-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "parent =") {
+			_, _ = w.Write([]byte(children))
+			return
+		}
+		_, _ = w.Write([]byte(eligible))
+	}))
+	defer srv.Close()
+
+	j := &Jira{Team: "PROJ", ReadyLabel: "ready-for-agent", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+	got, err := j.Pick(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ", Parent: "PROJ-100"})
+	if err != nil {
+		t.Fatalf("Pick error: %v", err)
+	}
+	if got != "PROJ-1" {
+		t.Errorf("Pick = %q, want the blocker PROJ-1 before its blocked sibling", got)
 	}
 }
 
@@ -574,7 +610,7 @@ func TestJiraSetStatusUsesAPI(t *testing.T) {
 	runner := &recordingRunner{}
 	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
 
-	if err := j.SetStatus(context.Background(), "PROJ-7", "In Review", ""); err != nil {
+	if err := j.SetStatus(context.Background(), "PROJ-7", StageInReview, ""); err != nil {
 		t.Fatalf("SetStatus error: %v", err)
 	}
 	if posts != 1 {
@@ -585,6 +621,62 @@ func TestJiraSetStatusUsesAPI(t *testing.T) {
 	}
 }
 
+// A workflow with no "In Review" status anywhere: the review stage must land on
+// the project's own review status rather than failing the transition.
+func TestJiraSetStatusResolvesReviewOnAWorkflowWithoutIt(t *testing.T) {
+	const workflow = `{"transitions":[
+		{"id":"11","name":"QA","to":{"name":"READY FOR QA","statusCategory":{"key":"indeterminate"}}},
+		{"id":"21","name":"Back","to":{"name":"To Do","statusCategory":{"key":"new"}}},
+		{"id":"31","name":"Start","to":{"name":"In Progress","statusCategory":{"key":"indeterminate"}}},
+		{"id":"41","name":"Finish","to":{"name":"Done","statusCategory":{"key":"done"}}}
+	]}`
+	cases := []struct {
+		name     string
+		override string
+		want     string
+	}{
+		{"resolved from the workflow", "", "11"},
+		{"pinned by STATUS_IN_REVIEW", "In Progress", "31"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var post transitionPost
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(workflow))
+					return
+				}
+				_ = json.NewDecoder(r.Body).Decode(&post)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			defer srv.Close()
+			runner := &recordingRunner{}
+			j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+			if tc.override != "" {
+				j.StatusOverrides = map[Stage]string{StageInReview: tc.override}
+			}
+
+			if err := j.SetStatus(context.Background(), "PROJ-7", StageInReview, "PR is up."); err != nil {
+				t.Fatalf("SetStatus error: %v", err)
+			}
+			if post.Transition.ID != tc.want {
+				t.Errorf("transition id = %q, want %q", post.Transition.ID, tc.want)
+			}
+			if runner.calls["status"] != 0 {
+				t.Errorf("expected no MCP fallback, got %d status calls", runner.calls["status"])
+			}
+		})
+	}
+}
+
+// transitionPost is the slice of the transition body these tests assert on.
+type transitionPost struct {
+	Transition struct {
+		ID string `json:"id"`
+	} `json:"transition"`
+}
+
 // Without a token the direct path is disabled, so SetStatus falls back to the MCP.
 func TestJiraSetStatusFallsBackWithoutToken(t *testing.T) {
 	runner := &recordingRunner{responses: map[string]agent.Result{
@@ -592,7 +684,7 @@ func TestJiraSetStatusFallsBackWithoutToken(t *testing.T) {
 	}}
 	j := &Jira{Runner: runner, Team: "PROJ"}
 
-	if err := j.SetStatus(context.Background(), "PROJ-7", "In Review", ""); err != nil {
+	if err := j.SetStatus(context.Background(), "PROJ-7", StageInReview, ""); err != nil {
 		t.Fatalf("SetStatus error: %v", err)
 	}
 	if runner.calls["status"] != 1 {
@@ -600,19 +692,24 @@ func TestJiraSetStatusFallsBackWithoutToken(t *testing.T) {
 	}
 }
 
-// A target status the workflow has no transition to is a real error, surfaced
-// rather than sent to the MCP (which could not resolve a missing status either).
-func TestJiraSetStatusSurfacesUnknownStatus(t *testing.T) {
-	srv := jiraIssueServer(`{"transitions":[{"id":"11","name":"Start","to":{"name":"In Progress"}}]}`)
+// A workflow that offers no destination for the stage — no matching name and
+// nothing in its category — is a real error, surfaced rather than sent to the MCP
+// (which could not transition anywhere either).
+func TestJiraSetStatusSurfacesUnreachableStage(t *testing.T) {
+	srv := jiraIssueServer(`{"transitions":[{"id":"11","name":"Start","to":{"name":"In Progress","statusCategory":{"key":"indeterminate"}}}]}`)
 	defer srv.Close()
 	runner := &recordingRunner{}
 	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
 
-	if err := j.SetStatus(context.Background(), "PROJ-7", "Nonexistent", ""); err == nil {
-		t.Fatal("SetStatus with an unknown status should error, got nil")
+	err := j.SetStatus(context.Background(), "PROJ-7", StageDone, "")
+	if !errors.Is(err, jiraapi.ErrNoTransition) {
+		t.Fatalf("SetStatus err = %v, want ErrNoTransition", err)
+	}
+	if !strings.Contains(err.Error(), "STATUS_DONE") {
+		t.Errorf("error should name the override key, got %q", err.Error())
 	}
 	if runner.calls["status"] != 0 {
-		t.Errorf("unknown status must not fall back to MCP, got %d status calls", runner.calls["status"])
+		t.Errorf("an unreachable stage must not fall back to MCP, got %d status calls", runner.calls["status"])
 	}
 }
 

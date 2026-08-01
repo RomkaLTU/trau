@@ -88,7 +88,7 @@ describe('buildTimeline', () => {
     )
     expect(tl.settled.map((t) => [t.id, t.status])).toEqual([['COD-1', 'done']])
     expect(tl.done).toBe(1)
-    expect(tl.pending).toEqual([])
+    expect(tl.finished).toEqual([])
   })
 
   it('classifies a paused run with its failure class and reason', () => {
@@ -199,6 +199,63 @@ describe('buildTimeline', () => {
     ])
   })
 
+  it('keeps a paused ticket in the run order at its position', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'COD-1', status: 'done' }),
+        item({ id: 'COD-2', status: 'paused' }),
+        item({ id: 'COD-3', status: 'pending' }),
+      ],
+      [
+        run({ ticket: 'COD-1', terminal: true }),
+        run({ ticket: 'COD-2', failure_class: 'paused', failure_reason: 'rate limit' }),
+      ],
+    )
+    expect(
+      tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.id : p.id)),
+    ).toEqual(['COD-2', 'COD-3'])
+    expect(tl.finished.map((t) => t.id)).toEqual(['COD-1'])
+    expect(tl.settled.map((t) => t.id)).toEqual(['COD-1', 'COD-2'])
+  })
+
+  it('keeps a fault the queue parked for a re-attempt in the run order', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1', status: 'paused' })],
+      [run({ ticket: 'COD-1', terminal: true, failure_class: 'faulted' })],
+    )
+    expect(
+      tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.status : '')),
+    ).toEqual(['failed'])
+    expect(tl.finished).toEqual([])
+  })
+
+  it('keeps a paused epic in the run order once every sub-issue is done', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'paused',
+          sub_issues: [{ id: 'COD-10', title: 'One', state: 'done' }],
+        }),
+      ],
+      [],
+    )
+    expect(tl.pending).toEqual([
+      {
+        kind: 'epic',
+        id: 'COD-9',
+        title: '',
+        source: undefined,
+        active: false,
+        done: 1,
+        total: 1,
+        children: [],
+      },
+    ])
+    expect(tl.finished.map((t) => t.id)).toEqual(['COD-10'])
+  })
+
   it('marks the live instance ticket running even without a run record', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' })],
@@ -254,6 +311,34 @@ describe('buildTimeline', () => {
       ['COD-7', 'paused'],
     ])
     expect(tl.settled[0].reason).toBe('provider login required')
+    expect(tl.finished.map((t) => t.id)).toEqual(['COD-7'])
+    expect(tl.pending).toEqual([])
+  })
+
+  it('keeps a paused sub-issue under its epic instead of finishing it', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'One', state: 'done' },
+            { id: 'COD-11', title: 'Two', state: 'pending' },
+          ],
+        }),
+      ],
+      [
+        run({ ticket: 'COD-10', terminal: true }),
+        run({ ticket: 'COD-11', failure_class: 'paused' }),
+      ],
+    )
+    expect(
+      tl.pending.map((p) =>
+        p.kind === 'epic' ? p.children.map((c) => [c.id, c.status]) : [],
+      ),
+    ).toEqual([[['COD-11', 'paused']]])
+    expect(tl.finished.map((t) => t.id)).toEqual(['COD-10'])
   })
 
   it('does not resurrect an idle instance ticket into an empty queue', () => {
@@ -434,6 +519,57 @@ describe('buildTimeline', () => {
     if (epic?.kind === 'epic') {
       expect(epic.children.map((c) => c.id)).toEqual(['COD-10', 'COD-11'])
     }
+  })
+
+  it('marks the epic the drain is working and leaves a waiting one unmarked', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'todo' },
+            { id: 'COD-12', title: 'c', state: 'todo' },
+          ],
+        }),
+        item({
+          id: 'COD-20',
+          kind: 'epic',
+          sub_issues: [{ id: 'COD-21', title: 'c', state: 'todo' }],
+        }),
+      ],
+      [run({ ticket: 'COD-10', terminal: true, phase: 'merged' })],
+      instance({ ticket: 'COD-11' }),
+    )
+    expect(tl.running?.id).toBe('COD-11')
+    expect(
+      tl.pending.map((p) => (p.kind === 'epic' ? [p.id, p.active] : [])),
+    ).toEqual([
+      ['COD-9', true],
+      ['COD-20', false],
+    ])
+  })
+
+  it('keeps the running epic marked while the loop grazes between picks', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'todo' },
+          ],
+        }),
+      ],
+      [run({ ticket: 'COD-10', terminal: true, phase: 'merged' })],
+      instance({ session_state: 'grazing' }),
+    )
+    expect(tl.running).toBeUndefined()
+    expect(tl.pending[0]).toMatchObject({ kind: 'epic', active: true })
   })
 
   it('reads a ticket-less active instance as the running epic finalize', () => {

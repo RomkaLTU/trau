@@ -573,8 +573,8 @@ func TestQueueMoveToFrontRefusesSettledItem(t *testing.T) {
 	}
 	var body map[string]string
 	_ = json.NewDecoder(res.Body).Decode(&body)
-	if !strings.Contains(body["error"], "only a pending item can be promoted") {
-		t.Errorf("error = %q, want it to say only a pending item can be promoted", body["error"])
+	if !strings.Contains(body["error"], "only a pending or paused item can be promoted") {
+		t.Errorf("error = %q, want it to say only a pending or paused item can be promoted", body["error"])
 	}
 }
 
@@ -633,10 +633,23 @@ func TestDequeueUnknownItem(t *testing.T) {
 	}
 }
 
+// TestQueueShutdownRouteIsGone proves a stale client's POST to the removed
+// shutdown endpoint reads as gone rather than falling through to the item route,
+// which would answer 405 and advertise DELETE on a path that has no row.
+func TestQueueShutdownRouteIsGone(t *testing.T) {
+	_, _, ts := queueServer(t, "acme")
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/shutdown", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for the deleted shutdown route", res.StatusCode)
+	}
+}
+
 // TestDequeueRunningRefused proves the backend, not just the disabled UI button,
 // rejects removing an item the hub is draining — so a Remove that races the
 // drainer promoting the item to running cannot orphan the just-spawned child.
 func TestDequeueRunningRefused(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), "acme")
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
@@ -667,6 +680,7 @@ func TestDequeueRunningRefused(t *testing.T) {
 // registered.
 func TestQueuePersistsAcrossServers(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	root := filepath.Join(t.TempDir(), "acme")
 	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
 	first.home = home
@@ -744,6 +758,7 @@ func (e errStub) Error() string { return string(e) }
 // loop the handler starts parks on the child it just spawned.
 func runOneServer(t *testing.T) (*Server, *fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), "acme")
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
@@ -912,16 +927,6 @@ func TestQueueRunItemGuards(t *testing.T) {
 			id:     "COD-1",
 			status: http.StatusConflict,
 			reason: "a loop is already running",
-		},
-		{
-			name: "repo shutting down",
-			setup: func(t *testing.T, s *Server, root string) {
-				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
-				s.beginShutdown(root)
-			},
-			id:     "COD-1",
-			status: http.StatusConflict,
-			reason: "shutting down",
 		},
 		{
 			name: "already settled item",

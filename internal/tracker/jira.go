@@ -27,6 +27,7 @@ type Jira struct {
 	BaseURL         string // Jira site base URL, e.g. https://acme.atlassian.net
 	Email           string // Atlassian account email (Basic-auth username)
 	APIToken        string // classic Jira API token (Basic-auth password)
+	StatusOverrides map[Stage]string
 }
 
 func (j *Jira) api() *jiraapi.Client {
@@ -568,31 +569,61 @@ func (j *Jira) IssueDetail(ctx context.Context, id string) (IssueDetail, error) 
 	return IssueDetail{Title: issue.Summary, Description: issue.Description, Labels: issue.Labels}, nil
 }
 
-// SetStatus transitions issue id to the named Jira status via the two-step REST
-// transition flow when a token is configured — matching the target status name
-// to a workflow transition and optionally attaching a comment — falling back to
-// the Rovo MCP on an auth/not-enabled error. An unknown target status is
-// surfaced, not sent to the MCP: the workflow simply has no transition to it.
-func (j *Jira) SetStatus(ctx context.Context, id, status, extra string) error {
-	if err := j.setStatusAPI(ctx, id, status, extra); err == nil {
+// SetStatus transitions issue id to the status this project's workflow uses for
+// stage, via the two-step REST transition flow when a token is configured,
+// falling back to the Rovo MCP on an auth/not-enabled error. A workflow that
+// offers no destination for the stage is surfaced, not sent to the MCP: the MCP
+// would have nothing more to transition to either.
+func (j *Jira) SetStatus(ctx context.Context, id string, stage Stage, extra string) error {
+	if err := j.setStatusAPI(ctx, id, stage, extra); err == nil {
 		return nil
 	} else if !j.canFallback(err) {
 		return err
 	}
-	return j.setStatusMCP(ctx, id, status, extra)
+	return j.setStatusMCP(ctx, id, stage, extra)
 }
 
-func (j *Jira) setStatusAPI(ctx context.Context, id, status, extra string) error {
-	return j.api().SetStatus(ctx, id, status, "", extra)
+func (j *Jira) setStatusAPI(ctx context.Context, id string, stage Stage, extra string) error {
+	transitions, err := j.api().Transitions(ctx, id)
+	if err != nil {
+		return err
+	}
+	options := make([]WorkflowOption, len(transitions))
+	for i, tr := range transitions {
+		options[i] = WorkflowOption{Name: tr.Destination(), Category: tr.Status.Category}
+	}
+	i, ok := ResolveStage(stage, j.StatusOverrides[stage], jiraCategories(stage), options)
+	if !ok {
+		return fmt.Errorf("%w for %s on %s (available: %s) — pin one with %s",
+			jiraapi.ErrNoTransition, stage.Display(), id, optionNames(options), stage.ConfigKey())
+	}
+	return j.api().ApplyTransition(ctx, id, transitions[i].ID, "", extra)
 }
 
-func (j *Jira) setStatusMCP(ctx context.Context, id, status, extra string) error {
-	_, err := j.Runner.Run(ctx, j.setStatusPrompt(id, status, extra), "status")
+// jiraCategories are the statusCategory keys a stage settles for when no status
+// name matched. The three keys are universal across Jira workflows, so a project
+// that renamed every status still lands the ticket in the right bucket.
+func jiraCategories(stage Stage) []string {
+	switch stage {
+	case StageTodo:
+		return []string{"new"}
+	case StageInProgress, StageInReview:
+		return []string{"indeterminate"}
+	case StageDone:
+		return []string{"done"}
+	default:
+		return nil
+	}
+}
+
+func (j *Jira) setStatusMCP(ctx context.Context, id string, stage Stage, extra string) error {
+	_, err := j.Runner.Run(ctx, j.setStatusPrompt(id, stage, extra), "status")
 	return err
 }
 
-func (j *Jira) setStatusPrompt(id, status, extra string) string {
-	prompt := fmt.Sprintf("Use the Jira (Rovo) MCP to transition issue %s to the status %q.", id, status)
+func (j *Jira) setStatusPrompt(id string, stage Stage, extra string) string {
+	prompt := fmt.Sprintf("Use the Jira (Rovo) MCP to transition issue %s to the status the project's workflow uses for %q "+
+		"(match the workflow's own status names; if none is named that, pick the closest available transition).", id, stage.Display())
 	if extra != "" {
 		prompt += " " + extra
 	}
@@ -665,14 +696,14 @@ func (j *Jira) Reset(ctx context.Context, id string) error {
 	extra := fmt.Sprintf("Remove the label '%s' if present and ensure '%s' is present so the loop can re-pick it; "+
 		"transition the issue to status 'To Do' or 'Backlog'; "+
 		"add a comment: \"Trau loop reset %s to start fresh.\"", j.QuarantineLabel, j.ReadyLabel, id)
-	return j.setStatusMCP(ctx, id, "To Do", extra)
+	return j.setStatusMCP(ctx, id, StageTodo, extra)
 }
 
 func (j *Jira) resetAPI(ctx context.Context, id string) error {
 	if err := j.api().UpdateLabels(ctx, id, []string{j.ReadyLabel}, []string{j.QuarantineLabel}); err != nil {
 		return err
 	}
-	return j.api().SetStatus(ctx, id, "To Do", "", fmt.Sprintf("Trau loop reset %s to start fresh.", id))
+	return j.setStatusAPI(ctx, id, StageTodo, fmt.Sprintf("Trau loop reset %s to start fresh.", id))
 }
 
 // Quarantine marks a ticket unrecoverable: it drops the ready label, adds the

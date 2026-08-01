@@ -26,6 +26,7 @@ type Linear struct {
 	Team            string
 	Project         string
 	APIKey          string
+	StatusOverrides map[Stage]string
 	// endpoint overrides the Linear GraphQL endpoint; empty targets the public
 	// API. It exists so tests can point the direct-API path at a fake server.
 	endpoint string
@@ -821,23 +822,27 @@ func (l *Linear) fileBugPrompt(id, verdictPath string) string {
 		verdictPath, target, id, id, prefixOf(id))
 }
 
-// SetStatus moves a ticket to a workflow status (e.g. "In Review", "Done"). It
+// SetStatus moves a ticket to the workflow state this team uses for stage. It
 // uses the GraphQL API when possible, otherwise the MCP. extra is an optional
 // trailing instruction spliced in before the DONE acknowledgement (e.g. attaching
 // a PR link); in API mode extra is treated as a comment body.
-func (l *Linear) SetStatus(ctx context.Context, id, status, extra string) error {
-	if err := l.setStatusAPI(ctx, id, status, extra); err == nil {
+func (l *Linear) SetStatus(ctx context.Context, id string, stage Stage, extra string) error {
+	if err := l.setStatusAPI(ctx, id, stage, extra); err == nil {
 		return nil
 	} else if !shouldFallback(err) {
 		return err
 	}
 
-	_, err := l.Runner.Run(ctx, l.setStatusPrompt(id, status, extra), "status")
+	_, err := l.Runner.Run(ctx, l.setStatusPrompt(id, stage, extra), "status")
 	return err
 }
 
-func (l *Linear) setStatusAPI(ctx context.Context, id, status, extra string) error {
-	if err := l.api().SetStatus(ctx, id, status, nil); err != nil {
+func (l *Linear) setStatusAPI(ctx context.Context, id string, stage Stage, extra string) error {
+	state, err := l.resolveState(ctx, id, stage)
+	if err != nil {
+		return err
+	}
+	if err := l.api().SetStatus(ctx, id, state, nil); err != nil {
 		return err
 	}
 	if extra != "" {
@@ -847,8 +852,45 @@ func (l *Linear) setStatusAPI(ctx context.Context, id, status, extra string) err
 	return nil
 }
 
-func (l *Linear) setStatusPrompt(id, status, extra string) string {
-	prompt := fmt.Sprintf("Use the Linear MCP to set issue %s to the status %q.", id, status)
+// resolveState picks the workflow state this team uses for stage. Teams rename
+// and add states freely, so a name match is only the first attempt: the state's
+// type — the bucket Linear itself keeps stable — is what a customized workflow
+// resolves through.
+func (l *Linear) resolveState(ctx context.Context, id string, stage Stage) (string, error) {
+	states, err := l.api().WorkflowStates(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	options := make([]WorkflowOption, len(states))
+	for i, s := range states {
+		options[i] = WorkflowOption{Name: s.Name, Category: s.Type}
+	}
+	i, ok := ResolveStage(stage, l.StatusOverrides[stage], linearStateTypes(stage), options)
+	if !ok {
+		return "", fmt.Errorf("linear: no workflow state for %s on %s (available: %s) — pin one with %s",
+			stage.Display(), id, optionNames(options), stage.ConfigKey())
+	}
+	return options[i].Name, nil
+}
+
+// linearStateTypes are the state types a stage settles for when no state name
+// matched. Linear's types are fixed by the product, so they hold on any team.
+func linearStateTypes(stage Stage) []string {
+	switch stage {
+	case StageTodo:
+		return []string{"unstarted", "backlog", "triage"}
+	case StageInProgress, StageInReview:
+		return []string{"started"}
+	case StageDone:
+		return []string{"completed"}
+	default:
+		return nil
+	}
+}
+
+func (l *Linear) setStatusPrompt(id string, stage Stage, extra string) string {
+	prompt := fmt.Sprintf("Use the Linear MCP to set issue %s to the workflow state this team uses for %q "+
+		"(match the team's own state names; if none is named that, pick the closest state of the same type).", id, stage.Display())
 	if extra != "" {
 		prompt += " " + extra
 	}
@@ -868,7 +910,7 @@ func (l *Linear) Reset(ctx context.Context, id string) error {
 	extra := fmt.Sprintf("Remove the label '%s' if present and ensure '%s' is present so the loop can re-pick it; "+
 		"set the workflow state to an unstarted one (type backlog/unstarted); "+
 		"add a comment: \"Trau loop reset %s to start fresh.\"", l.QuarantineLabel, l.ReadyLabel, id)
-	return l.SetStatus(ctx, id, "Todo", extra)
+	return l.SetStatus(ctx, id, StageTodo, extra)
 }
 
 func (l *Linear) resetAPI(ctx context.Context, id string) error {
@@ -890,7 +932,11 @@ func (l *Linear) resetAPI(ctx context.Context, id string) error {
 	if !seenReady {
 		labelNames = append(labelNames, l.ReadyLabel)
 	}
-	if err := l.api().SetStatus(ctx, id, "Todo", labelNames); err != nil {
+	state, err := l.resolveState(ctx, id, StageTodo)
+	if err != nil {
+		return err
+	}
+	if err := l.api().SetStatus(ctx, id, state, labelNames); err != nil {
 		return err
 	}
 	return l.api().AddComment(ctx, id, fmt.Sprintf("Trau loop reset %s to start fresh.", id))

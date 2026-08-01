@@ -9,17 +9,14 @@ import { Textarea } from '@/components/ui/textarea'
 import {
   NoSkillsBanner,
   NoBrowserBanner,
-  NoticeBanner,
   PRStatusBadge,
   RemovedBanner,
-  RunActionsRow,
   RunPageHeader,
   SteerComposer,
   SteerNotesTimeline,
   StatusPill,
   TerminalCard,
   useRepoRouteScope,
-  type CheckpointNotice,
   type RunState,
 } from '@/components/trau'
 import { Markdown } from '@/components/markdown'
@@ -50,20 +47,13 @@ function RunDetailPage() {
   const { repo, ticket } = Route.useParams()
   useRepoRouteScope(repo)
   const { data, error, isPending } = useQuery(runDetailQueryOptions(repo, ticket))
-  const [notice, setNotice] = useState<CheckpointNotice | null>(null)
 
   usePageTitle(runTitle(ticket, data ? boardPill(data).label : ''))
 
   return (
     <div className="flex flex-col gap-4">
       {data ? (
-        <Detail
-          repo={repo}
-          run={data}
-          notice={notice}
-          onNotice={setNotice}
-          onDismiss={() => setNotice(null)}
-        />
+        <Detail repo={repo} run={data} />
       ) : (
         <>
           <RunPageHeader ticket={ticket} />
@@ -79,19 +69,7 @@ function RunDetailPage() {
   )
 }
 
-function Detail({
-  repo,
-  run,
-  notice,
-  onNotice,
-  onDismiss,
-}: {
-  repo: string
-  run: RunDetail
-  notice: CheckpointNotice | null
-  onNotice: (notice: CheckpointNotice) => void
-  onDismiss: () => void
-}) {
+function Detail({ repo, run }: { repo: string; run: RunDetail }) {
   const pill = boardPill(run)
   const stopped = run.failure_class === 'stopped'
   const openPR = run.pr_url ? (
@@ -110,18 +88,10 @@ function Detail({
         title={run.title}
         badges={<StatusPill state={pill.state} label={pill.label} />}
         actions={
-          <RunActionsRow
-            repo={repo}
-            ticket={run.ticket}
-            phase={run.phase}
-            onNotice={onNotice}
-            leading={
-              <>
-                {openPR}
-                <PRStatusBadge status={run.pr_status} />
-              </>
-            }
-          />
+          <>
+            {openPR}
+            <PRStatusBadge status={run.pr_status} />
+          </>
         }
         meta={
           <div className="flex flex-wrap items-center gap-2 font-mono text-[0.7rem] text-muted-foreground">
@@ -140,8 +110,6 @@ function Detail({
           </div>
         }
       />
-
-      {notice && <NoticeBanner notice={notice} onDismiss={onDismiss} />}
 
       {run.removed && <RemovedBanner />}
 

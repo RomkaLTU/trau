@@ -40,6 +40,9 @@ type WorkItem struct {
 	Type    string
 	Project string
 	Tags    []string
+	// AreaPath is System.AreaPath, the in-project hierarchy a sync pull can narrow
+	// itself to.
+	AreaPath string
 	// Priority is Microsoft.VSTS.Common.Priority (1 highest … 4 lowest), or 5 when
 	// the work-item type carries no priority field.
 	Priority int
@@ -47,6 +50,16 @@ type WorkItem struct {
 	Parent    int
 	Children  []int
 	BlockedBy []int
+
+	AssignedToID   string
+	AssignedToName string
+	// CreatedAt and UpdatedAt are System.CreatedDate and System.ChangedDate, the
+	// stamps an incremental pull tracks its cursor on.
+	CreatedAt string
+	UpdatedAt string
+	// CommentCount is System.CommentCount. The discussion is only readable one work
+	// item at a time, so a zero count is what spares a bulk pull that round-trip.
+	CommentCount int
 }
 
 // HasChildren reports whether the work item is a parent — an epic or feature the
@@ -111,18 +124,20 @@ func (c *Client) WorkItems(ctx context.Context, project string, ids []int) ([]Wo
 }
 
 // Eligible returns the work items the loop could pick next: everything in
-// project tagged with readyLabel, ranked by priority then id, each carrying
-// whether all of its blockers are resolved. The tag filter runs server-side in
-// WIQL; the remaining policy — unstarted, not a parent, blockers clear — is the
-// caller's, matching what the other providers do with their own query languages.
-func (c *Client) Eligible(ctx context.Context, project, readyLabel string) ([]Candidate, error) {
+// project tagged with readyLabel — narrowed to scope, so the loop picks from the
+// same slice of the board the hub syncs — ranked by priority then id, each carrying
+// whether all of its blockers are resolved. The tag and scope filters run
+// server-side in WIQL; the remaining policy — unstarted, not a parent, blockers
+// clear — is the caller's, matching what the other providers do with their own
+// query languages.
+func (c *Client) Eligible(ctx context.Context, project string, scope BoardScope, readyLabel string) ([]Candidate, error) {
 	if !c.enabled() {
 		return nil, ErrNotEnabled
 	}
 	if strings.TrimSpace(readyLabel) == "" {
 		return nil, nil
 	}
-	ids, err := c.query(ctx, project, eligibleWIQL(project, readyLabel))
+	ids, err := c.query(ctx, project, eligibleWIQL(project, scope, readyLabel), batchLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +147,7 @@ func (c *Client) Eligible(ctx context.Context, project, readyLabel string) ([]Ca
 	}
 	rank(items)
 
-	resolved, err := c.blockerStates(ctx, project, items)
+	resolved, err := c.BlockerStates(ctx, project, items)
 	if err != nil {
 		return nil, err
 	}
@@ -156,10 +171,10 @@ func (c *Client) Children(ctx context.Context, project string, id int) ([]WorkIt
 	return c.WorkItems(ctx, project, parent.Children)
 }
 
-// blockerStates resolves the terminal-ness of every blocker referenced by items
+// BlockerStates resolves the terminal-ness of every blocker referenced by items
 // in one batch read, keyed by work-item id. Blockers the credentials cannot see
 // are absent, which allResolved treats as unresolved.
-func (c *Client) blockerStates(ctx context.Context, project string, items []WorkItem) (map[int]bool, error) {
+func (c *Client) BlockerStates(ctx context.Context, project string, items []WorkItem) (map[int]bool, error) {
 	var ids []int
 	seen := map[int]bool{}
 	for _, item := range items {
@@ -213,9 +228,10 @@ func rank(items []WorkItem) {
 // is expressed here: state vocabularies differ per process template, so the
 // unstarted test is applied client-side against the normalized category instead
 // of being hard-coded into a state-name list this query cannot know.
-func eligibleWIQL(project, readyLabel string) string {
+func eligibleWIQL(project string, scope BoardScope, readyLabel string) string {
 	return "SELECT [System.Id] FROM WorkItems" +
 		" WHERE [System.TeamProject] = " + wiqlString(project) +
+		scopeClause(scope) +
 		" AND [System.Tags] CONTAINS " + wiqlString(readyLabel) +
 		" ORDER BY [System.Id] ASC"
 }
@@ -225,9 +241,12 @@ func wiqlString(s string) string {
 	return "'" + strings.ReplaceAll(strings.TrimSpace(s), "'", "''") + "'"
 }
 
-// query runs a flat WIQL query and returns the matching work-item ids. A flat
-// query answers with ids only, so callers follow up with a batch read.
-func (c *Client) query(ctx context.Context, project, wiql string) ([]int, error) {
+// query runs a flat WIQL query and returns the matching work-item ids, capped at
+// top rows. A flat query answers with ids only, so callers follow up with a batch
+// read. timePrecision is what makes a date comparison read the time half of its
+// literal: the endpoint defaults to day precision and rejects any timestamp
+// carrying a clock, which is every cursor an incremental pull holds.
+func (c *Client) query(ctx context.Context, project, wiql string, top int) ([]int, error) {
 	body, err := json.Marshal(map[string]string{"query": wiql})
 	if err != nil {
 		return nil, err
@@ -237,7 +256,7 @@ func (c *Client) query(ctx context.Context, project, wiql string) ([]int, error)
 			ID int `json:"id"`
 		} `json:"workItems"`
 	}
-	path := projectPath(project, "/wiql?$top="+strconv.Itoa(batchLimit))
+	path := projectPath(project, "/wiql?$top="+strconv.Itoa(top)+"&timePrecision=true")
 	if err := c.do(ctx, http.MethodPost, path, body, &dst); err != nil {
 		return nil, err
 	}
@@ -289,10 +308,18 @@ type workItemResponse struct {
 		Type               string `json:"System.WorkItemType"`
 		Project            string `json:"System.TeamProject"`
 		Tags               string `json:"System.Tags"`
+		AreaPath           string `json:"System.AreaPath"`
 		Description        string `json:"System.Description"`
 		ReproSteps         string `json:"Microsoft.VSTS.TCM.ReproSteps"`
 		AcceptanceCriteria string `json:"Microsoft.VSTS.Common.AcceptanceCriteria"`
 		Priority           *int   `json:"Microsoft.VSTS.Common.Priority"`
+		CreatedDate        string `json:"System.CreatedDate"`
+		ChangedDate        string `json:"System.ChangedDate"`
+		CommentCount       int    `json:"System.CommentCount"`
+		AssignedTo         struct {
+			ID          string `json:"id"`
+			DisplayName string `json:"displayName"`
+		} `json:"System.AssignedTo"`
 	} `json:"fields"`
 	Relations []struct {
 		Rel string `json:"rel"`
@@ -305,15 +332,21 @@ type workItemResponse struct {
 // parent, children and blockers.
 func (r *workItemResponse) toWorkItem() WorkItem {
 	item := WorkItem{
-		ID:          r.ID,
-		Title:       r.Fields.Title,
-		Description: describe(r.Fields.Description, r.Fields.ReproSteps, r.Fields.AcceptanceCriteria),
-		State:       r.Fields.State,
-		Reason:      r.Fields.Reason,
-		Type:        r.Fields.Type,
-		Project:     r.Fields.Project,
-		Tags:        ParseTags(r.Fields.Tags),
-		Priority:    priorityUnset,
+		ID:             r.ID,
+		Title:          r.Fields.Title,
+		Description:    describe(r.Fields.Description, r.Fields.ReproSteps, r.Fields.AcceptanceCriteria),
+		State:          r.Fields.State,
+		Reason:         r.Fields.Reason,
+		Type:           r.Fields.Type,
+		Project:        r.Fields.Project,
+		Tags:           ParseTags(r.Fields.Tags),
+		AreaPath:       r.Fields.AreaPath,
+		Priority:       priorityUnset,
+		AssignedToID:   r.Fields.AssignedTo.ID,
+		AssignedToName: r.Fields.AssignedTo.DisplayName,
+		CreatedAt:      r.Fields.CreatedDate,
+		UpdatedAt:      r.Fields.ChangedDate,
+		CommentCount:   r.Fields.CommentCount,
 	}
 	if p := r.Fields.Priority; p != nil {
 		item.Priority = *p

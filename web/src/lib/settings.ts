@@ -126,6 +126,19 @@ export function matchesQuery(item: ConfigKey, query: string): boolean {
   )
 }
 
+export interface SettingsSearch {
+  q?: string
+}
+
+// The router merges this over the raw params, so a rejected q has to be
+// overwritten with undefined — omitting it leaves the raw value in place.
+export function parseSettingsSearch(
+  search: Record<string, unknown>,
+): SettingsSearch {
+  const { q } = search
+  return { q: typeof q === 'string' && q !== '' ? q : undefined }
+}
+
 export const ROUTING_SECTION = 'Per-phase routing'
 export const THEME_SECTION = 'TUI & notifications'
 
@@ -289,4 +302,29 @@ export function deriveSections(keys: ConfigKey[]): Section[] {
     })
   }
   return sections
+}
+
+export interface SettingMatch {
+  item: ConfigKey
+  section: string
+}
+
+const PALETTE_MATCH_LIMIT = 5
+
+export function matchSettings(
+  keys: ConfigKey[],
+  query: string,
+): SettingMatch[] {
+  const trimmed = query.trim()
+  if (trimmed === '') return []
+
+  const matches: SettingMatch[] = []
+  for (const section of deriveSections(keys)) {
+    for (const item of section.keys) {
+      if (!matchesQuery(item, trimmed)) continue
+      matches.push({ item, section: section.group })
+      if (matches.length === PALETTE_MATCH_LIMIT) return matches
+    }
+  }
+  return matches
 }

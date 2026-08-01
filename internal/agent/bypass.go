@@ -61,6 +61,44 @@ func ClaudeBypassAccepted() (bool, error) {
 	return state.Accepted, nil
 }
 
+// ClaudeFirstRun is what Claude Code's global config records about the
+// interactive first run it demands on every new machine: the onboarding wizard
+// (theme, fullscreen renderer) and a login. Both dialogs open on the pty trau
+// drives, where no one can answer them.
+type ClaudeFirstRun struct {
+	OnboardingCompleted bool
+	LoggedIn            bool
+}
+
+// ClaudeFirstRunState reads that state from the same global config
+// ClaudeBypassAccepted reads. A missing config file is the never-run-here case
+// and comes back zero-valued rather than as an error, which is reserved for an
+// unreadable or unparsable file.
+func ClaudeFirstRunState() (ClaudeFirstRun, error) {
+	path, err := claudeGlobalConfigPath()
+	if err != nil {
+		return ClaudeFirstRun{}, err
+	}
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ClaudeFirstRun{}, nil
+	}
+	if err != nil {
+		return ClaudeFirstRun{}, err
+	}
+	var state struct {
+		OnboardingCompleted bool           `json:"hasCompletedOnboarding"`
+		OAuthAccount        map[string]any `json:"oauthAccount"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return ClaudeFirstRun{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return ClaudeFirstRun{
+		OnboardingCompleted: state.OnboardingCompleted,
+		LoggedIn:            len(state.OAuthAccount) > 0,
+	}, nil
+}
+
 // claudeGlobalConfigPath is where Claude Code keeps its per-machine state
 // (.claude.json). By default the file sits in the home directory as a sibling
 // of the ~/.claude dir — not inside it — and moves into CLAUDE_CONFIG_DIR when

@@ -193,6 +193,12 @@ type Git interface {
 	// CheckoutRemoteBranch creates a local branch from remote/branch and checks
 	// it out, adopting existing remote work instead of starting fresh.
 	CheckoutRemoteBranch(ctx context.Context, remote, branch string) error
+
+	// RemoteSHA returns the commit remote/branch points at as the REMOTE reports it
+	// (git ls-remote), or "" when the remote has no such branch. A remote-tracking
+	// ref cannot answer this: a push that never landed leaves it looking like one
+	// that did.
+	RemoteSHA(ctx context.Context, remote, branch string) (string, error)
 }
 
 // Check is one PR status check (gh pr checks --json name,bucket). bucket is gh's
@@ -212,11 +218,27 @@ type GitHub interface {
 
 	MergedPRURL(ctx context.Context, branch string) (string, error)
 
-	CreatePR(ctx context.Context, base, head, title, body string) (string, error)
+	// CreatePR opens a PR against base from head. A draft PR is one that tracks
+	// work without asking for review — what exit hygiene leaves on a partial epic
+	// branch so it is never stranded untracked.
+	CreatePR(ctx context.Context, base, head, title, body string, draft bool) (string, error)
+
+	// MarkPRReady takes a PR out of draft, so an epic a later run finishes can ship
+	// through the draft PR an earlier run's exit hygiene left behind.
+	MarkPRReady(ctx context.Context, pr string) error
 
 	PRState(ctx context.Context, pr string) (string, error)
 
 	Checks(ctx context.Context, pr string) ([]Check, error)
+
+	// PRSize reports how much the PR carries as GitHub sees it — the number of
+	// commits on it and the number of files it changes against its base. Both read
+	// as 0 when gh cannot answer, which the merge gate treats as unmeasured.
+	PRSize(ctx context.Context, pr string) (commits, files int, err error)
+
+	// ClosePR closes a PR without merging it — what a requeue does to the attempt
+	// PR a quarantined ticket left open.
+	ClosePR(ctx context.Context, pr string) error
 
 	Merge(ctx context.Context, pr, method string, deleteBranch bool) error
 }
@@ -452,8 +474,13 @@ type Pipeline struct {
 	// QueuedLabel is the label the hub queue mirrors onto waiting tickets, stripped
 	// as the ticket goes In Progress. Empty disables the write.
 	QueuedLabel string
-	MaxRepairs  int
-	MaxBugfixes int
+	// ReadyLabel and QuarantineLabel are the labels the loop manages on the tracker
+	// (config READY_LABEL / QUARANTINE_LABEL). Requeue reads them back off the
+	// ticket so it reports only the steps it actually had to take.
+	ReadyLabel      string
+	QuarantineLabel string
+	MaxRepairs      int
+	MaxBugfixes     int
 
 	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
 	// output stall, non-rate-limit crash) is retried on a fresh process per
@@ -490,12 +517,19 @@ type Pipeline struct {
 	AppURLs     map[string]string
 	AutoMerge   bool
 	MergeMethod string
+	// DeliveredState is the tracker status merged work moves to (config
+	// DELIVERED_STATE); empty means Done. When it is non-terminal the merged
+	// checkpoint, not the tracker's own terminality, settles the epic gate.
+	DeliveredState string
 	// DeterministicCommit routes a squash repo's commit phase through a templated
 	// Conventional Commit instead of a commit agent (config DETERMINISTIC_COMMIT).
 	// Non-squash merge methods always use the agent commit.
 	DeterministicCommit bool
 	ExpectedChecks      string
-	RequireCI           bool
+	// RequireCI is the merge gate's mode (config REQUIRE_CI): auto — the zero
+	// value — waits for checks only when a pull_request workflow targets the PR's
+	// base, 1 always waits, 0 never does.
+	RequireCI config.CIGate
 	// RequireRepoChanges gates the post-build empty-diff guard (config
 	// REQUIRE_REPO_CHANGES, default on). When set, a build that left the managed
 	// repo unchanged faults instead of advancing to a hollow handoff or empty PR.
@@ -506,7 +540,7 @@ type Pipeline struct {
 	LintFixCmd string
 	// AutoStash gates the fresh-pick WIP guard (config AUTO_STASH, default on). When
 	// set, EnsureCleanBase stashes the user's uncommitted tracked changes (recording
-	// the branch they were on) instead of aborting, and RestoreWIP pops them back at
+	// the branch they were on) instead of aborting, and ExitCleanup pops them back at
 	// session end. When off, a dirty tracked tree aborts the run as before. It does
 	// not gate the reconcile of an interrupted run's leftovers, which is a commit.
 	AutoStash bool
@@ -635,13 +669,11 @@ type Pipeline struct {
 	// to time.Now (overridable in tests).
 	Now func() time.Time
 
-	EpicID     string
-	epicBranch string
+	EpicID string
 
-	// stashedBranch records the branch the user's WIP was on when EnsureCleanBase
-	// auto-stashed it, so RestoreWIP can check that branch back out and pop the stash
-	// at session end. Empty means nothing was stashed this run.
-	stashedBranch string
+	// exit collects what this run has to undo when it ends — the checkout it moved,
+	// the WIP it stashed, the epic branch it left behind. ExitCleanup consumes it.
+	exit exitState
 
 	// detachedBase records the ref checkoutBase parked HEAD on when another worktree
 	// held the base branch, so baseRef cuts from those commits and not from the local
@@ -757,6 +789,7 @@ func (p *Pipeline) EnsureOwnedProject(ctx context.Context, id string) error {
 // here; verify and the CI gate run giveUp themselves and return the resulting
 // *GiveUpError, which passes straight through.
 func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
+	p.armExitCleanup(ctx)
 	if err := p.EnsureOwnedProject(ctx, id); err != nil {
 		return err
 	}
@@ -1140,17 +1173,38 @@ func NextPhaseLabel(phase string) string {
 }
 
 // prefix returns the configured issue-identifier prefix, falling back to COD when
-// the pipeline was constructed without one (e.g. in tests).
+// the pipeline was constructed without one (e.g. in tests). An Azure DevOps board
+// addresses work items by number and settles on no prefix at all (ADR 0024 §1), so
+// there the empty prefix is the answer rather than a missing one.
 func (p *Pipeline) prefix() string {
-	if p.Prefix != "" {
+	if p.Prefix != "" || p.TrackerProvider == "azure" {
 		return p.Prefix
 	}
 	return "COD"
 }
 
+// reBranchNumber matches the bare work-item number a feature branch leads with when
+// the tracker settles on no prefix. Anchoring is what keeps it off a hand-made
+// branch: feature/fix-oauth2 carries a number, just not at the front.
+var reBranchNumber = regexp.MustCompile(`^[0-9]+`)
+
+// branchTicket recovers the ticket identifier a feature branch was named for, or ""
+// when head is not one trau parked. The id always leads the branch name —
+// feature/COD-712-slug, or feature/6694-slug on a board that numbers its tickets.
+func branchTicket(head, prefix string) string {
+	rest, ok := strings.CutPrefix(head, "feature/")
+	if !ok {
+		return ""
+	}
+	if prefix == "" {
+		return reBranchNumber.FindString(rest)
+	}
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `-[0-9]+`).FindString(rest)
+}
+
 // InferredResumeFunc is the bridge for work started BEFORE state tracking (or whose
-// state file was lost): if HEAD is parked on a feature/<PREFIX>-… branch with no
-// tracked checkpoint, it infers how far the work got from the artifacts on disk
+// state file was lost): if HEAD is parked on a feature branch named for a ticket with
+// no tracked checkpoint, it infers how far the work got from the artifacts on disk
 // (branch → built; handoff file → handed_off; passing verdict → verified; open PR →
 // pr_open), seeds the state file, and returns (id, phase) for the resume path.
 // Conservative on purpose — only the currently checked-out branch, never a scan. It
@@ -1160,12 +1214,11 @@ func (p *Pipeline) prefix() string {
 // keep bounds the adoption to a run's scope — one pinned ticket, or an epic and its
 // children. A nil keep adopts whatever HEAD is on.
 func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) bool) (id, phase string) {
-	pfx := p.prefix()
 	head, err := p.Git.CurrentBranch(ctx)
-	if err != nil || !strings.HasPrefix(head, "feature/"+pfx+"-") {
+	if err != nil {
 		return "", ""
 	}
-	id = regexp.MustCompile(regexp.QuoteMeta(pfx) + `-[0-9]+`).FindString(head)
+	id = branchTicket(head, p.prefix())
 	if id == "" {
 		return "", ""
 	}
@@ -1220,7 +1273,7 @@ func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
 		_ = p.State.Set(id, "BRANCH", head)
 		_ = p.State.Set(id, "PR", pr)
 		_ = p.State.Set(id, "PR_URL", url)
-		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+		if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 			p.logf("  checkpoint merged error (continuing): %v", err)
 		}
 		return true
@@ -1239,19 +1292,20 @@ func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
 }
 
 // autoStashMsg labels the stash EnsureCleanBase creates so it is recognizable in
-// `git stash list` if the run dies before RestoreWIP pops it.
+// `git stash list` if the run dies before ExitCleanup pops it.
 const autoStashMsg = "trau autostash: uncommitted WIP set aside for a fresh run"
 
 // EnsureCleanBase guards the loop's fresh-pick path: TRACKED files with uncommitted
 // changes must not ride into a fresh build (untracked tooling rides along safely).
 // Leftovers on a branch trau cut belong to a run that died without cleaning up and
 // are committed back to that branch; anything else is the user's WIP, which AutoStash
-// (default on) sets aside for RestoreWIP to put back at session end and which aborts
+// (default on) sets aside for ExitCleanup to put back at session end and which aborts
 // the run when AutoStash is off. Then it checks out the base branch and fast-forwards
 // it from the remote (best-effort); a base another worktree holds is ridden detached
 // at its tip instead, already up to date, so the pull is redundant there. The resume
 // path deliberately skips this — the feature branch's WIP IS the work.
 func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
+	p.armExitCleanup(ctx)
 	dirty, err := p.Git.StatusPorcelain(ctx)
 	if err != nil {
 		return fmt.Errorf("ensure clean base: git status: %w", err)
@@ -1366,7 +1420,7 @@ func (p *Pipeline) setAsideWIP(ctx context.Context) error {
 	if serr := p.Git.Stash(ctx, autoStashMsg); serr != nil {
 		return fmt.Errorf("tracked files have uncommitted changes and auto-stash failed: %w — commit or stash manually", serr)
 	}
-	p.stashedBranch = branch
+	p.exit.stashedBranch = branch
 	p.logf("  ↩ stashed your WIP on %s — I'll restore it when the run ends", branch)
 	return nil
 }
@@ -1386,33 +1440,6 @@ func (p *Pipeline) interruptedRunID(branch string) string {
 		}
 	}
 	return ""
-}
-
-// RestoreWIP undoes an EnsureCleanBase auto-stash at session end: it checks the
-// original branch back out and pops the stash. It is a no-op when nothing was
-// stashed, and idempotent — it consumes the recorded branch so a second deferred
-// call does nothing. Every step is best-effort: on failure the WIP stays safe in
-// `git stash`, and the log tells the user how to recover it by hand.
-func (p *Pipeline) RestoreWIP(ctx context.Context) {
-	branch := p.stashedBranch
-	if branch == "" {
-		return
-	}
-	p.stashedBranch = ""
-	// Detach from the loop's context and give the restore its own deadline so a
-	// Ctrl-C (which cancels ctx) still puts the user's WIP back rather than leaving
-	// it stranded in the stash.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	if err := p.Git.Checkout(ctx, branch, false); err != nil {
-		p.logf("  ⚠ couldn't switch back to %s (%v) — your WIP is safe: run `git stash pop` to restore it", branch, err)
-		return
-	}
-	if err := p.Git.StashPop(ctx); err != nil {
-		p.logf("  ⚠ back on %s but couldn't pop your WIP (%v) — it's in `git stash list`; run `git stash pop` to restore it", branch, err)
-		return
-	}
-	p.logf("  ↪ restored your WIP on %s", branch)
 }
 
 // Reset discards a ticket's attempt: drop its feature branch (local + remote) and
@@ -1439,6 +1466,18 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 		_ = p.Git.DeleteBranch(ctx, branch)
 		_ = p.Git.DeletePushedBranch(ctx, p.Remote, branch)
 	}
+	p.clearLocalState(id)
+	if branch != "" {
+		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
+	} else {
+		p.logf("  reset %s: cleared saved state", id)
+	}
+}
+
+// clearLocalState drops everything a ticket's attempt left on this machine: its
+// checkpoint, the hub-side artifacts and phase logs, and the prompt files and
+// attachments the phases materialized under /tmp.
+func (p *Pipeline) clearLocalState(id string) {
 	_ = os.Remove(handoffPath(id))
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
@@ -1447,11 +1486,6 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	p.clearArtifacts(id)
 	p.clearPhaseLogs(id)
 	_ = p.State.RemoveState(id)
-	if branch != "" {
-		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
-	} else {
-		p.logf("  reset %s: cleared saved state", id)
-	}
 }
 
 // PurgeLocal drops what a hard-deleted ticket left on this machine: its feature
@@ -1695,10 +1729,13 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
 		return "", &GiveUpError{ID: id, Reason: "could not create feature branch for " + id}
 	}
+	if p.EpicID != "" {
+		p.markEpicBranchStacked()
+	}
 	p.logf("  branch %s ← %s", branch, base)
 	p.pinForkPoint(ctx, id)
 
-	if err := p.Tracker.SetStatus(ctx, id, "In Progress", ""); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInProgress, ""); err != nil {
 		p.logf("  set In Progress error (continuing): %v", err)
 	}
 	p.clearQueuedLabel(ctx, id)
@@ -1772,6 +1809,17 @@ func (p *Pipeline) buildBase(ctx context.Context) (string, error) {
 		return p.epicBranchName(ctx)
 	}
 	return p.Base, nil
+}
+
+// prBase names the branch this run's slice PR targets. An epic branch that will
+// not resolve falls back to the configured base, which can only make the CI gate
+// wait longer, never less.
+func (p *Pipeline) prBase(ctx context.Context) string {
+	base, err := p.buildBase(ctx)
+	if err != nil || base == "" {
+		return p.Base
+	}
+	return base
 }
 
 // recordDiffBase stores the branch the run's work diverges from alongside its
@@ -2392,11 +2440,17 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 			if err != nil {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
 			}
+			if err := p.assertEpicBaseCurrent(ctx, id, prBase); err != nil {
+				return fmt.Errorf("commit %s: %w", id, err)
+			}
 		}
 		body := p.prBody(ctx, id, p.proofsSection(ctx, id))
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
+		}
+		if prBase != p.Base {
+			p.markEpicBranchStacked()
 		}
 	}
 	p.logf("  PR %s", prURL)
@@ -2410,7 +2464,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err := p.setPhase(id, state.PROpen); err != nil {
 		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
 	}
-	if err := p.Tracker.SetStatus(ctx, id, "In Review", "Attach this PR link to the issue: "+prURL+"."); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInReview, "Attach this PR link to the issue: "+prURL+"."); err != nil {
 		p.logf("  status (In Review) error: %v", err)
 	}
 	return nil
@@ -2428,7 +2482,7 @@ func (p *Pipeline) recordLocalDelivery(ctx context.Context, id string) error {
 	if err := p.setPhase(id, state.PROpen); err != nil {
 		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
 	}
-	if err := p.Tracker.SetStatus(ctx, id, "In Review", "This repo has no remote, so no PR was opened — "+localDeliveryNote+"."); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInReview, "This repo has no remote, so no PR was opened — "+localDeliveryNote+"."); err != nil {
 		p.logf("  status (In Review) error: %v", err)
 	}
 	return nil
@@ -2532,10 +2586,11 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 // it polls CI; on green it squash-merges and deletes the branch when AutoMerge
 // is set (else it stops at the open PR), moves the ticket to Done, and
 // checkpoints merged. A CI failure or timeout gives up — preserving the branch
-// and quarantining without aborting the loop. A merge GitHub refuses as "not
-// mergeable" (the base moved under the PR) goes through recoverUnmergeablePR —
-// sync, agent-resolved conflicts, one more CI gate — before it too becomes a
-// give-up, never a fault.
+// and quarantining without aborting the loop, as does a PR carrying work this run
+// did not push (foreignWorkInPR) — no auto-merge may land that. A merge GitHub
+// refuses as "not mergeable" (the base moved under the PR) goes through
+// recoverUnmergeablePR — sync, agent-resolved conflicts, one more CI gate — before
+// it too becomes a give-up, never a fault.
 //
 // Every outcome that reached the base hands it to the hub reload step. An epic
 // slice is excluded: its PR targets the epic branch, so nothing reached the base
@@ -2560,19 +2615,23 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return err
 	}
 	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
-		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+		if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 			return err
 		}
 		return ErrAlreadyDone
 	}
 
 	p.setActivity(id, activity.CIWait, "")
-	if err := p.pollCI(ctx, pr); err != nil {
+	if err := p.pollCI(ctx, pr, p.prBase(ctx)); err != nil {
 		p.logf("  ✗ CI: %v", err)
 		return p.giveUp(ctx, id, "CI not green")
 	}
 	if !p.AutoMerge {
 		return p.awaitManualMerge(ctx, id, pr)
+	}
+	if reason := p.foreignWorkInPR(ctx, id, pr); reason != "" {
+		p.logf("  ✗ merge gate: %s", reason)
+		return p.giveUp(ctx, id, reason)
 	}
 	p.setActivity(id, activity.Merge, "")
 	err = p.mergePR(ctx, pr)
@@ -2585,7 +2644,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		}
 		return fmt.Errorf("merge %s: %w", id, err)
 	}
-	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+	return p.markDone(ctx, id, "  ✓ merged %s")
 }
 
 // landLocally closes a remote-less run: with no PR to gate and no CI to wait for,
@@ -2618,7 +2677,7 @@ func (p *Pipeline) landLocally(ctx context.Context, id string) error {
 		return p.giveUp(ctx, id, fmt.Sprintf("could not squash-merge %s into %s locally: %v", branch, base, err))
 	}
 	p.logf("  ✓ %s squash-merged into %s (%s)", branch, base, localDeliveryNote)
-	return p.markDone(ctx, id, "  ✓ delivered %s locally, marked Done")
+	return p.markDone(ctx, id, "  ✓ delivered %s locally")
 }
 
 // resolvePR is the PR the CI gate runs on, reconciled from the recorded branch when
@@ -2672,7 +2731,7 @@ func (p *Pipeline) reconcileDeliveredBranch(ctx context.Context, id, from string
 func (p *Pipeline) adoptMergedPR(ctx context.Context, id, branch, url string) error {
 	p.recordPR(id, url)
 	p.logf("  ↻ %s had no PR recorded — branch %s shipped via PR #%s", id, branch, prNumber(url))
-	if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+	if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 		return err
 	}
 	return ErrAlreadyDone
@@ -2710,7 +2769,7 @@ func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
 		return err
 	}
 	if merged {
-		return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+		return p.markDone(ctx, id, "  ✓ merged %s")
 	}
 	p.setPRStatus(id, prStatusClosed)
 	return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
@@ -2804,7 +2863,7 @@ func (p *Pipeline) recoverUnmergeablePR(ctx context.Context, id, pr string, merg
 		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and the conflicts could not be auto-resolved — resolve manually", pr, base))
 	}
 	p.setActivity(id, activity.CIWait, "")
-	if err := p.pollCI(ctx, pr); err != nil {
+	if err := p.pollCI(ctx, pr, base); err != nil {
 		p.logf("  ✗ CI after conflict sync: %v", err)
 		return p.giveUp(ctx, id, "CI not green after syncing the PR with "+base)
 	}
@@ -2879,9 +2938,35 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 	return false, nil
 }
 
+// deliveredStateName names the status merged work moves to, for the log lines and
+// tracker comments that report it. The write itself always asks for StageDone;
+// DELIVERED_STATE is what that stage resolves to on this repo's workflow.
+func (p *Pipeline) deliveredStateName() string {
+	if name := strings.TrimSpace(p.DeliveredState); name != "" {
+		return name
+	}
+	return tracker.StageDone.Display()
+}
+
+// behindDeliveredState reports whether a tracker status sits before the state
+// delivery parks a ticket in — the only regression the loop restores. Only a
+// delivered state the vocabulary reads as terminal makes every live status a
+// regression; a QA gate, and equally a column name no stage claims, is one the
+// workflow keeps open on purpose. Statuses bucket coarser than those columns
+// (in-progress and review share one), so under a live delivered state only a fall
+// back to unstarted counts, leaving a ticket a human moved across the review
+// columns alone.
+func (p *Pipeline) behindDeliveredState(st tracker.IssueStatus) bool {
+	stage, ok := tracker.StageFor(p.deliveredStateName())
+	if ok && stage == tracker.StageDone {
+		return true
+	}
+	return st == tracker.StatusOpen
+}
+
 func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
-	if err := p.Tracker.SetStatus(ctx, id, "Done", ""); err != nil {
-		p.logf("  status (Done) error: %v", err)
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageDone, ""); err != nil {
+		p.logf("  status (%s) error: %v", p.deliveredStateName(), err)
 	} else if err := p.State.Set(id, "TRACKER_DONE", "1"); err != nil {
 		p.logf("  checkpoint TRACKER_DONE error (continuing): %v", err)
 	}
@@ -2893,16 +2978,28 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	p.emitEvent("ci", map[string]any{"state": "merged"})
 	p.emitState(id, state.Merged, "merged", "")
 	p.recordTimelog(ctx, id)
-	p.logf(logFmt, id)
+	p.logf(logFmt+" — marked %s", id, p.deliveredStateName())
 	return nil
 }
 
-func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
-	if !p.RequireCI {
+// noChecksGrace bounds how long the gate waits for a PR's first check to appear
+// before it reads the silence as an answer. GitHub registers a triggered
+// workflow within seconds, so a PR still checkless this far in is one no
+// workflow was ever going to check — waiting out the full CITimeout only delays
+// the same conclusion.
+const noChecksGrace = 120
+
+// pollCI is the merge gate. A PR that receives no check at all is its own
+// outcome rather than a timeout: checkless by design waves it through, and only
+// genuinely missing checks run out the clock into ErrCITimeout. base is the
+// branch pr targets, which decides whether any workflow could have checked it.
+func (p *Pipeline) pollCI(ctx context.Context, pr, base string) error {
+	if p.RequireCI == config.CIGateOff {
 		p.logf("  CI gate off (REQUIRE_CI=0) — not waiting for checks")
 		return nil
 	}
 	expected := splitChecks(p.ExpectedChecks)
+	scan := config.ScanPullRequestCI(p.RepoRoot)
 	sawCheck := false
 	for waited := 0; ; waited += p.CIPoll {
 		checks, _ := p.GitHub.Checks(ctx, pr)
@@ -2917,13 +3014,13 @@ func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
 			p.emitEvent("ci", map[string]any{"state": "green"})
 			return nil
 		}
+		checkless := !sawCheck && len(expected) == 0
+		if checkless && p.checklessByDesign(scan, base, waited) {
+			p.emitEvent("ci", map[string]any{"state": "skipped"})
+			return nil
+		}
 		if waited >= p.CITimeout {
-			if !sawCheck && len(expected) == 0 {
-				if config.ScanPullRequestCI(p.RepoRoot).AllPathFiltered {
-					p.logf("  ⓘ no checks appeared and every PR workflow is path-filtered — this change matches none of them; skipping the CI gate")
-					p.emitEvent("ci", map[string]any{"state": "skipped"})
-					return nil
-				}
+			if checkless {
 				p.logf("  ⓘ no checks ever appeared — if this repo has no PR CI, set REQUIRE_CI=0 to skip the gate")
 			}
 			p.emitEvent("ci", map[string]any{"state": "failing"})
@@ -2932,6 +3029,38 @@ func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
 		p.emitEvent("ci", map[string]any{"state": "pending", "poll_secs": p.CIPoll})
 		p.sleep(p.CIPoll)
 	}
+}
+
+// checklessByDesign reports whether a PR still checkless waited seconds in is
+// one the repo never configured CI for — rather than one whose CI was configured
+// and failed to report, which stays a timeout. The repo's own PR workflows are
+// the proof, so how long the gate holds out for it depends on what they show: a
+// base they demonstrably skip is answered as soon as the grace window passes,
+// while a repo with no pull_request workflow at all says nothing about a CI
+// hosted outside Actions and is only waived once the full CITimeout has passed
+// without its first check. Both waivers merge work no check ever saw, so each
+// one says so in the log.
+func (p *Pipeline) checklessByDesign(scan config.PRCIScan, base string, waited int) bool {
+	if waited < min(noChecksGrace, p.CITimeout) {
+		return false
+	}
+	if scan.AllPathFiltered {
+		p.logf("  ⓘ no checks appeared and every PR workflow is path-filtered — this change matches none of them; skipping the CI gate")
+		return true
+	}
+	if p.RequireCI == config.CIGateOn || scan.CoversBranch(base) {
+		return false
+	}
+	switch {
+	case scan.HasPRWorkflows:
+		p.logf("  ⚠ no CI configured on base %s — no pull_request workflow targets it, so no check can ever appear", base)
+	case waited >= p.CITimeout:
+		p.logf("  ⚠ no check appeared on %s within CI_TIMEOUT and this repo has no pull_request workflow to produce one", base)
+	default:
+		return false
+	}
+	p.logf("  ⚠ merging without a CI verdict (REQUIRE_CI=auto); set REQUIRE_CI=1 to gate on checks anyway")
+	return true
 }
 
 func (p *Pipeline) sleep(seconds int) {
@@ -3120,7 +3249,7 @@ func classifyRemotePushErr(probeErr error) pushOutcome {
 func (p *Pipeline) createOrAdoptPR(ctx context.Context, base, branch, title, body string) (string, error) {
 	var url string
 	err := p.retryGH(ctx, "gh pr create", func() error {
-		created, e := p.GitHub.CreatePR(ctx, base, branch, title, body)
+		created, e := p.GitHub.CreatePR(ctx, base, branch, title, body, false)
 		if e == nil {
 			url = created
 			return nil
@@ -3204,7 +3333,7 @@ func prNumberInt(url string) int {
 
 var (
 	reBranchType = regexp.MustCompile(`^[a-z]+/`)
-	reBranchID   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+-`)
+	reBranchID   = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*-)?[0-9]+-`)
 )
 
 func prDesc(branch string) string {
@@ -5445,6 +5574,20 @@ func (g ExecGit) RemoteBranchExists(ctx context.Context, remote, branch string) 
 	return false, fmt.Errorf("ls-remote %s %s: %w", remote, branch, err)
 }
 
+// RemoteSHA returns the commit remote/branch points at, straight from the remote.
+// A branch the remote does not have yields no ls-remote line, which reads as
+// ("", nil) — an expected answer; only a failure to reach the remote is an error.
+func (g ExecGit) RemoteSHA(ctx context.Context, remote, branch string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"ls-remote", "--heads", remote, "refs/heads/"+branch).Output()
+	if err != nil {
+		return "", fmt.Errorf("ls-remote %s %s: %w", remote, branch, err)
+	}
+	// Each line is "<sha>\trefs/heads/<branch>"; the exact refspec matches at most one.
+	sha, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	return sha, nil
+}
+
 // CheckoutRemoteBranch creates local <branch> at remote/<branch>'s tip and checks
 // it out (git fetch <remote> <branch>:<branch>; git checkout <branch>). Used only
 // when the branch is absent locally, so the fetch is a clean create with no
@@ -5550,12 +5693,25 @@ func (g ExecGitHub) PRState(ctx context.Context, pr string) (string, error) {
 }
 
 // CreatePR opens a PR against base from head and returns the URL gh prints.
-func (g ExecGitHub) CreatePR(ctx context.Context, base, head, title, body string) (string, error) {
-	out, err := g.output(ctx, "pr", "create", "--base", base, "--head", head, "--title", title, "--body", body)
+func (g ExecGitHub) CreatePR(ctx context.Context, base, head, title, body string, draft bool) (string, error) {
+	args := []string{"pr", "create", "--base", base, "--head", head, "--title", title, "--body", body}
+	if draft {
+		args = append(args, "--draft")
+	}
+	out, err := g.output(ctx, args...)
 	if err != nil {
 		return "", fmt.Errorf("gh pr create: %w", err)
 	}
 	return out, nil
+}
+
+// MarkPRReady takes pr out of draft. gh reports a PR that is already open for
+// review as a failure, so callers apply the swallow-and-continue convention.
+func (g ExecGitHub) MarkPRReady(ctx context.Context, pr string) error {
+	if _, err := g.output(ctx, "pr", "ready", pr); err != nil {
+		return fmt.Errorf("gh pr ready: %w", err)
+	}
+	return nil
 }
 
 // Checks returns the PR's status checks. A gh error reads as no checks, so pollCI
@@ -5570,6 +5726,32 @@ func (g ExecGitHub) Checks(ctx context.Context, pr string) ([]Check, error) {
 		return nil, nil
 	}
 	return checks, nil
+}
+
+// PRSize returns the PR's commit count and changed-file count. A gh error or a
+// payload it cannot parse reads as (0, 0, nil) — the merge gate then has nothing to
+// compare and lets the merge through, as it does for every other blind spot.
+func (g ExecGitHub) PRSize(ctx context.Context, pr string) (int, int, error) {
+	out, err := g.output(ctx, "pr", "view", pr, "--json", "commits,changedFiles")
+	if err != nil {
+		return 0, 0, nil
+	}
+	var view struct {
+		Commits      []struct{} `json:"commits"`
+		ChangedFiles int        `json:"changedFiles"`
+	}
+	if err := json.Unmarshal([]byte(out), &view); err != nil {
+		return 0, 0, nil
+	}
+	return len(view.Commits), view.ChangedFiles, nil
+}
+
+// ClosePR closes pr without merging it.
+func (g ExecGitHub) ClosePR(ctx context.Context, pr string) error {
+	if _, err := g.output(ctx, "pr", "close", pr); err != nil {
+		return fmt.Errorf("gh pr close: %w", err)
+	}
+	return nil
 }
 
 // Merge merges the PR with the given method; deleteBranch adds --delete-branch.

@@ -24,8 +24,9 @@ export function statusWarning(
 
 export interface AddByIdState {
   confirmed: boolean
-  // wrongProject: the ticket was fetched but belongs to another project — shown
-  // for context, queueing blocked (the server ownership guard is the backstop).
+  // wrongProject: the ticket was fetched but sits outside what this repo tracks —
+  // another project, or a slice of one the repo does not mirror — shown for
+  // context, queueing blocked (the server ownership guard is the backstop).
   wrongProject: boolean
   // confirmless: a repo with no direct tracker Reader can't confirm a ticket,
   // but queueing by raw id is still allowed. A not-found id stays blocked:

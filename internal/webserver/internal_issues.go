@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
@@ -16,19 +17,27 @@ import (
 // InternalIssueRequest is the body of POST /repos/{repo}/issues/internal and
 // PATCH /repos/{repo}/issues/internal/{id}: the editable content of an internal
 // issue — title, markdown description, workflow state (a status group like
-// backlog|started|done), labels, and an optional parent identifier nesting it
-// under an epic.
+// backlog|started|done), labels, an optional parent identifier nesting it under an
+// epic, priority and ISO due date, and the same-repo identifiers blocking it or
+// blocked by it. Relations are added, never replaced; DELETE on the relations
+// endpoint drops them. Priority and due date are written only when the body names
+// them, so an edit form that renders neither leaves both alone.
 type InternalIssueRequest struct {
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
 	State       string   `json:"state"`
 	Labels      []string `json:"labels"`
 	Parent      string   `json:"parent"`
+	Priority    *int     `json:"priority"`
+	DueDate     *string  `json:"due_date"`
+	BlockedBy   []string `json:"blocked_by"`
+	Blocks      []string `json:"blocks"`
 }
 
 // InternalIssueResponse is a stored internal issue as the create/edit forms and
 // the board read it: its allocated identifier, content, normalized state and its
-// display status, source, and whether it heads an epic.
+// display status, source, whether it heads an epic, and the blocking edges the
+// store holds for it.
 type InternalIssueResponse struct {
 	Repo        string   `json:"repo"`
 	ID          string   `json:"id"`
@@ -38,6 +47,10 @@ type InternalIssueResponse struct {
 	Status      string   `json:"status"`
 	Labels      []string `json:"labels"`
 	Parent      string   `json:"parent,omitempty"`
+	Priority    int      `json:"priority"`
+	DueDate     string   `json:"due_date,omitempty"`
+	BlockedBy   []string `json:"blocked_by"`
+	Blocks      []string `json:"blocks"`
 	Source      string   `json:"source"`
 	HasChildren bool     `json:"has_children"`
 	Archived    bool     `json:"archived"`
@@ -70,12 +83,20 @@ func (s *Server) handleCreateInternalIssue(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
 		return
 	}
-	iss, err := s.createInternalIssue(repo, draftFrom(req))
+	draft, err := draftFrom(req, hubstore.Issue{})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	iss, err := s.createInternalIssue(repo, draft)
+	if writeRelationError(w, err) {
+		return
+	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, toInternalIssueResponse(repo.Name, iss))
+	s.writeInternalIssue(w, http.StatusCreated, repo, iss)
 }
 
 // createInternalIssue is the write behind both the REST create route and the MCP
@@ -121,7 +142,7 @@ func (s *Server) getInternalIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " is not an internal issue in this repo"})
 		return
 	}
-	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
+	s.writeInternalIssue(w, http.StatusOK, repo, iss)
 }
 
 func (s *Server) updateInternalIssue(w http.ResponseWriter, r *http.Request) {
@@ -140,9 +161,27 @@ func (s *Server) updateInternalIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
 		return
 	}
-	iss, err := s.stores.Issues().UpdateInternal(repo.Root, id, draftFrom(req))
+	issues := s.stores.Issues()
+	stored, found, err := issues.Internal(repo.Root, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read issue: " + err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " is not an internal issue in this repo"})
+		return
+	}
+	draft, err := draftFrom(req, stored)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	iss, err := issues.UpdateInternal(repo.Root, id, draft)
 	if errors.Is(err, hubstore.ErrInternalIssueNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " is not an internal issue in this repo"})
+		return
+	}
+	if writeRelationError(w, err) {
 		return
 	}
 	if err != nil {
@@ -151,7 +190,7 @@ func (s *Server) updateInternalIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	s.registerAttachments(repo.Root, iss.Identifier, scanIssueImages(iss.Description))
 	s.bindUploadedAttachments(repo.Root, iss.Identifier, iss.Description)
-	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
+	s.writeInternalIssue(w, http.StatusOK, repo, iss)
 }
 
 // scanIssueImages finds the images an internally-authored body embeds, so a
@@ -213,7 +252,7 @@ func (s *Server) handleInternalTransition(w http.ResponseWriter, r *http.Request
 	if state != "" {
 		s.retireClosedGrill(repo.Root)
 	}
-	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
+	s.writeInternalIssue(w, http.StatusOK, repo, iss)
 }
 
 // internalPrefix resolves the repo's internal-issue identifier prefix from its
@@ -228,14 +267,64 @@ func (s *Server) internalPrefix(repo registry.Repo) string {
 	return config.InternalPrefix(cfg.IssuePrefixConfigured, repo.Name)
 }
 
-func draftFrom(req InternalIssueRequest) hubstore.InternalDraft {
+// draftFrom builds the draft req asks the store to write, keeping stored's priority
+// and due date for whichever of the two the request leaves unnamed — the store
+// replaces every field at once, and a client that cannot show a field must not
+// blank it.
+func draftFrom(req InternalIssueRequest, stored hubstore.Issue) (hubstore.InternalDraft, error) {
+	priority, due := stored.Priority, stored.DueDate
+	if req.Priority != nil {
+		priority = *req.Priority
+	}
+	if req.DueDate != nil {
+		parsed, err := parseDueDate(*req.DueDate)
+		if err != nil {
+			return hubstore.InternalDraft{}, err
+		}
+		due = parsed
+	}
 	return hubstore.InternalDraft{
 		Title:       strings.TrimSpace(req.Title),
 		Description: req.Description,
 		State:       req.State,
 		Labels:      cleanLabels(req.Labels),
 		Parent:      strings.TrimSpace(req.Parent),
+		Priority:    priority,
+		DueDate:     due,
+		BlockedBy:   identifierList(req.BlockedBy),
+		Blocks:      identifierList(req.Blocks),
+	}, nil
+}
+
+// parseDueDate accepts an ISO calendar date, treating empty as no due date.
+func parseDueDate(due string) (string, error) {
+	due = strings.TrimSpace(due)
+	if due == "" {
+		return "", nil
 	}
+	if _, err := time.Parse(time.DateOnly, due); err != nil {
+		return "", fmt.Errorf("due_date %q is not an ISO date (YYYY-MM-DD)", due)
+	}
+	return due, nil
+}
+
+// writeInternalIssue answers with iss plus the blocking edges the store holds for
+// it, so a client reads back the graph it wrote.
+func (s *Server) writeInternalIssue(w http.ResponseWriter, status int, repo registry.Repo, iss hubstore.Issue) {
+	out := toInternalIssueResponse(repo.Name, iss)
+	issues := s.stores.Issues()
+	blockedBy, err := issues.Blockers(repo.Root, iss.Identifier)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read blockers: " + err.Error()})
+		return
+	}
+	blocks, err := issues.Dependents(repo.Root, iss.Identifier)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read dependents: " + err.Error()})
+		return
+	}
+	out.BlockedBy, out.Blocks = blockedBy, blocks
+	writeJSON(w, status, out)
 }
 
 func toInternalIssueResponse(repo string, iss hubstore.Issue) InternalIssueResponse {
@@ -248,6 +337,10 @@ func toInternalIssueResponse(repo string, iss hubstore.Issue) InternalIssueRespo
 		Status:      iss.Status,
 		Labels:      iss.Labels,
 		Parent:      iss.Parent,
+		Priority:    iss.Priority,
+		DueDate:     iss.DueDate,
+		BlockedBy:   []string{},
+		Blocks:      []string{},
 		Source:      iss.Source,
 		HasChildren: iss.HasChildren,
 		Archived:    iss.ArchivedAt != "",

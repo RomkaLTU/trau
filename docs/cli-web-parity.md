@@ -51,6 +51,7 @@ plain-language refusal rather than a raw error.
 | `trau --reset <ID>` (drop branch + state, re-queue) | *Reset* → confirm dialog. |
 | `trau --reset <ID> --force` (reset an already-merged ticket) | *Reset* on a `merged` ticket → a **type-to-confirm** force dialog (auto-required for merged; also raised when the API asks for force). |
 | `trau --clear <ID>` (a.k.a. `--forget`) — drop the local checkpoint only | *Clear* → confirm dialog. Git and the tracker are left untouched. |
+| `trau --requeue <ID>` — undo a quarantine: tracker labels + status, checkpoint, attempt PR closed, attempt branch dropped | no single equivalent — *Reset* covers the tracker, checkpoint and branch; the attempt PR is closed by hand. |
 | reconcile (folded into `--status`; TUI *Status* `r`) | *Reconcile* → cross-checks every in-flight checkpoint against the tracker and drops any already Done/Canceled. |
 
 ## Watch and logs

@@ -25,6 +25,29 @@ func TestInternalPrefix(t *testing.T) {
 	}
 }
 
+func TestResolvePrefix(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		prefix   string
+		team     string
+		want     string
+	}{
+		{"explicit prefix wins", "linear", "eng", "COD", "ENG"},
+		{"falls back to the team key", "linear", "", "cod", "COD"},
+		{"falls back to COD with neither", "linear", "", "", "COD"},
+		{"an unusable prefix is sanitized rather than passed through", "linear", "[LT]", "", "LT"},
+		{"azure numbers its work items, so there is no prefix", "azure", "CON", `PortalPro DevOps`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolvePrefix(tc.provider, tc.prefix, tc.team); got != tc.want {
+				t.Fatalf("ResolvePrefix(%q, %q, %q) = %q, want %q", tc.provider, tc.prefix, tc.team, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestIssuePrefixConfiguredCapturesExplicitValue(t *testing.T) {
 	t.Setenv("TRAU_ISSUE_PREFIX", "")
 	t.Setenv("ISSUE_PREFIX", "eng")

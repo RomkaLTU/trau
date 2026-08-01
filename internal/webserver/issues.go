@@ -393,11 +393,10 @@ func (s *Server) handleRunComment(w http.ResponseWriter, r *http.Request) {
 }
 
 // writerFor resolves the repo's layered config and builds a direct tracker
-// Writer from it, returning the provider name alongside so a created issue can be
-// labelled with the tracker that produced it.
+// Writer from it, returning the resolved provider alongside so a created issue
+// can be labelled with the tracker that produced it.
 func (s *Server) writerFor(repo registry.Repo) (string, tracker.Writer, error) {
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
+	cfg, _, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		return "", nil, err
 	}
@@ -411,7 +410,7 @@ func (s *Server) writerFor(repo registry.Repo) (string, tracker.Writer, error) {
 func writeWriterErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, tracker.ErrWriterUnavailable) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
-			"error": "this repo has no direct tracker credentials configured; set LINEAR_API_KEY, or the full Jira REST credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN)",
+			"error": noTrackerCredentialsHint,
 		})
 		return
 	}
@@ -419,8 +418,14 @@ func writeWriterErr(w http.ResponseWriter, err error) {
 }
 
 // defaultWriter builds a direct tracker Writer from a repo's resolved config,
-// mapping the provider's credentials the same way the loop's tracker is wired.
+// mapping the provider's credentials the same way the loop's tracker is wired. A
+// repo with no external tracker reports the same unavailable state defaultReader
+// does, so the hub answers it as a config state rather than a build failure.
 func defaultWriter(cfg config.Config) (tracker.Writer, error) {
+	provider := cfg.EffectiveTrackerProvider()
+	if provider == "internal" {
+		return nil, tracker.ErrWriterUnavailable
+	}
 	tc := tracker.Config{
 		Team:            cfg.TrackerKey(),
 		Project:         cfg.Project,
@@ -429,13 +434,13 @@ func defaultWriter(cfg config.Config) (tracker.Writer, error) {
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	}
-	if cfg.TrackerProvider == "jira" {
+	if provider == "jira" {
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
 		tc.EpicType = cfg.JiraEpicType
 	}
-	return tracker.NewWriter(cfg.TrackerProvider, tc)
+	return tracker.NewWriter(provider, tc)
 }
 
 // cleanLabels trims each label and drops the blanks, so a trailing comma or a

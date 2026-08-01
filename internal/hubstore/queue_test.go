@@ -340,54 +340,6 @@ func TestPromoteGuardsRowsItCannotSwap(t *testing.T) {
 	}
 }
 
-func TestClearEmptiesItemsSubIssuesAndDisarms(t *testing.T) {
-	q := testQueue(t)
-	if _, err := q.Add(queue.Item{
-		Kind:      queue.KindEpic,
-		ID:        "COD-1",
-		SubIssues: []queue.SubIssue{{ID: "COD-9", Title: "child", State: "todo"}},
-	}); err != nil {
-		t.Fatalf("Add epic: %v", err)
-	}
-	mustAdd(t, q, "COD-2")
-	if err := q.MarkRunning("COD-1", 7); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
-	}
-	if err := q.SetDraining(true); err != nil {
-		t.Fatalf("SetDraining: %v", err)
-	}
-
-	removed, err := q.Clear()
-	if err != nil {
-		t.Fatalf("Clear: %v", err)
-	}
-	if got := ids(removed); !reflect.DeepEqual(got, []string{"COD-1", "COD-2"}) {
-		t.Fatalf("removed = %v, want [COD-1 COD-2]", got)
-	}
-
-	items, meta, err := q.Snapshot()
-	if err != nil {
-		t.Fatalf("Snapshot: %v", err)
-	}
-	if len(items) != 0 {
-		t.Fatalf("items after Clear = %v, want none", ids(items))
-	}
-	if meta.Draining {
-		t.Error("Clear left the queue draining")
-	}
-
-	var itemCount, subCount int
-	if err := q.db.QueryRow(`SELECT COUNT(*) FROM queue_items WHERE root = ?`, q.root).Scan(&itemCount); err != nil {
-		t.Fatalf("count queue_items: %v", err)
-	}
-	if err := q.db.QueryRow(`SELECT COUNT(*) FROM queue_sub_issues WHERE root = ?`, q.root).Scan(&subCount); err != nil {
-		t.Fatalf("count queue_sub_issues: %v", err)
-	}
-	if itemCount != 0 || subCount != 0 {
-		t.Fatalf("raw rows after Clear = items:%d sub_issues:%d, want both 0", itemCount, subCount)
-	}
-}
-
 func TestMoveReorders(t *testing.T) {
 	q := testQueue(t)
 	mustAdd(t, q, "COD-1")
@@ -456,6 +408,50 @@ func TestMoveToFrontPromotesBehindTheRunningItem(t *testing.T) {
 	}
 }
 
+// TestMoveToFrontResumesAPausedItemAhead drives the running view's Resume: the
+// paused row sits behind pending work, and promoting it makes it the first
+// runnable item so arming the drain resumes that ticket and not the one in front.
+func TestMoveToFrontResumesAPausedItemAhead(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	if err := q.Pause("COD-2", "needs re-auth"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	items, err := q.MoveToFront("COD-2")
+	if err != nil {
+		t.Fatalf("MoveToFront: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-2", "COD-1"}) {
+		t.Fatalf("order = %v, want the resumed pause first", got)
+	}
+	if items[0].Status != queue.StatusPaused {
+		t.Errorf("status = %q, want the pause kept so the run resumes from its checkpoint", items[0].Status)
+	}
+}
+
+// TestMoveToFrontPromotesAheadOfAPausedItem drives the running view's Run next
+// with a pause sitting at the head of the remaining work: the promoted row lands
+// where the drain launches next, not merely ahead of the pending rows behind it.
+func TestMoveToFrontPromotesAheadOfAPausedItem(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	mustAdd(t, q, "COD-3")
+	if err := q.Pause("COD-1", "needs re-auth"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	items, err := q.MoveToFront("COD-3")
+	if err != nil {
+		t.Fatalf("MoveToFront: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-3", "COD-1", "COD-2"}) {
+		t.Fatalf("order = %v, want the promoted item ahead of the pause", got)
+	}
+}
+
 func TestMoveToFrontGuardsRowsItCannotPromote(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -477,16 +473,6 @@ func TestMoveToFrontGuardsRowsItCannotPromote(t *testing.T) {
 			},
 			id:   "COD-2",
 			want: queue.ErrRunning,
-		},
-		{
-			name: "item paused",
-			prepare: func(t *testing.T, q *Queue) {
-				if err := q.Pause("COD-2", "needs re-auth"); err != nil {
-					t.Fatalf("Pause: %v", err)
-				}
-			},
-			id:   "COD-2",
-			want: queue.ErrNotPending,
 		},
 		{
 			name: "item already settled",

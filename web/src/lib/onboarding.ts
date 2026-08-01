@@ -5,7 +5,7 @@ import type { RepoView } from './instances'
 import { addProjectRepo, createProject, projectForRoot } from './projects'
 import { createQAAccount } from './qa'
 
-export type TrackerProvider = 'linear' | 'jira' | 'internal'
+export type TrackerProvider = 'linear' | 'jira' | 'azure' | 'internal'
 
 export type FindingState = 'ok' | 'warn' | 'missing' | 'info'
 
@@ -200,8 +200,15 @@ export function laterStep(a: WizardStepId, b: WizardStepId): WizardStepId {
 }
 
 function normalizeProvider(value: string | undefined): TrackerProvider | null {
-  if (value === 'linear' || value === 'jira' || value === 'internal') return value
-  return null
+  switch (value) {
+    case 'linear':
+    case 'jira':
+    case 'azure':
+    case 'internal':
+      return value
+    default:
+      return null
+  }
 }
 
 export function preselectProvider(inspection: RepoInspection): TrackerProvider | null {
@@ -231,6 +238,8 @@ export interface TrackerFields {
   jiraBaseUrl: string
   jiraEmail: string
   jiraToken: string
+  azureOrgUrl: string
+  azurePat: string
   binding: string
 }
 
@@ -249,6 +258,10 @@ export function trackerConfigValues(
     if (fields.jiraBaseUrl.trim() !== '') keys.JIRA_BASE_URL = fields.jiraBaseUrl.trim()
     if (fields.jiraEmail.trim() !== '') keys.JIRA_EMAIL = fields.jiraEmail.trim()
     if (fields.jiraToken.trim() !== '') keys.JIRA_API_TOKEN = fields.jiraToken
+  }
+  if (provider === 'azure') {
+    if (fields.azureOrgUrl.trim() !== '') keys.AZURE_ORG_URL = fields.azureOrgUrl.trim()
+    if (fields.azurePat.trim() !== '') keys.AZURE_PAT = fields.azurePat
   }
   if (fields.binding.trim() !== '') {
     keys.LINEAR_TEAM = fields.binding.trim()
@@ -371,12 +384,12 @@ export type TestState = 'idle' | 'testing' | 'ok' | 'fail'
 
 export function trackerCanContinue(
   provider: TrackerProvider | null,
-  binding: string,
+  fields: TrackerFields,
   test: TestState,
 ): boolean {
   if (provider === 'internal') return true
   if (provider === null) return false
-  return binding.trim() !== '' && test === 'ok'
+  return fields.binding.trim() !== '' && test === 'ok'
 }
 
 // Blank fields are allowed when the repo already stores a credential set the hub
@@ -388,6 +401,9 @@ export function trackerCanTest(
 ): boolean {
   if (provider === 'internal' || hasExisting) return true
   if (provider === 'linear') return fields.linearKey.trim() !== ''
+  if (provider === 'azure') {
+    return fields.azureOrgUrl.trim() !== '' && fields.azurePat.trim() !== ''
+  }
   return (
     fields.jiraBaseUrl.trim() !== '' &&
     fields.jiraEmail.trim() !== '' &&

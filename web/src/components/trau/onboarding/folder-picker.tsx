@@ -9,9 +9,11 @@ import { Hint } from './ui'
 
 export function FolderPicker({
   busy,
+  disabled,
   onSelect,
 }: {
   busy: boolean
+  disabled?: boolean
   onSelect: (path: string) => void
 }) {
   const [dir, setDir] = useState('')
@@ -126,7 +128,7 @@ export function FolderPicker({
                   variant="ghost"
                   size="sm"
                   className="mr-1.5 font-mono text-xs"
-                  disabled={busy}
+                  disabled={busy || disabled}
                   onClick={() => onSelect(entry.path)}
                 >
                   select
@@ -150,7 +152,7 @@ export function FolderPicker({
         <Button
           type="button"
           className="ml-auto"
-          disabled={!listing || listing.path === '' || busy}
+          disabled={!listing || listing.path === '' || busy || disabled}
           onClick={() => listing && onSelect(listing.path)}
         >
           <FolderGit2 className="size-4" />

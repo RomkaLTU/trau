@@ -1,7 +1,7 @@
 import type { RunState } from '@/components/trau/status-pill'
 import type { Instance } from './instances'
 import { isActiveState, toSessionState } from './overview'
-import { queueTerminal, type QueueItem } from './queue'
+import { queueStatusRunnable, queueTerminal, type QueueItem } from './queue'
 import type { FailureClass, PRStatus, Run } from './runs'
 import { stepPill } from './steps'
 
@@ -33,6 +33,10 @@ export type PendingEntry =
       id: string
       title: string
       source?: string
+      // active is the epic the drain is working. It reads the queue item rather
+      // than the running ticket so it holds through the gap between sub-issue
+      // picks, when nothing is running but the epic item still is.
+      active: boolean
       done: number
       total: number
       children: TimelineTicket[]
@@ -58,7 +62,13 @@ export interface FinalizeEntry {
 export interface Timeline {
   total: number
   done: number
+  // settled is every ticket whose run produced an outcome, oldest first. A
+  // paused one is in here as well as in `pending` — it is what halted the loop,
+  // and it is also what the drain launches next.
   settled: TimelineTicket[]
+  // finished is the Finished bucket: the settled tickets the drain will never
+  // launch again, so it never swallows work still in the run order.
+  finished: TimelineTicket[]
   running?: TimelineTicket
   finalize?: FinalizeEntry
   pending: PendingEntry[]
@@ -69,6 +79,9 @@ interface Leaf {
   id: string
   title: string
   snapshotState: string
+  // queueStatus is the leaf's own row in the queue snapshot. An epic's sub-issue
+  // and a run the snapshot holds no row for have none.
+  queueStatus?: string
   source?: string
   provider?: string
   providerPin?: string
@@ -98,6 +111,7 @@ function flatten(items: QueueItem[]): Leaf[] {
       id: item.id,
       title: item.title ?? '',
       snapshotState: item.status,
+      queueStatus: item.status,
       source: item.source,
       provider: item.provider,
       providerPin: item.provider_pin,
@@ -212,6 +226,26 @@ function isSettled(status: TicketStatus): boolean {
   )
 }
 
+// runOrder is what the drain would still launch, so such a row keeps its slot on
+// the queue screen however its last run ended rather than collapsing into
+// Finished history. An epic's sub-issue has no queue row of its own and answers
+// with its own outcome instead, a pause being one its epic's re-attempt resumes.
+// A run the snapshot never held — a CLI start — is nobody's to launch, so it
+// settles into Finished where the screen still has a place for it.
+function runOrder(
+  leaves: Leaf[],
+  byId: Map<string, TimelineTicket>,
+): Set<string> {
+  const ids = new Set<string>()
+  for (const leaf of leaves) {
+    const queued = leaf.queueStatus
+      ? queueStatusRunnable(leaf.queueStatus)
+      : leaf.epicId !== undefined && byId.get(leaf.id)?.status === 'paused'
+    if (queued) ids.add(leaf.id)
+  }
+  return ids
+}
+
 // epicFinalize reads a ticket-less active instance as the epic finalize. It only
 // stands in for a running row once every leaf under that epic has settled — an
 // instance grazing between picks still has leaves to show.
@@ -282,19 +316,27 @@ export function buildTimeline(
     .sort((a, b) => a.at.localeCompare(b.at))
     .map((s) => s.ticket)
 
+  const queued = runOrder(leaves, byId)
+  const finished = settled.filter((t) => !queued.has(t.id))
+
   const running =
     tickets.find((t) => t.status === 'running' && t.id === instance?.ticket) ??
     tickets.find((t) => t.status === 'running')
 
   const remains = (t: TimelineTicket | undefined): t is TimelineTicket =>
-    t !== undefined && !isSettled(t.status) && t !== running
+    t !== undefined &&
+    t !== running &&
+    (queued.has(t.id) || !isSettled(t.status))
 
   const pending: PendingEntry[] = []
   for (const item of items) {
     if (item.kind === 'epic') {
       const subs = item.sub_issues ?? []
       const children = subs.map((s) => byId.get(s.id)).filter(remains)
-      if (children.length > 0) {
+      // A runnable epic keeps its row with nothing left under it: the drain
+      // re-attempts the finalize its pause parked on, which runs no leaf of its
+      // own.
+      if (children.length > 0 || queueStatusRunnable(item.status)) {
         const done = subs.filter(
           (s) => byId.get(s.id)?.status === 'done',
         ).length
@@ -303,6 +345,7 @@ export function buildTimeline(
           id: item.id,
           title: item.title ?? '',
           source: item.source,
+          active: item.status === 'running',
           done,
           total: subs.length,
           children,
@@ -318,6 +361,7 @@ export function buildTimeline(
     total: tickets.length,
     done: tickets.filter((t) => t.status === 'done').length,
     settled,
+    finished,
     running,
     finalize: epicFinalize(items, byId, instance),
     pending,
@@ -350,7 +394,7 @@ function itemSettled(item: QueueItem): boolean {
 export function builderView(items: QueueItem[], runs: Run[]): BuilderView {
   return {
     queue: items.filter((it) => !itemSettled(it)),
-    settled: buildTimeline(items.filter(itemSettled), runs).settled,
+    settled: buildTimeline(items.filter(itemSettled), runs).finished,
   }
 }
 

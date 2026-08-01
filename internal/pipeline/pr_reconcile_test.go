@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -36,7 +37,7 @@ func newGatePipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipeline {
 	p.GitHub = gh
 	p.AutoMerge = true
 	p.MergeMethod = "squash"
-	p.RequireCI = true
+	p.RequireCI = config.CIGateOn
 	p.Sleep = func(time.Duration) {}
 	return p
 }
@@ -69,8 +70,8 @@ func TestCIAndMergeReconcilesEmptyPRFromMergedBranch(t *testing.T) {
 	if got := p.State.Get(id, "PR_URL"); got != prURL {
 		t.Errorf("PR_URL = %q, want %q", got, prURL)
 	}
-	if len(tr.statuses) != 1 || tr.statuses[0] != "Done" {
-		t.Errorf("tracker statuses = %v, want [Done]", tr.statuses)
+	if len(tr.statuses) != 1 || tr.statuses[0] != tracker.StageDone {
+		t.Errorf("tracker statuses = %v, want [done]", tr.statuses)
 	}
 	if len(gh.polled) != 0 {
 		t.Errorf("CI polled for %v, want no poll on delivered work", gh.polled)
@@ -173,8 +174,8 @@ func TestResumeShortCircuitsPRLessCheckpointOnMergedBranch(t *testing.T) {
 	if got := p.State.Get(id, "FAILURE_REASON"); got != "" {
 		t.Errorf("FAILURE_REASON = %q, want cleared", got)
 	}
-	if len(tr.statuses) != 1 || tr.statuses[0] != "Done" {
-		t.Errorf("tracker statuses = %v, want [Done]", tr.statuses)
+	if len(tr.statuses) != 1 || tr.statuses[0] != tracker.StageDone {
+		t.Errorf("tracker statuses = %v, want [done]", tr.statuses)
 	}
 }
 

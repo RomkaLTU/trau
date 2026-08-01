@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 // ProjectView is one project as the hub serves it: its identifier, display name,
@@ -35,6 +38,26 @@ type ProjectRepoRequest struct {
 	Repo string `json:"repo"`
 }
 
+// ProjectRemovalRepo is one member a project-wide removal reached, with the reason
+// the hub refused it on a member that stayed.
+type ProjectRemovalRepo struct {
+	Name   string `json:"name"`
+	Root   string `json:"root"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// ProjectRemoval is the outcome of DELETE /api/v1/projects/{project}?forget=1.
+// Project is the pre-removal snapshot, so a caller can name what it acted on even
+// once the row is gone. Removed and Blocked ride back together because the removal
+// is per member rather than all-or-nothing, and ProjectDeleted stays false while
+// any member is blocked so those members keep their group.
+type ProjectRemoval struct {
+	Project        ProjectView          `json:"project"`
+	Removed        []ProjectRemovalRepo `json:"removed"`
+	Blocked        []ProjectRemovalRepo `json:"blocked"`
+	ProjectDeleted bool                 `json:"project_deleted"`
+}
+
 // handleProjects lists the projects (GET) or creates one (POST).
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -54,12 +77,18 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleProject renames (PATCH) or deletes (DELETE) one project.
+// handleProject renames (PATCH) or deletes (DELETE) one project. The delete splits
+// the way a repo row's does: bare drops the grouping only, ?forget=1 takes every
+// member repo off the hub with it.
 func (s *Server) handleProject(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPatch, http.MethodPut:
 		s.renameProject(w, r)
 	case http.MethodDelete:
+		if r.URL.Query().Get("forget") == "1" {
+			s.forgetProjectRepos(w, r)
+			return
+		}
 		s.deleteProject(w, r)
 	default:
 		w.Header().Set("Allow", "PATCH, DELETE")
@@ -120,6 +149,90 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, projectView(proj))
+}
+
+// forgetProjectRepos takes every member repo off the hub in one call, so the folder
+// that registered them clears in one action instead of one confirm per repo. Each
+// member gets forgetRepo's treatment — registration, known-repos row, cached
+// attachments and tracker sync state — and nothing on disk is touched. It is
+// deliberately partial rather than all-or-nothing: a member the hub refuses would
+// otherwise leave the project permanently un-clearable, so it stays registered
+// while its siblings go, and keeps the project row with it. It follows the same
+// exposure gate as registration.
+func (s *Server) forgetProjectRepos(w http.ResponseWriter, r *http.Request) {
+	if s.denyRegistrationIfExposed(w, "removing a project's repos") {
+		return
+	}
+	id := r.PathValue("project")
+	proj, err := s.stores.Projects().Get(id)
+	if err != nil {
+		writeProjectError(w, err, "failed to read project")
+		return
+	}
+	out := ProjectRemoval{
+		Project: projectView(proj),
+		Removed: []ProjectRemovalRepo{},
+		Blocked: []ProjectRemovalRepo{},
+	}
+	for _, root := range proj.Repos {
+		repo, listed := s.matchListedRepo(root)
+		if !listed {
+			// A membership the repos list no longer answers for has nothing left to
+			// remove, so dropping the row is the whole removal.
+			if err := s.stores.Projects().ForgetRoot(root); err != nil {
+				logger.Verbosef("drop stale project membership for %s: %v", root, err)
+			}
+			out.Removed = append(out.Removed, ProjectRemovalRepo{Name: filepath.Base(root), Root: root})
+			continue
+		}
+		if reason := s.removalRefusal(repo); reason != "" {
+			out.Blocked = append(out.Blocked, ProjectRemovalRepo{Name: repo.Name, Root: repo.Root, Reason: reason})
+			continue
+		}
+		if err := s.forgetMemberRepo(repo.Root); err != nil {
+			out.Blocked = append(out.Blocked, ProjectRemovalRepo{Name: repo.Name, Root: repo.Root, Reason: err.Error()})
+			continue
+		}
+		out.Removed = append(out.Removed, ProjectRemovalRepo{Name: repo.Name, Root: repo.Root})
+	}
+	if len(out.Blocked) == 0 {
+		// The last membership to go prunes the project row with it, so a missing row
+		// here is the delete already done rather than a failure.
+		if err := s.stores.Projects().Delete(id); err != nil && !errors.Is(err, hubstore.ErrProjectNotFound) {
+			writeProjectError(w, err, "failed to delete project")
+			return
+		}
+		out.ProjectDeleted = true
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// removalRefusal is why the hub keeps a member a project-wide removal aimed at,
+// empty when the removal goes through. Both conflicts forgetRepo answers with a 409
+// land here as a per-member reason instead, since one un-removable member must not
+// strand its siblings.
+func (s *Server) removalRefusal(repo registry.Repo) string {
+	if _, ok := matchRoot(s.workspace, repo.Root); ok {
+		return seededRepoRefusal(repo.Name, "removed")
+	}
+	if s.repoIsLive(repo.Root) {
+		return liveLoopRefusal(repo.Name)
+	}
+	return ""
+}
+
+// forgetMemberRepo removes one member from the hub, mirroring forgetRepo. Only the
+// registration drop can leave the repo listed, so it is the one failure the caller
+// records against the member; the rest is best-effort cleanup.
+func (s *Server) forgetMemberRepo(root string) error {
+	if err := s.stores.Registrations().Forget(root); err != nil {
+		return fmt.Errorf("failed to remove repo: %w", err)
+	}
+	if err := s.stores.Projects().ForgetRoot(root); err != nil {
+		logger.Verbosef("drop project membership for %s: %v", root, err)
+	}
+	s.dropUnregisteredRepoState(root)
+	return nil
 }
 
 // handleProjectRepos adds an already-registered repo to a project (POST), moving

@@ -7,10 +7,11 @@ import (
 )
 
 // reBareID matches a bare ticket identifier of any tracker prefix (COD-123,
-// TMS-456, ENG-7). The pre-config arg scan can't know the configured prefix yet
-// — it matches the generic <PREFIX>-<n> shape here and the prefix is validated
-// against the loaded config later (see config.ResolvePrefix).
-var reBareID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
+// TMS-456, ENG-7), or the bare number a tracker that numbers its tickets uses
+// instead (6694, an Azure DevOps work item). The pre-config arg scan can't know the
+// configured prefix yet — it matches the generic shape here and the prefix is
+// validated against the loaded config later (see config.ResolvePrefix).
+var reBareID = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*-)?[0-9]+$`)
 
 // Options holds the parsed CLI flags. Zero values mean "not set";
 // Max is -1 when unset so the config default applies.
@@ -24,6 +25,7 @@ type Options struct {
 	ResetID      string
 	ResetLocalID string
 	ClearID      string
+	RequeueID    string
 	Force        bool
 	NoResume     bool
 	Status       bool
@@ -104,6 +106,12 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.ClearID = v
+		case a == "--requeue":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			o.RequeueID = v
 		case a == "--force":
 			o.Force = true
 		case a == "--no-resume":
@@ -148,13 +156,13 @@ func ParseArgs(args []string) (Options, error) {
 	}
 
 	modes := 0
-	for _, on := range []bool{o.Status, o.ResetID != "", o.ResetLocalID != "", o.ClearID != "", o.DryRun, o.ListEligible, o.ListEpicID != ""} {
+	for _, on := range []bool{o.Status, o.ResetID != "", o.ResetLocalID != "", o.ClearID != "", o.RequeueID != "", o.DryRun, o.ListEligible, o.ListEpicID != ""} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return o, fmt.Errorf("--status, --reset, --reset-local, --clear, --dry-run, --list-eligible, and --list-epic are mutually exclusive")
+		return o, fmt.Errorf("--status, --reset, --reset-local, --clear, --requeue, --dry-run, --list-eligible, and --list-epic are mutually exclusive")
 	}
 
 	return o, nil

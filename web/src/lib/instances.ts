@@ -17,11 +17,21 @@ export interface Instance {
   state_since?: string;
 }
 
-// RepoHealthState mirrors the hub's derived health. A recorded error is
-// sync-failed even over a good synced stamp, so a repo whose seed sync failed
-// never reads as ready.
+// RepoHealthState mirrors the hub's derived health. A recorded error over an
+// earlier good sync is degraded — the store still holds that pull's issues — while
+// sync-failed is an error with no local data behind it.
 export type RepoHealthState =
-  "ready" | "unconfigured" | "sync-failed" | "never-synced" | "syncing";
+  | "ready"
+  | "unconfigured"
+  | "degraded"
+  | "sync-failed"
+  | "never-synced"
+  | "syncing";
+
+// SyncErrorKind is what the hub decided the last sync error takes to clear: a
+// rate limit or a transport failure retries itself, while a config failure waits
+// on the repo's settings or credentials. Empty when no error stands.
+export type SyncErrorKind = "" | "config" | "rate-limit" | "transient";
 
 // RepoFreshness is a repo's issue-store sync state: when it last synced from the
 // tracker, whether a background sync is running right now, the last sync error,
@@ -33,6 +43,7 @@ export interface RepoFreshness {
   last_synced_at?: string;
   syncing: boolean;
   last_error?: string;
+  last_error_kind?: SyncErrorKind;
   last_issues?: number;
   last_comments?: number;
   issue_count?: number;
@@ -59,7 +70,16 @@ export interface RepoHealth {
   state: RepoHealthState;
   last_synced_at: string;
   last_error: string;
+  last_error_kind: SyncErrorKind;
   issue_count: number;
+}
+
+// externalTracker reports whether a repo's provider is one there is anything to
+// pull from. It is the rule every sync affordance gates on: an empty provider is
+// a repo with no tracker configured, the internal tracker lives in the hub
+// itself, and the sync endpoint refuses both.
+export function externalTracker(provider?: string): boolean {
+  return !!provider && provider !== "internal";
 }
 
 export interface InstancesResponse {
@@ -89,6 +109,8 @@ export function healthPill(state: RepoHealthState): {
       return { state: "active", label: "syncing" };
     case "sync-failed":
       return { state: "fail", label: "sync failing" };
+    case "degraded":
+      return { state: "warn", label: "sync degraded" };
     case "never-synced":
       return { state: "warn", label: "never synced" };
     case "unconfigured":
@@ -96,9 +118,10 @@ export function healthPill(state: RepoHealthState): {
   }
 }
 
-// healthBlocks reports whether a state stops a repo-scoped page from being
-// trusted: nothing is configured to fetch, or the last sync recorded an error.
-// A syncing or never-synced repo is mid-setup and left alone.
+// healthBlocks reports whether a state leaves a repo-scoped page with nothing to
+// show: nothing is configured to fetch, or every sync so far has failed. Degraded
+// is deliberately absent — the store holds the last good pull, so the page renders
+// it under a notice rather than behind an overlay.
 export function healthBlocks(state: RepoHealthState): boolean {
   return state === "unconfigured" || state === "sync-failed";
 }
@@ -162,6 +185,12 @@ async function fetchRepoHealth(repo: string): Promise<RepoHealth> {
   return res.json();
 }
 
+// How often the health of a repo is re-read: rarely while it sits still, every
+// few seconds while a pull is in flight so the state — and the board waiting on
+// it — follows that pull within seconds of it landing.
+const HEALTH_POLL_MS = 30_000;
+const HEALTH_SYNCING_POLL_MS = 3_000;
+
 // Keyed by repo so every gate on a page shares one fetch rather than one per
 // section. It polls because the pages behind it stay open for hours: without an
 // interval a background sync that started failing would go unnoticed until the
@@ -172,7 +201,10 @@ export const repoHealthQueryOptions = (repo: string) =>
     queryFn: () => fetchRepoHealth(repo),
     enabled: repo !== "",
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: (query) =>
+      query.state.data?.state === "syncing"
+        ? HEALTH_SYNCING_POLL_MS
+        : HEALTH_POLL_MS,
   });
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
@@ -274,14 +306,16 @@ export async function forgetRepo(ident: string): Promise<RepoView> {
 // removeBlocked reports why the hub would refuse to remove this repo, so the row
 // says so up front instead of handing back a toast. It reads the seeded flag the
 // hub sends rather than inferring the grant from a missing registration, which a
-// repo that is both seeded and registered would read the wrong way round. null
-// means the removal goes through.
+// repo that is both seeded and registered would read the wrong way round. It weighs
+// the two refusals in the hub's order, config grant before live loop, so a repo that
+// is both is refused here for the same reason the hub gives. null means the removal
+// goes through.
 export function removeBlocked(repo: RepoView): string | null {
-  if (repo.live) {
-    return "A loop is live here — stop it before removing the repo";
-  }
   if (repo.seeded) {
     return "Granted by SERVE_WORKSPACE — drop its root from the config instead";
+  }
+  if (repo.live) {
+    return "A loop is live here — stop it before removing the repo";
   }
   return null;
 }
@@ -295,16 +329,33 @@ export interface SyncResponse {
   syncedAt: string;
 }
 
+// SyncResult is how a sync request settled: the counts a pull of our own wrote,
+// or the hub's 202 marker that it coalesced into a pull already in flight — no
+// counts to show, and nothing that failed.
+export type SyncResult =
+  | { status: "pulled"; response: SyncResponse }
+  | { status: "syncing" };
+
+export function pullCounts(res: SyncResponse): string {
+  const counts = `pulled ${res.issues} issues · ${res.comments} comments`;
+  return res.removed > 0 ? `${counts} · removed ${res.removed}` : counts;
+}
+
 // syncRepo pulls the repo's tracker project into the hub issue store and sweeps
-// the issues the tracker no longer returns, blocking for the length of both.
-export async function syncRepo(repo: string): Promise<SyncResponse> {
+// the issues the tracker no longer returns, blocking for the length of both. A
+// sync of that repo already running coalesces rather than pulling twice, so the
+// caller waits on health instead of on this request.
+export async function syncRepo(repo: string): Promise<SyncResult> {
   const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/sync`, {
     method: "POST",
   });
   if (!res.ok) {
     throw new Error(await errorMessage(res, "sync failed"));
   }
-  return res.json();
+  if (res.status === 202) {
+    return { status: "syncing" };
+  }
+  return { status: "pulled", response: await res.json() };
 }
 
 export interface DryRunResult {

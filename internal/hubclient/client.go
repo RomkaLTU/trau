@@ -91,6 +91,10 @@ type Issue struct {
 	Group       string    `json:"group"`
 	Labels      []string  `json:"labels"`
 	Parent      string    `json:"parent"`
+	Priority    int       `json:"priority"`
+	DueDate     string    `json:"due_date"`
+	BlockedBy   []string  `json:"blocked_by"`
+	Blocks      []string  `json:"blocks"`
 	Source      string    `json:"source"`
 	HasChildren bool      `json:"has_children"`
 	Comments    []Comment `json:"comments"`
@@ -135,13 +139,26 @@ type BacklogQuery struct {
 	State  string
 }
 
-// InternalDraft is a new internal issue to create.
+// InternalDraft is the editable content of an internal issue, for a create or an
+// edit. BlockedBy and Blocks name same-repo identifiers and are added, never
+// replaced — RemoveIssueRelations drops an edge.
 type InternalDraft struct {
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
 	State       string   `json:"state"`
 	Labels      []string `json:"labels"`
 	Parent      string   `json:"parent"`
+	Priority    int      `json:"priority"`
+	DueDate     string   `json:"due_date"`
+	BlockedBy   []string `json:"blocked_by"`
+	Blocks      []string `json:"blocks"`
+}
+
+// IssueRelations is a set of blocking edges around one issue: the identifiers
+// blocking it, and the ones it blocks.
+type IssueRelations struct {
+	BlockedBy []string `json:"blocked_by"`
+	Blocks    []string `json:"blocks"`
 }
 
 // Transition is a loop-driven write to an internal issue: an optional new state,
@@ -1005,11 +1022,36 @@ func (c *Client) CreateInternalIssue(ctx context.Context, repo string, d Interna
 	return out, err
 }
 
+// UpdateInternalIssue replaces an internal issue's editable content and returns the
+// stored row, returning ErrNotFound for a missing or synced identifier.
+func (c *Client) UpdateInternalIssue(ctx context.Context, repo, id string, d InternalDraft) (Issue, error) {
+	var out Issue
+	err := c.do(ctx, http.MethodPatch, c.issuePath(repo, id, ""), d, &out)
+	return out, err
+}
+
 // TransitionInternalIssue applies t to an internal issue and returns the updated
 // row, returning ErrNotFound for a missing or synced identifier.
 func (c *Client) TransitionInternalIssue(ctx context.Context, repo, id string, t Transition) (Issue, error) {
 	var out Issue
 	err := c.do(ctx, http.MethodPost, c.issuePath(repo, id, "transition"), t, &out)
+	return out, err
+}
+
+// AddIssueRelations wires rel's blocking edges around an internal issue and returns
+// it with its resulting graph. A synced identifier is refused, since its relations
+// are the tracker's.
+func (c *Client) AddIssueRelations(ctx context.Context, repo, id string, rel IssueRelations) (Issue, error) {
+	var out Issue
+	err := c.do(ctx, http.MethodPost, c.relationsPath(repo, id), rel, &out)
+	return out, err
+}
+
+// RemoveIssueRelations drops rel's blocking edges around an internal issue,
+// tolerating ones that were never recorded.
+func (c *Client) RemoveIssueRelations(ctx context.Context, repo, id string, rel IssueRelations) (Issue, error) {
+	var out Issue
+	err := c.do(ctx, http.MethodDelete, c.relationsPath(repo, id), rel, &out)
 	return out, err
 }
 
@@ -1043,6 +1085,10 @@ func (c *Client) phaseLogsPath(repo, ticket string) string {
 
 func (c *Client) phaseLogPath(repo, ticket, phase string) string {
 	return c.phaseLogsPath(repo, ticket) + "/" + url.PathEscape(phase)
+}
+
+func (c *Client) relationsPath(repo, id string) string {
+	return c.repoPath(repo, "issues/"+url.PathEscape(id)+"/relations")
 }
 
 func (c *Client) issuePath(repo, id, verb string) string {

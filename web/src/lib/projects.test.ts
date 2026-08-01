@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
 import {
+  filterRepoRows,
   groupRepos,
   projectAnchor,
   projectMembers,
+  removalPlan,
+  removalSummary,
+  renameProject,
+  type ProjectRemoval,
   type ProjectView,
 } from '@/lib/projects'
 
@@ -75,6 +80,38 @@ describe('groupRepos', () => {
   })
 })
 
+describe('filterRepoRows', () => {
+  const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
+  const platform = project('platform', 'Platform', ['bravo', 'charlie'])
+  const rows = groupRepos(repos, [platform])
+
+  it('hands a blank query the same rows back', () => {
+    expect(filterRepoRows(rows, '  ')).toBe(rows)
+  })
+
+  it('matches a repo name however it is cased', () => {
+    expect(filterRepoRows(rows, 'ALPH')).toEqual([
+      { project: null, repos: [repos[0]] },
+    ])
+  })
+
+  it('matches a repo root, keeping only the members that matched', () => {
+    expect(filterRepoRows(rows, '/repos/charlie')).toEqual([
+      { project: platform, repos: [repos[2]] },
+    ])
+  })
+
+  it('keeps every member of a group its own name matches', () => {
+    expect(filterRepoRows(rows, 'platf')).toEqual([
+      { project: platform, repos: [repos[1], repos[2]] },
+    ])
+  })
+
+  it('drops the rows nothing matches', () => {
+    expect(filterRepoRows(rows, 'nothing')).toEqual([])
+  })
+})
+
 describe('projectAnchor', () => {
   const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
 
@@ -95,6 +132,62 @@ describe('projectAnchor', () => {
   it('skips a member the repos list no longer carries', () => {
     const platform = [project('platform', 'Platform', ['gone', 'charlie'])]
     expect(projectAnchor('charlie', repos, platform)).toBe('charlie')
+  })
+})
+
+describe('removalPlan', () => {
+  it('names the members that will go and every one the hub would keep', () => {
+    const { removing, blocked } = removalPlan([
+      repo('api'),
+      { ...repo('web'), live: true },
+      { ...repo('docs'), seeded: true },
+    ])
+    expect(removing).toEqual(['api'])
+    expect(blocked.map((member) => member.name)).toEqual(['web', 'docs'])
+    expect(blocked[0].reason).toMatch(/loop is live/)
+    expect(blocked[1].reason).toMatch(/SERVE_WORKSPACE/)
+  })
+})
+
+describe('removalSummary', () => {
+  function removal(
+    removed: string[],
+    blocked: [name: string, reason: string][] = [],
+  ): ProjectRemoval {
+    return {
+      project: project('acme', 'acme', [
+        ...removed,
+        ...blocked.map(([name]) => name),
+      ]),
+      removed: removed.map((name) => ({ name, root: `/repos/${name}` })),
+      blocked: blocked.map(([name, reason]) => ({
+        name,
+        root: `/repos/${name}`,
+        reason,
+      })),
+      project_deleted: blocked.length === 0,
+    }
+  }
+
+  it('counts what left when the whole folder cleared', () => {
+    expect(removalSummary(removal(['api', 'web', 'docs']))).toBe(
+      '3 repos removed from acme',
+    )
+  })
+
+  it('names every member that stayed and why', () => {
+    const summary = removalSummary(
+      removal(
+        ['api'],
+        [
+          ['web', 'a loop is live here'],
+          ['docs', 'granted by SERVE_WORKSPACE'],
+        ],
+      ),
+    )
+    expect(summary).toBe(
+      '1 of 3 removed from acme — web stayed (a loop is live here), docs stayed (granted by SERVE_WORKSPACE)',
+    )
   })
 })
 
@@ -129,5 +222,41 @@ describe('projectMembers', () => {
       project: 'platform',
       members: [repos[2]],
     })
+  })
+})
+
+describe('renameProject', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('patches the project with its new name', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'p1', name: 'Acme Platform', repos: [] }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const renamed = await renameProject('p1', 'Acme Platform')
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/v1/projects/p1')
+    expect(init.method).toBe('PATCH')
+    expect(JSON.parse(String(init.body))).toEqual({ name: 'Acme Platform' })
+    expect(renamed.name).toBe('Acme Platform')
+  })
+
+  it('reports the refusal of an empty name', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: 'project name is empty' }),
+      })),
+    )
+
+    await expect(renameProject('p1', '')).rejects.toThrow('project name is empty')
   })
 })

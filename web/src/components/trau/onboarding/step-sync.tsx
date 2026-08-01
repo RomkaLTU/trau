@@ -3,10 +3,25 @@ import { useMutation } from '@tanstack/react-query'
 import { ArrowRight, RotateCw, Settings2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { syncRepo, type SyncResponse } from '@/lib/instances'
+import { syncRepo, type SyncResponse, type SyncResult } from '@/lib/instances'
 import { type TrackerProvider } from '@/lib/onboarding'
 import { cn } from '@/lib/utils'
 import { Callout, Hint } from './ui'
+
+// Providers the hub never mirrors, so there is nothing to request: the internal
+// store owns its issues.
+const SKIPS_SYNC: Partial<Record<TrackerProvider, { hint: string; status: string }>> = {
+  internal: {
+    hint: 'This project uses the internal issue store — there is nothing to pull from an external tracker.',
+    status: 'ready — internal store, no external sync',
+  },
+}
+
+// A seed sync that coalesced into the pull the registration already started has
+// landed nothing of its own to count; the step is done either way.
+function seedCounts(result: SyncResult): SyncResponse | null {
+  return result.status === 'pulled' ? result.response : null
+}
 
 export function StepSync({
   repo,
@@ -21,40 +36,38 @@ export function StepSync({
   onBackToTracker: () => void
   onContinue: () => void
 }) {
-  const internal = provider === 'internal'
+  const skipped = SKIPS_SYNC[provider]
 
   const sync = useMutation({
     mutationFn: () => syncRepo(repo),
-    onSuccess: (res) => onSynced(res),
+    onSuccess: (result) => onSynced(seedCounts(result)),
   })
 
   const started = useRef(false)
   useEffect(() => {
     if (started.current) return
     started.current = true
-    if (internal) {
+    if (skipped) {
       onSynced(null)
       return
     }
     sync.mutate()
   }, [])
 
-  const done = internal || sync.isSuccess
+  const seeded = sync.data ? seedCounts(sync.data) : null
+  const done = skipped !== undefined || sync.isSuccess
 
-  const glyph = internal || sync.isSuccess ? '✓' : sync.isError ? '✗' : '●'
-  const glyphColor =
-    internal || sync.isSuccess ? 'text-done' : sync.isError ? 'text-fail' : 'text-teal'
+  const glyph = done ? '✓' : sync.isError ? '✗' : '●'
+  const glyphColor = done ? 'text-done' : sync.isError ? 'text-fail' : 'text-teal'
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1.5">
         <h2 className="font-mono text-base text-foreground">
-          {internal ? 'No backlog to seed' : 'Seeding the backlog'}
+          {skipped ? 'No backlog to seed' : 'Seeding the backlog'}
         </h2>
         <Hint>
-          {internal
-            ? 'This project uses the internal issue store — there is nothing to pull from an external tracker.'
-            : 'Pulling every issue and comment from the tracker into the hub store.'}
+          {skipped?.hint ?? 'Pulling every issue and comment from the tracker into the hub store.'}
         </Hint>
       </div>
 
@@ -68,24 +81,26 @@ export function StepSync({
           </span>
         </div>
         <div className="px-3 py-3 font-mono text-sm" aria-live="polite">
-          {internal ? (
-            <span className="text-done">ready — internal store, no external sync</span>
+          {skipped ? (
+            <span className="text-done">{skipped.status}</span>
           ) : sync.isPending ? (
             <span className="text-muted-foreground">
               seeding<span className="cursor-block text-teal">▍</span>
             </span>
           ) : sync.isSuccess ? (
-            <span className="text-done">done — {sync.data.issues} issues synced</span>
+            <span className="text-done">
+              {seeded ? `done — ${seeded.issues} issues synced` : 'done — seeding already under way'}
+            </span>
           ) : sync.isError ? (
             <span className="text-fail">error — {(sync.error as Error).message}</span>
           ) : null}
         </div>
       </div>
 
-      {sync.isSuccess && (
+      {seeded && (
         <div className="flex flex-wrap gap-2">
-          <SyncStat label="issues" value={sync.data.issues} />
-          <SyncStat label="comments" value={sync.data.comments} />
+          <SyncStat label="issues" value={seeded.issues} />
+          <SyncStat label="comments" value={seeded.comments} />
         </div>
       )}
 

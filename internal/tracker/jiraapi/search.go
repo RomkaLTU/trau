@@ -272,11 +272,20 @@ func hasChildren(issueType *issueTypeField, subtasks []json.RawMessage) bool {
 }
 
 type issueLink struct {
-	Type struct {
-		Name   string `json:"name"`
-		Inward string `json:"inward"`
-	} `json:"type"`
+	Type        linkType     `json:"type"`
 	InwardIssue *linkedIssue `json:"inwardIssue"`
+}
+
+type linkType struct {
+	Name   string `json:"name"`
+	Inward string `json:"inward"`
+}
+
+// blocks reports whether a link type is the blocking one. The name is what the
+// write path posts and survives a localized site; the inward description is only a
+// fallback, since a site is free to rename it.
+func (t linkType) blocks() bool {
+	return strings.EqualFold(t.Name, "Blocks") || strings.Contains(strings.ToLower(t.Inward), "blocked by")
 }
 
 type linkedIssue struct {
@@ -327,14 +336,13 @@ func (r *searchIssue) toBacklog() BacklogIssue {
 
 // blockersFromLinks extracts the "is blocked by" links: for those the blocking
 // issue appears as inwardIssue, and its done status category means the blocker no
-// longer holds. Other link types (relates to, causes, …) are ignored.
+// longer holds. Jira serves the same link from the blocker's own end too, naming
+// the sibling it holds up as outwardIssue — that end is not a blocker and is not
+// decoded. Other link types (relates to, causes, …) are ignored.
 func blockersFromLinks(links []issueLink) []Blocker {
 	var out []Blocker
 	for _, link := range links {
-		if link.InwardIssue == nil {
-			continue
-		}
-		if !strings.Contains(strings.ToLower(link.Type.Inward), "blocked by") {
+		if link.InwardIssue == nil || !link.Type.blocks() {
 			continue
 		}
 		out = append(out, Blocker{

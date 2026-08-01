@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -33,9 +34,9 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
-		RequireCI:   true,
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -53,7 +54,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 	if gh.mergeMethod != "squash" || !gh.mergeDeleted {
 		t.Fatalf("expected squash merge with branch delete, got %q delete=%v", gh.mergeMethod, gh.mergeDeleted)
 	}
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "merged to main") {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, "merged to main") {
 		t.Fatalf("expected epic closed as merged, got %s %q", tr.setStatus, tr.setExtra)
 	}
 }
@@ -78,9 +79,9 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
-		RequireCI:   false,
+		RequireCI:   config.CIGateOff,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -94,7 +95,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 	if gh.mergeCalls != 1 {
 		t.Fatalf("REQUIRE_CI=0 must merge a checkless PR, got %d merges", gh.mergeCalls)
 	}
-	if tr.setStatus != "Done" {
+	if tr.setStatus != tracker.StageDone {
 		t.Fatalf("expected epic closed Done, got %s", tr.setStatus)
 	}
 }
@@ -125,9 +126,9 @@ func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
-		RequireCI:   true,
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -145,7 +146,7 @@ func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
 		t.Fatalf("already-merged epic must not merge again, got %d merges", gh.mergeCalls)
 	}
 	assertEpicCheckpointedMerged(t, p)
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "https://github.test/pr/42") {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, "https://github.test/pr/42") {
 		t.Fatalf("expected epic closed Done citing the merged PR, got %s %q", tr.setStatus, tr.setExtra)
 	}
 }
@@ -157,7 +158,7 @@ func TestEnsureEpicPRNoCommitsWithoutMergedPRStillFails(t *testing.T) {
 		createErr: errors.New("gh pr create: exit status 1: GraphQL: No commits between main and epic/COD-1 (createPullRequest)"),
 	}
 	p := &Pipeline{Base: "main", EpicID: "COD-1", GitHub: gh, Tracker: &epicTracker{title: "x"}}
-	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x"); err == nil {
+	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x", false); err == nil {
 		t.Fatal("expected create error to surface when no merged PR exists")
 	}
 }
@@ -194,7 +195,7 @@ func TestFinalizeEpicManualMergeWaitsThenShips(t *testing.T) {
 	if tr.quarantineCalls != 0 {
 		t.Fatalf("a merged epic must not be quarantined, got %d", tr.quarantineCalls)
 	}
-	if tr.setID != "COD-1" || tr.setStatus != "Done" {
+	if tr.setID != "COD-1" || tr.setStatus != tracker.StageDone {
 		t.Fatalf("expected epic set Done, got %s %s", tr.setID, tr.setStatus)
 	}
 	if !strings.Contains(tr.setExtra, "merged to main") {
@@ -242,7 +243,7 @@ func TestFinalizeEpicManualMergeClosedNotShipped(t *testing.T) {
 	if tr.quarantineCalls != 1 || tr.quarantineID != "COD-1" {
 		t.Errorf("Quarantine = %d call(s) on %q, want 1 on COD-1", tr.quarantineCalls, tr.quarantineID)
 	}
-	if tr.setStatus == "Done" {
+	if tr.setStatus == tracker.StageDone {
 		t.Errorf("a rejected epic must not be closed as done, got %q", tr.setStatus)
 	}
 	if got := p.State.Get("COD-1", "PHASE"); got != state.Quarantined {
@@ -284,7 +285,7 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 	if tr.quarantineCalls != 0 {
 		t.Fatalf("a stop is blameless — Quarantine called %d times, want 0", tr.quarantineCalls)
 	}
-	if tr.setStatus == "Done" {
+	if tr.setStatus == tracker.StageDone {
 		t.Fatalf("a stopped epic must not be closed, got %q", tr.setStatus)
 	}
 	if got := p.State.Get("COD-1", "PR_STATUS"); got != "" {
@@ -298,7 +299,7 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("rerun FinalizeEpic returned error: %v", err)
 	}
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "merged to main") {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, "merged to main") {
 		t.Fatalf("rerun must reconcile the merge and ship, got %s %q", tr.setStatus, tr.setExtra)
 	}
 	assertEpicCheckpointedMerged(t, p)
@@ -330,8 +331,8 @@ func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
-		RequireCI:   true,
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -350,9 +351,9 @@ func shippableEpicPipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipelin
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
-		RequireCI:   true,
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -415,12 +416,12 @@ func TestFinalizeEpicWaitsWhenAnyChildOpen(t *testing.T) {
 			}
 			gh := &epicGitHub{createURL: "https://github.test/pr/42"}
 			p := &Pipeline{
-				Base:       "main",
-				EpicID:     "COD-1",
-				epicBranch: "epic/COD-1-checkout-rebuild",
-				GitHub:     gh,
-				Tracker:    tr,
-				State:      state.NewStore(t.TempDir()),
+				Base:    "main",
+				EpicID:  "COD-1",
+				exit:    exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
+				GitHub:  gh,
+				Tracker: tr,
+				State:   state.NewStore(t.TempDir()),
 			}
 			for k, v := range tt.checkpoint {
 				if err := p.State.Set("COD-3", k, v); err != nil {
@@ -478,14 +479,126 @@ func TestFinalizeEpicShipsWhenTrackerRegressedChildIsCheckpointMerged(t *testing
 		t.Fatalf("delivered children must ship the epic, got %d merges", gh.mergeCalls)
 	}
 	reassert := tr.setFor("COD-3")
-	if reassert == nil || reassert.status != "Done" {
+	if reassert == nil || reassert.stage != tracker.StageDone {
 		t.Fatalf("regressed child must be re-asserted Done, got %+v", reassert)
 	}
 	if !strings.Contains(reassert.extra, "PR #424") {
 		t.Errorf("re-assert comment = %q, want the delivering PR named", reassert.extra)
 	}
-	if closed := tr.setFor("COD-1"); closed == nil || closed.status != "Done" {
+	if closed := tr.setFor("COD-1"); closed == nil || closed.stage != tracker.StageDone {
 		t.Fatalf("epic must still close, got %+v", closed)
+	}
+}
+
+// A workflow whose QA gate keeps delivered work open (DELIVERED_STATE=READY FOR
+// QA) parks every merged child in a started state. That is the delivery, not a
+// regression: the epic ships on its own merge record and nothing is written back
+// over the QA column the team owns.
+func TestFinalizeEpicLeavesChildrenParkedInANonTerminalDeliveredState(t *testing.T) {
+	tr := doneEpicTracker()
+	tr.status["COD-3"] = tracker.StatusStarted
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	p.DeliveredState = "READY FOR QA"
+	for k, v := range map[string]string{"PHASE": state.Merged, "TRACKER_DONE": "1"} {
+		if err := p.State.Set("COD-3", k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.mergeCalls != 1 {
+		t.Fatalf("a child parked in the delivered state must ship the epic, got %d merges", gh.mergeCalls)
+	}
+	if set := tr.setFor("COD-3"); set != nil {
+		t.Errorf("a child parked in the delivered state must be left alone, got %+v", set)
+	}
+}
+
+// Under a non-terminal delivered state only a child that fell all the way back to
+// an unstarted status counts as regressed — and the restoring comment names the
+// state the workflow actually delivers to, not "Done".
+func TestFinalizeEpicRestoresChildBehindANonTerminalDeliveredState(t *testing.T) {
+	tr := doneEpicTracker()
+	tr.status["COD-3"] = tracker.StatusOpen
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	p.DeliveredState = "READY FOR QA"
+	for k, v := range map[string]string{"PHASE": state.Merged, "PR": "424", "TRACKER_DONE": "1"} {
+		if err := p.State.Set("COD-3", k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	restored := tr.setFor("COD-3")
+	if restored == nil || restored.stage != tracker.StageDone {
+		t.Fatalf("a child behind the delivered state must be restored, got %+v", restored)
+	}
+	if !strings.Contains(restored.extra, "READY FOR QA") {
+		t.Errorf("restore comment = %q, want the delivered state named", restored.extra)
+	}
+}
+
+// DELIVERED_STATE is spelled in the project's own vocabulary, so a column no
+// stage claims is still a live one and restores a child only from an unstarted
+// status — the same as the QA gates trau does recognise. Only a delivered state
+// that reads as terminal makes every live status a regression.
+func TestBehindDeliveredState(t *testing.T) {
+	cases := []struct {
+		delivered string
+		started   bool
+	}{
+		{delivered: "", started: true},
+		{delivered: "Released", started: true},
+		{delivered: "UAT"},
+		{delivered: "Ready for Release"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.delivered, func(t *testing.T) {
+			p := &Pipeline{DeliveredState: tc.delivered}
+			if !p.behindDeliveredState(tracker.StatusOpen) {
+				t.Error("an unstarted status is behind every delivered state")
+			}
+			if got := p.behindDeliveredState(tracker.StatusStarted); got != tc.started {
+				t.Errorf("behindDeliveredState(started) = %v, want %v", got, tc.started)
+			}
+		})
+	}
+}
+
+// An epic PR the gate could not merge has shipped nothing to the base, so the epic
+// ticket goes to review beside it instead of closing over an unmerged branch.
+func TestFinalizeEpicLeavesEpicOpenWhenPRIsNotMerged(t *testing.T) {
+	tr := doneEpicTracker()
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "fail"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.mergeCalls != 0 {
+		t.Fatalf("a red epic gate must not merge, got %d merges", gh.mergeCalls)
+	}
+	closed := tr.setFor("COD-1")
+	if closed == nil || closed.stage != tracker.StageInReview {
+		t.Fatalf("an unmerged epic must be left in review, got %+v", closed)
+	}
+	if !strings.Contains(closed.extra, "ready for review") {
+		t.Errorf("epic comment = %q, want the PR flagged for review", closed.extra)
 	}
 }
 
@@ -544,7 +657,7 @@ func TestFinalizeEpicShipsWhenReassertFails(t *testing.T) {
 	if gh.mergeCalls != 1 {
 		t.Fatalf("a failed re-assert must not block the epic, got %d merges", gh.mergeCalls)
 	}
-	if closed := inner.setFor("COD-1"); closed == nil || closed.status != "Done" {
+	if closed := inner.setFor("COD-1"); closed == nil || closed.stage != tracker.StageDone {
 		t.Fatalf("epic must still close, got %+v", closed)
 	}
 }
@@ -603,8 +716,72 @@ func TestEpicBranchNameCreatesWhenNeitherExists(t *testing.T) {
 	if g.adopted {
 		t.Fatalf("nothing to adopt when the remote branch is absent")
 	}
-	if !g.created || g.createBase != "main" {
-		t.Fatalf("expected fresh epic created off main, created=%v base=%q", g.created, g.createBase)
+	if !g.created || g.createBase != "origin/main" {
+		t.Fatalf("expected fresh epic created off origin/main, created=%v base=%q", g.created, g.createBase)
+	}
+}
+
+// A brand-new epic branch is cut from the base as the REMOTE has it, fetched first.
+// An epic born from a local base that drifted behind starts life missing those
+// commits, and every child PR then diffs against them as if the child had written
+// them. Only a remote tip that cannot be resolved at all falls back to the local ref.
+func TestEpicBranchNameCutsFromFetchedRemoteBase(t *testing.T) {
+	tests := []struct {
+		name      string
+		git       *epicGit
+		wantBase  string
+		wantFetch string
+	}{
+		{
+			name:      "remote reachable",
+			git:       &epicGit{},
+			wantBase:  "origin/main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:      "fetch failed but the remote tip is known",
+			git:       &epicGit{fetchErr: errors.New("could not read from remote")},
+			wantBase:  "origin/main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:      "no remote tip to cut from",
+			git:       &epicGit{fetchErr: errors.New("could not read from remote"), unknownTip: true},
+			wantBase:  "main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:      "fetch succeeded but left no tracking ref",
+			git:       &epicGit{unknownTip: true},
+			wantBase:  "main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:     "local delivery has no remote base",
+			git:      &epicGit{noRemote: true},
+			wantBase: "main",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Pipeline{
+				Base:    "main",
+				Remote:  "origin",
+				EpicID:  "COD-1",
+				Git:     tt.git,
+				Tracker: &epicTracker{title: "Checkout rebuild"},
+			}
+
+			if _, err := p.epicBranchName(context.Background()); err != nil {
+				t.Fatalf("epicBranchName returned error: %v", err)
+			}
+			if !tt.git.created || tt.git.createBase != tt.wantBase {
+				t.Errorf("epic cut from %q (created=%v), want %q", tt.git.createBase, tt.git.created, tt.wantBase)
+			}
+			if tt.git.fetched != tt.wantFetch {
+				t.Errorf("fetched %q, want %q", tt.git.fetched, tt.wantFetch)
+			}
+		})
 	}
 }
 
@@ -656,13 +833,18 @@ func TestEpicBranchNameSurfacesRemoteCheckError(t *testing.T) {
 }
 
 // epicGit is a fakeGit that drives epicBranchName's local/remote branch
-// resolution and records whether it recreated or adopted the epic branch.
+// resolution and records whether it recreated or adopted the epic branch, off
+// which base, and whether the remote base was fetched first.
 type epicGit struct {
 	fakeGit
 	localExists  bool
 	remoteExists bool
 	remoteErr    error
 	existing     string // branch name the finders report; defaults via existingOr
+	noRemote     bool   // the repo has no remote at all (local delivery)
+	fetchErr     error
+	unknownTip   bool // the remote-tracking base tip does not resolve locally either
+	fetched      string
 	created      bool
 	adopted      bool
 	createBase   string
@@ -689,6 +871,14 @@ func (g *epicGit) existingOr(id string) string {
 	}
 	return "epic/" + id + "-checkout-rebuild"
 }
+func (g *epicGit) RemoteExists(context.Context, string) (bool, error) { return !g.noRemote, nil }
+func (g *epicGit) Fetch(_ context.Context, remote, branch string) error {
+	g.fetched = remote + "/" + branch
+	return g.fetchErr
+}
+func (g *epicGit) ResolvesToCommit(context.Context, string) (bool, error) {
+	return !g.unknownTip, nil
+}
 func (g *epicGit) CheckoutRemoteBranch(context.Context, string, string) error {
 	g.adopted = true
 	return nil
@@ -704,14 +894,17 @@ type epicTracker struct {
 	status          map[string]tracker.IssueStatus
 	statusErr       error
 	setID           string
-	setStatus       string
+	setStatus       tracker.Stage
 	setExtra        string
 	sets            []trackerSet
 	quarantineCalls int
 	quarantineID    string
 }
 
-type trackerSet struct{ id, status, extra string }
+type trackerSet struct {
+	id, extra string
+	stage     tracker.Stage
+}
 
 // setFor returns the last status write aimed at id, or nil when there was none.
 func (e *epicTracker) setFor(id string) *trackerSet {
@@ -730,11 +923,11 @@ type childSetFailTracker struct {
 	epicID string
 }
 
-func (t *childSetFailTracker) SetStatus(ctx context.Context, id, status, extra string) error {
+func (t *childSetFailTracker) SetStatus(ctx context.Context, id string, stage tracker.Stage, extra string) error {
 	if id != t.epicID {
 		return errors.New("tracker unavailable")
 	}
-	return t.epicTracker.SetStatus(ctx, id, status, extra)
+	return t.epicTracker.SetStatus(ctx, id, stage, extra)
 }
 
 func (e *epicTracker) Pick(context.Context, tracker.Scope) (string, error) { return "", nil }
@@ -742,9 +935,9 @@ func (e *epicTracker) SubIssues(context.Context, string) ([]tracker.SubIssue, er
 	return e.subs, nil
 }
 func (e *epicTracker) Title(context.Context, string) (string, error) { return e.title, nil }
-func (e *epicTracker) SetStatus(_ context.Context, id, status, extra string) error {
-	e.setID, e.setStatus, e.setExtra = id, status, extra
-	e.sets = append(e.sets, trackerSet{id: id, status: status, extra: extra})
+func (e *epicTracker) SetStatus(_ context.Context, id string, stage tracker.Stage, extra string) error {
+	e.setID, e.setStatus, e.setExtra = id, stage, extra
+	e.sets = append(e.sets, trackerSet{id: id, stage: stage, extra: extra})
 	return nil
 }
 func (e *epicTracker) Reset(context.Context, string) error { return nil }
@@ -774,23 +967,40 @@ type epicGitHub struct {
 	head         string
 	title        string
 	body         string
+	createDraft  bool
+	readyCalls   int
 	checks       []Check
+	prCommits    int
+	prFiles      int
 	mergeCalls   int
 	mergeMethod  string
 	mergeDeleted bool
+	closedPR     string
+	closeErr     error
 }
 
 func (e *epicGitHub) PRURL(context.Context, string) (string, error) { return "", nil }
 func (e *epicGitHub) MergedPRURL(context.Context, string) (string, error) {
 	return e.mergedURL, nil
 }
-func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string) (string, error) {
+func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string, draft bool) (string, error) {
 	e.createCalls++
-	e.base, e.head, e.title, e.body = base, head, title, body
+	e.base, e.head, e.title, e.body, e.createDraft = base, head, title, body, draft
 	return e.createURL, e.createErr
 }
+func (e *epicGitHub) MarkPRReady(context.Context, string) error       { e.readyCalls++; return nil }
 func (e *epicGitHub) PRState(context.Context, string) (string, error) { return e.prState, nil }
 func (e *epicGitHub) Checks(context.Context, string) ([]Check, error) { return e.checks, nil }
+func (e *epicGitHub) PRSize(context.Context, string) (int, int, error) {
+	return e.prCommits, e.prFiles, nil
+}
+func (e *epicGitHub) ClosePR(_ context.Context, pr string) error {
+	if e.closeErr != nil {
+		return e.closeErr
+	}
+	e.closedPR, e.prState = pr, "CLOSED"
+	return nil
+}
 func (e *epicGitHub) Merge(_ context.Context, _, method string, deleteBranch bool) error {
 	e.mergeCalls++
 	e.mergeMethod, e.mergeDeleted = method, deleteBranch

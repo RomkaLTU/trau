@@ -85,6 +85,7 @@ Usage:
   trau takeover <ID> [--repo <path>]  resume a parked ticket's recorded claude session in this terminal (repo locked while it runs)
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
+  trau stop                  stop the running hub and leave it stopped (--force also stops live loops)
   trau hub restart           restart the web hub so it runs the current on-disk binary (starts one if none is up)
   trau hub restart --force   stop a hub whose API has wedged, then start a fresh one (refuses while any run is live)
   trau hub supervise         hand the hub to launchd with KeepAlive (macOS), so a crashed or killed one comes back on its own
@@ -95,6 +96,7 @@ Usage:
   trau --list-epic <ID> [--json]  list an epic's sub-issues and their states (ID, title, state)
   trau --reset <ID>          drop the branch + state and re-queue the ticket (refuses if already merged; --force overrides)
   trau --clear <ID>          drop only the local checkpoint (no git, no re-queue) — for tickets finished out-of-band
+  trau --requeue <ID>        un-quarantine: restore labels + status, clear the checkpoint, close the attempt PR, drop its branch
 
 Flags:
   --parent <ID>     treat <ID> as an epic and process its sub-issues (a bare <PREFIX>-<n> arg is equivalent)
@@ -109,7 +111,8 @@ Flags:
   --reset <ID>      reset a ticket and exit
   --reset-local <ID>  drop a ticket's branch + run dir, leaving its run history and the tracker alone, and exit
   --clear <ID>      drop a ticket's local checkpoint without touching git or the tracker (a.k.a. --forget)
-  --force           with --reset, reset even a ticket whose code is already merged
+  --requeue <ID>    undo a quarantine in one step (tracker labels + status, checkpoint, attempt PR, branch) and exit
+  --force           with --reset or --requeue, act even on a ticket whose code is already merged
   --status          print saved checkpoints (auto-reconciles stale in-flight/quarantined rows against the tracker) and exit
   --json            emit --status, --list-eligible, or --list-epic as machine-readable JSON
   --no-tui          force plain console output (disable the Bubble Tea TUI)
@@ -205,6 +208,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return runServe(ctx, args[1:], stderr)
 	}
 
+	if len(args) > 0 && args[0] == "stop" {
+		return runStop(ctx, args[1:], stdout, stderr)
+	}
+
 	if len(args) > 0 && args[0] == "hub" {
 		return runHub(ctx, args[1:], stdout)
 	}
@@ -280,10 +287,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		logger.Verbosef("ensure runs .gitignore: %v", err)
 	}
 
-	for _, id := range []string{opts.Parent, opts.ResetID, opts.ResetLocalID, opts.ClearID} {
+	for _, id := range []string{opts.Parent, opts.ResetID, opts.ResetLocalID, opts.ClearID, opts.RequeueID} {
 		if err := validateTicketID(cfg, id); err != nil {
-			return console.Actionable(err, "validate ticket id",
-				fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix))
+			return console.Actionable(err, "validate ticket id", ticketIDHint(cfg))
 		}
 	}
 
@@ -426,7 +432,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	if opts.ResetID != "" || opts.ResetLocalID != "" {
+	if opts.ResetID != "" || opts.ResetLocalID != "" || opts.RequeueID != "" {
 		ensureHubForStore(ctx, cfg, stderr)
 		repoRoot, err := config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
 		if err != nil {
@@ -440,13 +446,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if opts.ResetLocalID != "" {
 			return pipe.PurgeLocal(ctx, opts.ResetLocalID)
 		}
-		if phase := pipe.State.Get(opts.ResetID, "PHASE"); phase == state.Merged && !opts.Force {
-			return console.Actionable(
-				fmt.Errorf("%s is already shipped (phase: %s)", opts.ResetID, phase),
-				"reset "+opts.ResetID,
-				"its code is already merged — pass --force to reset it anyway")
+		id, verb := opts.ResetID, "reset"
+		if opts.RequeueID != "" {
+			id, verb = opts.RequeueID, "requeue"
 		}
-		return pipe.Reset(ctx, opts.ResetID)
+		if phase := pipe.State.Get(id, "PHASE"); phase == state.Merged && !opts.Force {
+			return console.Actionable(
+				fmt.Errorf("%s is already shipped (phase: %s)", id, phase),
+				verb+" "+id,
+				fmt.Sprintf("its code is already merged — pass --force to %s it anyway", verb))
+		}
+		if opts.RequeueID != "" {
+			return pipe.Requeue(ctx, id, opts.Force)
+		}
+		return pipe.Reset(ctx, id)
 	}
 
 	epicID := opts.Parent
@@ -699,6 +712,12 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 
 func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, error) {
 	provider := cfg.EffectiveTrackerProvider()
+	// DELIVERED_STATE pins the same write STATUS_DONE does, so it wins when a
+	// workflow sets both.
+	done := cfg.DeliveredState
+	if done == "" {
+		done = cfg.StatusDone
+	}
 	tc := tracker.Config{
 		Team:            cfg.TrackerKey(),
 		Project:         cfg.Project,
@@ -707,6 +726,12 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		QueuedLabel:     cfg.QueuedLabel,
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
+		StatusOverrides: map[tracker.Stage]string{
+			tracker.StageTodo:       cfg.StatusTodo,
+			tracker.StageInProgress: cfg.StatusInProgress,
+			tracker.StageInReview:   cfg.StatusInReview,
+			tracker.StageDone:       done,
+		},
 	}
 	switch provider {
 	case "jira":
@@ -726,6 +751,8 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		// to fall back to, so the runner is left out entirely.
 		tc.APIKey = cfg.AzurePAT
 		tc.BaseURL = cfg.AzureOrgURL
+		tc.AreaPath = cfg.AzureAreaPath
+		tc.BoardTeams = cfg.AzureTeams
 		runner = nil
 	case "internal":
 		// The internal provider drives issues through the hub over HTTP, never the
@@ -761,6 +788,16 @@ func internalIDPrefix(cfg config.Config) string {
 		return ""
 	}
 	return prefix
+}
+
+// ticketIDHint describes the ticket id shape this repo addresses, so a rejected one
+// says what to pass instead. A tracker that numbers its tickets settles on no prefix
+// (ADR 0024 §1), and there is nothing to set to change that.
+func ticketIDHint(cfg config.Config) string {
+	if cfg.IssuePrefix == "" {
+		return "pass the bare work-item number this board addresses tickets by, e.g. trau 6694"
+	}
+	return fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix)
 }
 
 // validateTicketID accepts a ticket id passed on the command line when it is
@@ -1449,6 +1486,8 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		TrackerProvider:      cfg.EffectiveTrackerProvider(),
 		InternalPrefix:       config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(repoRoot)),
 		QueuedLabel:          cfg.QueuedLabel,
+		ReadyLabel:           cfg.ReadyLabel,
+		QuarantineLabel:      cfg.QuarantineLabel,
 		MaxRepairs:           cfg.MaxRepairs,
 		MaxBugfixes:          cfg.MaxBugfixes,
 		AgentRetries:         cfg.AgentRetries,
@@ -1464,6 +1503,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		AppURLs:              cfg.AppURLs,
 		AutoMerge:            cfg.AutoMerge,
 		MergeMethod:          cfg.MergeMethod,
+		DeliveredState:       cfg.DeliveredState,
 		DeterministicCommit:  cfg.DeterministicCommit,
 		ExpectedChecks:       cfg.ExpectedChecks,
 		RequireCI:            cfg.RequireCI,
@@ -1588,9 +1628,9 @@ type engine interface {
 
 	EnsureCleanBase(ctx context.Context) error
 
-	// RestoreWIP undoes any EnsureCleanBase auto-stash at session end, popping the
-	// user's WIP back onto its original branch. No-op when nothing was stashed.
-	RestoreWIP(ctx context.Context)
+	// ExitCleanup runs the session's exit hygiene: back to the branch the run started
+	// on, any partial epic branch settled, and any EnsureCleanBase auto-stash popped.
+	ExitCleanup(ctx context.Context)
 
 	Pick(ctx context.Context) (string, error)
 
@@ -1621,7 +1661,7 @@ func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
 	return e.pipe.InferredResumeFunc(ctx, e.resumeKeep)
 }
 func (e *realEngine) EnsureCleanBase(ctx context.Context) error { return e.pipe.EnsureCleanBase(ctx) }
-func (e *realEngine) RestoreWIP(ctx context.Context)            { e.pipe.RestoreWIP(ctx) }
+func (e *realEngine) ExitCleanup(ctx context.Context)           { e.pipe.ExitCleanup(ctx) }
 func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.tracker.Pick(ctx, e.scope) }
 func (e *realEngine) Process(ctx context.Context, id, from string) error {
 	err := e.pipe.Resume(ctx, id, from)
@@ -1676,9 +1716,9 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 	if report == nil {
 		report = func(string, string, string) {}
 	}
-	// Put any WIP that EnsureCleanBase auto-stashed on a fresh pick back where it
-	// came from once the loop ends (no-op when nothing was stashed).
-	defer eng.RestoreWIP(ctx)
+	// However the loop ends — clean finish, error, refusal, Ctrl-C — leave the repo
+	// on the branch it started on, with no autostash and no dangling epic branch.
+	defer eng.ExitCleanup(ctx)
 	// Poll the provider usage window for the run's lifetime, stopping when the loop
 	// returns. Windows reach the renderer over the event log; nil when disabled.
 	if p.Poller != nil {
@@ -2105,6 +2145,12 @@ func (a *appActions) OnboardingNeeded() bool {
 // project config path that was written.
 func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (tui.SetupResult, error) {
 	path := filepath.Join(a.cfg.RepoRoot, config.ProjectConfigName)
+	// The wizard's yes means the default branch is checked, which auto already
+	// gates on — while sparing a PR into a base no workflow targets.
+	ciGate := config.CIGateAuto
+	if !setup.RequireCI {
+		ciGate = config.CIGateOff
+	}
 	values := map[string]string{
 		"TRACKER_PROVIDER": setup.TrackerProvider,
 		"LINEAR_TEAM":      setup.Team,
@@ -2113,7 +2159,7 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		"BASE_BRANCH":      setup.BaseBranch,
 		"PROVIDER":         setup.Provider,
 		"EPIC_FLOW":        boolEnvValue(setup.EpicFlow),
-		"REQUIRE_CI":       boolEnvValue(setup.RequireCI),
+		"REQUIRE_CI":       string(ciGate),
 	}
 	if len(setup.ExpectedChecks) > 0 {
 		// Detection found the exact required checks — pin the gate to them so it
@@ -2977,10 +3023,9 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		return
 	}
 
-	// A fresh leaf run auto-stashes any uncommitted WIP in EnsureCleanBase below;
-	// restore it once this ticket is done (no-op when nothing was stashed, and when
-	// resuming an existing checkpoint).
-	defer a.pipe.RestoreWIP(ctx)
+	// Whatever this ticket does, hand the working copy back the way it was found:
+	// on its original branch, WIP restored, no epic branch left dangling.
+	defer a.pipe.ExitCleanup(ctx)
 
 	// Leaf ticket: under epic flow, if it belongs to an epic, build it ON the epic
 	// branch (and have its PR target that branch) instead of branching off the base.

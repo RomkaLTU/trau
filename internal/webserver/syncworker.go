@@ -15,8 +15,16 @@ import (
 const syncBackoffCap = 30 * time.Minute
 
 // syncOnceTimeout bounds a single repo's pull so a hung tracker call cannot pin a
-// sync goroutine for the life of the hub.
-const syncOnceTimeout = 2 * time.Minute
+// sync goroutine for the life of the hub. It has to cover the widest first full
+// pull, not the steady-state incremental one: a board-wide query, the batched detail
+// reads its ids feed, and a comment sweep that owes a round-trip per ticket with a
+// discussion — with the piggybacked reconcile sweep sharing the same budget.
+const syncOnceTimeout = 10 * time.Minute
+
+// rateLimitCap bounds how long a rate-limited repo waits for the tracker's budget
+// to refill — the widest window a provider meters over, so the repo recovers on
+// its own even when the tracker reports a reset time far in the future.
+const rateLimitCap = time.Hour
 
 // backlogStaleAfter is how old a repo's last sync may be before a backlog read
 // triggers a background refresh. Kept below the periodic interval so an open board
@@ -130,17 +138,29 @@ func (sy *syncer) settleReconcile(root string, err error) {
 	if st == nil {
 		return
 	}
-	now := time.Now()
-	switch {
-	case err == nil:
+	if err == nil {
 		st.reconcileFailures = 0
-		st.reconcileAt = now.Add(sy.reconcileEvery)
-	case errors.Is(err, tracker.ErrReaderUnavailable):
-		st.reconcileFailures = 0
-		st.reconcileAt = now.Add(syncBackoffCap)
+		st.reconcileAt = time.Now().Add(sy.reconcileEvery)
+		return
+	}
+	wait, failures := retryAfter(err, sy.reconcileEvery, st.reconcileFailures)
+	st.reconcileFailures = failures
+	st.reconcileAt = time.Now().Add(wait)
+}
+
+// retryAfter maps a failed sync or reconcile to how long the repo holds off and
+// what its consecutive-failure count becomes, so both cadences read one error
+// taxonomy. Neither a repo the hub has nothing to pull for — no credentials, or no
+// team to bind — nor a rate limit, which is the shared API key's budget rather than
+// a broken repo, counts as a failure.
+func retryAfter(err error, interval time.Duration, failures int) (time.Duration, int) {
+	switch resetAt, limited := tracker.RateLimited(err); {
+	case errors.Is(err, tracker.ErrReaderUnavailable), errors.Is(err, tracker.ErrNoTeamKey):
+		return syncBackoffCap, 0
+	case limited:
+		return rateLimitWait(resetAt, interval), 0
 	default:
-		st.reconcileFailures++
-		st.reconcileAt = now.Add(syncBackoff(sy.reconcileEvery, st.reconcileFailures))
+		return syncBackoff(interval, failures+1), failures + 1
 	}
 }
 
@@ -150,11 +170,7 @@ func (sy *syncer) settleReconcile(root string, err error) {
 func (sy *syncer) claim(root string, now time.Time) bool {
 	sy.mu.Lock()
 	defer sy.mu.Unlock()
-	st := sy.state[root]
-	if st == nil {
-		st = &repoSync{}
-		sy.state[root] = st
-	}
+	st := sy.repoState(root)
 	if st.syncing || now.Before(st.nextAttempt) {
 		return false
 	}
@@ -162,10 +178,36 @@ func (sy *syncer) claim(root string, now time.Time) bool {
 	return true
 }
 
+// claimManual takes the same per-repo claim for a sync the user pressed, so a
+// manual pull cannot overlap a background one and shows up as syncing everywhere
+// the background pull does. It refuses only while a sync is in flight: a user
+// asking for this repo now outranks its failure backoff, which a pull that
+// succeeds clears on its way out through settle.
+func (sy *syncer) claimManual(root string) bool {
+	sy.mu.Lock()
+	defer sy.mu.Unlock()
+	st := sy.repoState(root)
+	if st.syncing {
+		return false
+	}
+	st.syncing = true
+	return true
+}
+
+// repoState returns root's bookkeeping, seeding it on first use. Callers hold mu.
+func (sy *syncer) repoState(root string) *repoSync {
+	st := sy.state[root]
+	if st == nil {
+		st = &repoSync{}
+		sy.state[root] = st
+	}
+	return st
+}
+
 // settle records a finished sync: success clears the backoff and leaves the repo
-// due next tick; a tracker failure backs it off exponentially. A repo with no
-// direct credentials is not a failure — it simply has nothing to pull — so it
-// backs off to the cap and checks in rarely rather than every interval.
+// due next tick; a tracker failure backs it off exponentially. A repo the hub has
+// nothing to pull for is not a failure, so it backs off to the cap and checks in
+// rarely rather than every interval.
 func (sy *syncer) settle(root string, interval time.Duration, err error) {
 	sy.mu.Lock()
 	defer sy.mu.Unlock()
@@ -174,16 +216,39 @@ func (sy *syncer) settle(root string, interval time.Duration, err error) {
 		return
 	}
 	st.syncing = false
-	switch {
-	case err == nil:
+	if err == nil {
 		st.failures = 0
 		st.nextAttempt = time.Time{}
-	case errors.Is(err, tracker.ErrReaderUnavailable):
-		st.failures = 0
-		st.nextAttempt = time.Now().Add(syncBackoffCap)
+		return
+	}
+	wait, failures := retryAfter(err, interval, st.failures)
+	st.failures = failures
+	st.nextAttempt = time.Now().Add(wait)
+}
+
+// settleManual records a finished user-pressed sync on the repo's cadence, so it
+// clears or renews the backoff exactly as a background pull would. It reads the
+// loop's interval rather than taking one, so the bookkeeping holds when the
+// background loop is disabled and no caller has an interval to pass.
+func (sy *syncer) settleManual(root string, err error) {
+	sy.mu.Lock()
+	interval := sy.interval
+	sy.mu.Unlock()
+	sy.settle(root, interval, err)
+}
+
+// rateLimitWait is how long a rate-limited repo holds off: until the tracker says
+// the budget refills, floored at the caller's own interval and capped at the
+// window a provider meters, so a missing or nonsensical reset time cannot park the
+// repo indefinitely.
+func rateLimitWait(resetAt time.Time, interval time.Duration) time.Duration {
+	switch wait := time.Until(resetAt); {
+	case wait < interval:
+		return interval
+	case wait > rateLimitCap:
+		return rateLimitCap
 	default:
-		st.failures++
-		st.nextAttempt = time.Now().Add(syncBackoff(interval, st.failures))
+		return wait
 	}
 }
 

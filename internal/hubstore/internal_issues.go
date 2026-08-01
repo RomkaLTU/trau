@@ -20,13 +20,23 @@ var ErrInternalIssueNotFound = errors.New("internal issue not found")
 
 // InternalDraft is the editable content of an internal issue: its title,
 // markdown description, workflow state (a status group — see normalizeState),
-// labels, and an optional parent identifier nesting it under an epic.
+// labels, an optional parent identifier nesting it under an epic, priority and due
+// date, and the blocking edges to wire around it. BlockedBy and Blocks are
+// additive — an edit adds edges, and RemoveRelations drops them.
 type InternalDraft struct {
 	Title       string
 	Description string
 	State       string
 	Labels      []string
 	Parent      string
+	Priority    int
+	DueDate     string
+	BlockedBy   []string
+	Blocks      []string
+}
+
+func (d InternalDraft) relations() RelationEdits {
+	return RelationEdits{BlockedBy: d.BlockedBy, Blocks: d.Blocks}
 }
 
 // CreateInternal files a new internal issue for a repo, allocating the next
@@ -46,6 +56,7 @@ func (s *Issues) CreateInternal(repo, prefix string, d InternalDraft) (Issue, er
 	}
 	group, status := normalizeState(d.State)
 	parent := strings.TrimSpace(d.Parent)
+	due := strings.TrimSpace(d.DueDate)
 	labels := labelList(d.Labels)
 	labelsJSON, err := json.Marshal(labels)
 	if err != nil {
@@ -56,11 +67,8 @@ func (s *Issues) CreateInternal(repo, prefix string, d InternalDraft) (Issue, er
 	if err != nil {
 		return Issue{}, err
 	}
-	if _, err := tx.Exec(`INSERT INTO issue_seq(repo, next) VALUES(?, 1) ON CONFLICT(repo) DO NOTHING`, repo); err != nil {
-		return Issue{}, errors.Join(err, tx.Rollback())
-	}
-	var next int64
-	if err := tx.QueryRow(`SELECT next FROM issue_seq WHERE repo = ?`, repo).Scan(&next); err != nil {
+	next, err := nextInternalSeq(tx, repo)
+	if err != nil {
 		return Issue{}, errors.Join(err, tx.Rollback())
 	}
 	identifier, err := freeIdentifier(tx, repo, prefix, &next)
@@ -69,9 +77,10 @@ func (s *Issues) CreateInternal(repo, prefix string, d InternalDraft) (Issue, er
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.Exec(
-		`INSERT INTO issues(repo, source, identifier, title, description, status, status_group, labels, parent, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		repo, SourceInternal, identifier, title, d.Description, status, group, string(labelsJSON), parent, now, now,
+		`INSERT INTO issues(repo, source, identifier, title, description, status, status_group, labels, parent, priority, due_date, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, SourceInternal, identifier, title, d.Description, status, group, string(labelsJSON), parent,
+		d.Priority, due, now, now,
 	); err != nil {
 		return Issue{}, errors.Join(err, tx.Rollback())
 	}
@@ -81,13 +90,17 @@ func (s *Issues) CreateInternal(repo, prefix string, d InternalDraft) (Issue, er
 	if err := markParent(tx, repo, parent); err != nil {
 		return Issue{}, errors.Join(err, tx.Rollback())
 	}
+	if err := addRelations(tx, repo, identifier, d.relations()); err != nil {
+		return Issue{}, errors.Join(err, tx.Rollback())
+	}
 	if err := tx.Commit(); err != nil {
 		return Issue{}, err
 	}
 	return Issue{
 		Repo: repo, Source: SourceInternal, Identifier: identifier,
 		Title: title, Description: d.Description, Status: status, StatusGroup: group,
-		Labels: labels, Parent: parent, CreatedAt: now, UpdatedAt: now, Comments: []Comment{},
+		Labels: labels, Parent: parent, Priority: d.Priority, DueDate: due,
+		CreatedAt: now, UpdatedAt: now, Comments: []Comment{},
 	}, nil
 }
 
@@ -102,6 +115,7 @@ func (s *Issues) UpdateInternal(repo, identifier string, d InternalDraft) (Issue
 	}
 	group, status := normalizeState(d.State)
 	parent := strings.TrimSpace(d.Parent)
+	due := strings.TrimSpace(d.DueDate)
 	labels := labelList(d.Labels)
 	labelsJSON, err := json.Marshal(labels)
 	if err != nil {
@@ -114,9 +128,11 @@ func (s *Issues) UpdateInternal(repo, identifier string, d InternalDraft) (Issue
 		return Issue{}, err
 	}
 	res, err := tx.Exec(
-		`UPDATE issues SET title = ?, description = ?, status = ?, status_group = ?, labels = ?, parent = ?, updated_at = ?
+		`UPDATE issues SET title = ?, description = ?, status = ?, status_group = ?, labels = ?, parent = ?,
+			priority = ?, due_date = ?, updated_at = ?
 		 WHERE repo = ? AND identifier = ? AND source = ?`,
-		title, d.Description, status, group, string(labelsJSON), parent, now, repo, identifier, SourceInternal,
+		title, d.Description, status, group, string(labelsJSON), parent,
+		d.Priority, due, now, repo, identifier, SourceInternal,
 	)
 	if err != nil {
 		return Issue{}, errors.Join(err, tx.Rollback())
@@ -131,13 +147,17 @@ func (s *Issues) UpdateInternal(repo, identifier string, d InternalDraft) (Issue
 	if err := markParent(tx, repo, parent); err != nil {
 		return Issue{}, errors.Join(err, tx.Rollback())
 	}
+	if err := addRelations(tx, repo, identifier, d.relations()); err != nil {
+		return Issue{}, errors.Join(err, tx.Rollback())
+	}
 	if err := tx.Commit(); err != nil {
 		return Issue{}, err
 	}
 	return Issue{
 		Repo: repo, Source: SourceInternal, Identifier: identifier,
 		Title: title, Description: d.Description, Status: status, StatusGroup: group,
-		Labels: labels, Parent: parent, UpdatedAt: now, Comments: []Comment{},
+		Labels: labels, Parent: parent, Priority: d.Priority, DueDate: due,
+		UpdatedAt: now, Comments: []Comment{},
 	}, nil
 }
 
@@ -171,12 +191,14 @@ func (s *Issues) TransitionInternal(repo, identifier string, t InternalTransitio
 		group       string
 		labelsRaw   string
 		parent      string
+		priority    int
+		due         string
 	)
 	err = tx.QueryRow(
-		`SELECT id, title, description, status, status_group, labels, parent
+		`SELECT id, title, description, status, status_group, labels, parent, priority, due_date
 		 FROM issues WHERE repo = ? AND identifier = ? AND source = ?`,
 		repo, identifier, SourceInternal,
-	).Scan(&id, &title, &description, &status, &group, &labelsRaw, &parent)
+	).Scan(&id, &title, &description, &status, &group, &labelsRaw, &parent, &priority, &due)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, errors.Join(ErrInternalIssueNotFound, tx.Rollback())
 	}
@@ -214,7 +236,8 @@ func (s *Issues) TransitionInternal(repo, identifier string, t InternalTransitio
 	return Issue{
 		Repo: repo, Source: SourceInternal, Identifier: identifier,
 		Title: title, Description: description, Status: status, StatusGroup: group,
-		Labels: labels, Parent: parent, UpdatedAt: now, Comments: []Comment{},
+		Labels: labels, Parent: parent, Priority: priority, DueDate: due,
+		UpdatedAt: now, Comments: []Comment{},
 	}, nil
 }
 

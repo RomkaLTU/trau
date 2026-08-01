@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from 'react'
+
 type Store = Pick<Storage, 'getItem' | 'setItem'>
 
 const THEME_KEY = 'trau.theme'
@@ -30,6 +32,43 @@ export function loadThemeMode(): ThemeMode {
 
 export function storeThemeMode(mode: ThemeMode): void {
   browserStore()?.setItem(THEME_KEY, mode)
+  publish(mode)
+}
+
+const listeners = new Set<() => void>()
+let snapshot: ThemeMode | null = null
+
+function currentMode(): ThemeMode {
+  if (snapshot === null) snapshot = loadThemeMode()
+  return snapshot
+}
+
+// Passing null drops the snapshot, so the next read comes off storage — which is
+// what another tab's write leaves behind.
+function publish(mode: ThemeMode | null): void {
+  snapshot = mode
+  listeners.forEach((notify) => notify())
+}
+
+function onStorage(event: StorageEvent): void {
+  if (event.key === null || event.key === THEME_KEY) publish(null)
+}
+
+function subscribe(notify: () => void): () => void {
+  if (listeners.size === 0) globalThis.addEventListener('storage', onStorage)
+  listeners.add(notify)
+  return () => {
+    listeners.delete(notify)
+    if (listeners.size === 0) {
+      globalThis.removeEventListener('storage', onStorage)
+    }
+  }
+}
+
+// The sidebar toggle and the palette's theme action are two views of one setting,
+// so the mode lives here rather than in either of them.
+export function useThemeMode(): ThemeMode {
+  return useSyncExternalStore(subscribe, currentMode)
 }
 
 export function resolveTheme(

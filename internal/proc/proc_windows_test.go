@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// netstat ships with Windows, so the port->pid lookup has nothing to skip for.
+func skipWithoutPortTool(*testing.T) {}
+
 // LookBin must find a bare name via %PATH% and return it absolute: the ConPTY
 // spawn hands the result to a raw CreateProcess, which never searches %PATH%
 // itself and probes a bare name against the child's working directory instead

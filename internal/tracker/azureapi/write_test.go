@@ -12,85 +12,6 @@ import (
 	"testing"
 )
 
-// agileStates, scrumStates and basicStates are the state vocabularies the stock
-// process templates ship with — the reason state resolution goes through a
-// category instead of matching a name.
-var (
-	agileStates = []State{
-		{Name: "New", Category: "Proposed"},
-		{Name: "Active", Category: "InProgress"},
-		{Name: "Resolved", Category: "Resolved"},
-		{Name: "Closed", Category: "Completed"},
-		{Name: "Removed", Category: "Removed"},
-	}
-	scrumStates = []State{
-		{Name: "New", Category: "Proposed"},
-		{Name: "Approved", Category: "Proposed"},
-		{Name: "Committed", Category: "InProgress"},
-		{Name: "Done", Category: "Completed"},
-		{Name: "Removed", Category: "Removed"},
-	}
-	basicStates = []State{
-		{Name: "To Do", Category: "Proposed"},
-		{Name: "Doing", Category: "InProgress"},
-		{Name: "Done", Category: "Completed"},
-	}
-)
-
-func TestResolveStatePrefersExactName(t *testing.T) {
-	got, err := resolveState(agileStates, "resolved")
-	if err != nil {
-		t.Fatalf("resolveState returned error: %v", err)
-	}
-	if got != "Resolved" {
-		t.Errorf("state = %q, want Resolved (the template's own casing)", got)
-	}
-}
-
-// The loop names its targets in its own vocabulary, which has to land somewhere
-// sensible on every template — "In Review" has no state of that name anywhere, and
-// Scrum has no Resolved category at all.
-func TestResolveStateFallsBackByCategory(t *testing.T) {
-	cases := []struct {
-		name   string
-		states []State
-		target string
-		want   string
-	}{
-		{"agile in progress", agileStates, "In Progress", "Active"},
-		{"agile in review", agileStates, "In Review", "Resolved"},
-		{"agile done", agileStates, "Done", "Closed"},
-		{"agile to do", agileStates, "To Do", "New"},
-		{"scrum in progress", scrumStates, "In Progress", "Committed"},
-		{"scrum in review has no resolved category", scrumStates, "In Review", "Committed"},
-		{"scrum done", scrumStates, "Done", "Done"},
-		{"scrum to do picks the first proposed state", scrumStates, "To Do", "New"},
-		{"basic in progress", basicStates, "In Progress", "Doing"},
-		{"basic in review has no resolved category", basicStates, "In Review", "Doing"},
-		{"basic canceled has no removed category", basicStates, "Canceled", "Done"},
-	}
-	for _, tc := range cases {
-		got, err := resolveState(tc.states, tc.target)
-		if err != nil {
-			t.Errorf("%s: resolveState(%q) returned error: %v", tc.name, tc.target, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("%s: resolveState(%q) = %q, want %q", tc.name, tc.target, got, tc.want)
-		}
-	}
-}
-
-func TestResolveStateUnknownTargetIsAnError(t *testing.T) {
-	_, err := resolveState(agileStates, "Marinating")
-	if !errors.Is(err, ErrNoState) {
-		t.Fatalf("err = %v, want ErrNoState", err)
-	}
-	if !strings.Contains(err.Error(), "New, Active, Resolved, Closed, Removed") {
-		t.Errorf("err = %q, want it to list the available states", err)
-	}
-}
-
 func TestMergeTagsIsCaseInsensitiveAndPreservesCasing(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -169,21 +90,14 @@ func TestSetStateWritesStateAndCommentInOnePatch(t *testing.T) {
 	var gotOps []patchOp
 	var patches int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPatch:
-			patches++
-			body, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(body, &gotOps)
-			_, _ = w.Write([]byte(`{"id":1}`))
-		case strings.HasSuffix(r.URL.Path, "/states"):
-			_, _ = w.Write([]byte(`{"value":[{"name":"New","category":"Proposed"},{"name":"Active","category":"InProgress"}]}`))
-		default:
-			_, _ = w.Write([]byte(`{"id":1,"fields":{"System.WorkItemType":"Task","System.State":"New"}}`))
-		}
+		patches++
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotOps)
+		_, _ = w.Write([]byte(`{"id":1}`))
 	}))
 	defer srv.Close()
 
-	err := New(srv.URL, "pat").SetState(context.Background(), "Contoso", 1, "In Progress", "Attached the PR.")
+	err := New(srv.URL, "pat").SetState(context.Background(), "Contoso", 1, "Active", "Attached the PR.")
 	if err != nil {
 		t.Fatalf("SetState returned error: %v", err)
 	}
@@ -207,20 +121,13 @@ func TestSetStateWritesStateAndCommentInOnePatch(t *testing.T) {
 func TestSetStateWithoutCommentWritesOnlyTheState(t *testing.T) {
 	var gotOps []patchOp
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPatch:
-			body, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(body, &gotOps)
-			_, _ = w.Write([]byte(`{"id":1}`))
-		case strings.HasSuffix(r.URL.Path, "/states"):
-			_, _ = w.Write([]byte(`{"value":[{"name":"Closed","category":"Completed"}]}`))
-		default:
-			_, _ = w.Write([]byte(`{"id":1,"fields":{"System.WorkItemType":"Bug"}}`))
-		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotOps)
+		_, _ = w.Write([]byte(`{"id":1}`))
 	}))
 	defer srv.Close()
 
-	if err := New(srv.URL, "pat").SetState(context.Background(), "Contoso", 1, "Done", "  "); err != nil {
+	if err := New(srv.URL, "pat").SetState(context.Background(), "Contoso", 1, "Closed", "  "); err != nil {
 		t.Fatalf("SetState returned error: %v", err)
 	}
 	if len(gotOps) != 1 {
@@ -228,9 +135,9 @@ func TestSetStateWithoutCommentWritesOnlyTheState(t *testing.T) {
 	}
 }
 
-func TestSetStateEmptyTargetIsAnError(t *testing.T) {
+func TestSetStateEmptyStateIsAnError(t *testing.T) {
 	if err := New("https://dev.azure.com/acme", "pat").SetState(context.Background(), "Contoso", 1, " ", ""); err == nil {
-		t.Error("SetState with an empty target returned no error")
+		t.Error("SetState with an empty state returned no error")
 	}
 }
 

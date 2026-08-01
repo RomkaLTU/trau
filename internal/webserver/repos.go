@@ -69,10 +69,19 @@ func (s *Server) denySeededRepo(w http.ResponseWriter, ident, verb string) bool 
 	if _, ok := matchRoot(s.workspace, ident); !ok {
 		return false
 	}
-	writeJSON(w, http.StatusConflict, map[string]string{
-		"error": fmt.Sprintf("repo %q is granted by the SERVE_WORKSPACE config and cannot be %s over the API; remove its root from SERVE_WORKSPACE instead", ident, verb),
-	})
+	writeJSON(w, http.StatusConflict, map[string]string{"error": seededRepoRefusal(ident, verb)})
 	return true
+}
+
+// seededRepoRefusal and liveLoopRefusal word the two conflicts every removal
+// answers, once, so a repo row's refusal and a project-wide one read the same
+// however the removal was reached. verb names the removal.
+func seededRepoRefusal(ident, verb string) string {
+	return fmt.Sprintf("repo %q is granted by the SERVE_WORKSPACE config and cannot be %s over the API; remove its root from SERVE_WORKSPACE instead", ident, verb)
+}
+
+func liveLoopRefusal(name string) string {
+	return fmt.Sprintf("a loop is live in %q; stop it before removing the repo", name)
 }
 
 // registerRepo makes a repo startable from the hub by persisting its root to the
@@ -208,9 +217,7 @@ func (s *Server) forgetRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.repoIsLive(repo.Root) {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("a loop is live in %q; stop it before removing the repo", repo.Name),
-		})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": liveLoopRefusal(repo.Name)})
 		return
 	}
 	if err := s.stores.Registrations().Forget(repo.Root); err != nil {

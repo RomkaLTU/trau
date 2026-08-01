@@ -11,7 +11,9 @@ import {
   editorVariant,
   isHexColor,
   isModified,
+  matchSettings,
   matchesQuery,
+  parseSettingsSearch,
   routingCell,
   routingCellKey,
   sectionSlug,
@@ -380,5 +382,73 @@ describe('visibleKeys', () => {
     ])
 
     expect(kept.map((k) => k.key)).toEqual(['BROWSER_VERIFY'])
+  })
+})
+
+describe('matchSettings', () => {
+  const keys = [
+    key({ key: 'PROVIDER', value: 'claude', group: 'Providers & models' }),
+    key({ key: 'PROVIDER_CLI', value: 'claude', group: 'Providers & models' }),
+    key({
+      key: 'LINEAR_API_KEY',
+      group: 'Tracker & issues',
+      secret: true,
+      set: true,
+    }),
+    key({
+      key: 'BASE_BRANCH',
+      value: 'main',
+      group: 'Git & merge',
+      description: 'branch every provider run merges into',
+    }),
+  ]
+
+  it('matches key names and descriptions, tagged with their section', () => {
+    expect(matchSettings(keys, 'provider')).toEqual([
+      { item: keys[3], section: 'Git & merge' },
+      { item: keys[0], section: 'Providers & models' },
+      { item: keys[1], section: 'Providers & models' },
+    ])
+  })
+
+  it('never carries a secret value, only its mask', () => {
+    const matches = matchSettings(keys, 'linear')
+    expect(matches).toHaveLength(1)
+    expect(displayValue(matches[0].item)).toBe('••••••••')
+  })
+
+  it('caps the group at five rows', () => {
+    const many = Array.from({ length: 9 }, (_, i) =>
+      key({ key: `HUB_KEY_${i}`, group: 'Hub & web server' }),
+    )
+    expect(matchSettings(many, 'hub_key')).toHaveLength(5)
+  })
+
+  it('lists nothing for a blank query', () => {
+    expect(matchSettings(keys, '')).toEqual([])
+    expect(matchSettings(keys, '   ')).toEqual([])
+  })
+})
+
+describe('parseSettingsSearch', () => {
+  it('keeps a key name so the filter can be seeded from the url', () => {
+    expect(parseSettingsSearch({ q: 'PROVIDER' })).toEqual({ q: 'PROVIDER' })
+  })
+
+  // The router hands the component { ...raw, ...parseSettingsSearch(raw) }, so
+  // a rejected param has to survive that merge as undefined.
+  it('drops a missing, empty or non-string param', () => {
+    const landed = (raw: Record<string, unknown>) => ({
+      ...raw,
+      ...parseSettingsSearch(raw),
+    })
+    expect(landed({}).q).toBeUndefined()
+    expect(landed({ q: '' }).q).toBeUndefined()
+    expect(landed({ q: 7 }).q).toBeUndefined()
+    expect(landed({ q: true }).q).toBeUndefined()
+  })
+
+  it('ignores unrelated params', () => {
+    expect(parseSettingsSearch({ issue: 'COD-1341' })).toEqual({})
   })
 })

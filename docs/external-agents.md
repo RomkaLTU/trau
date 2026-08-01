@@ -136,7 +136,6 @@ rest of the surface expects, and whether each repo can be drained at all.
 | --- | --- |
 | `dequeue` | Removes a queued row for good; the ticket itself stays in the store. |
 | `move_queue_item` | Shifts a queued item one slot up or down, changing what the drain runs next. |
-| `shutdown_queue` | Kills the running agent and empties the queue; unpushed work is lost. |
 | `update_ticket` | Overwrites a hub-filed ticket's fields, with no history to recover the old text from. |
 | `transition_ticket` | Moves a ticket's state and labels — which is what decides whether the loop runs it. |
 | `delete_ticket` | Irreversibly deletes a ticket, its board data, and its branch and run directory. |

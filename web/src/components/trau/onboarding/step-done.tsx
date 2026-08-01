@@ -14,6 +14,10 @@ import {
   type TrackerProvider,
 } from '@/lib/onboarding'
 
+const BACKLOG_NOTE: Partial<Record<TrackerProvider, string>> = {
+  internal: 'internal store',
+}
+
 export function StepDone({
   repo,
   members,
@@ -44,11 +48,8 @@ export function StepDone({
   ]
 
   const backlog =
-    provider === 'internal'
-      ? 'internal store'
-      : syncResult
-        ? `${syncResult.issues} issues · ${syncResult.comments} comments`
-        : '—'
+    BACKLOG_NOTE[provider] ??
+    (syncResult ? `${syncResult.issues} issues · ${syncResult.comments} comments` : '—')
 
   const summary: { label: string; value: string }[] = [
     { label: 'repo', value: repo },

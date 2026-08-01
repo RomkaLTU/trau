@@ -118,7 +118,17 @@ UI at `/` — for watching every trau run on the machine:
 
 ```bash
 trau serve                       # http://127.0.0.1:8728
+trau stop                        # …and stop it again, leaving it stopped
 ```
+
+`trau stop` is the counterpart `trau hub restart` never was: it ends the hub on the configured
+bind/port and blocks until the port is actually free, so the next `trau serve` binds it. It
+refuses while any loop is live — naming each run's pid, repo and ticket — because a loop with no
+hub can neither checkpoint nor reach its tracker; `trau stop --force` stops those runs first,
+parking each ticket at its checkpoint with the queue left intact, and only then stops the hub. A
+hub that holds the port but no longer answers its API is stopped by pid, and a machine with
+nothing listening is told so and left alone. On a launchd-supervised hub it refuses outright and
+points at `trau hub unsupervise`, which stops the hub as it releases the agent.
 
 The hub mirrors the CLI/TUI, not the other way round — [`docs/cli-web-parity.md`](docs/cli-web-parity.md)
 maps every operation to its web surface and names the deliberate gaps (`doctor`, onboarding, the

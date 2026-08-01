@@ -61,11 +61,24 @@ type Config struct {
 	JiraEpicType          string
 	AzureOrgURL           string
 	AzurePAT              string
+	AzureAreaPath         string
+	AzureTeams            []string
 	ReadyLabel            string
 	QuarantineLabel       string
 	QueuedLabel           string
 	SplitLabel            string
 	Project               string
+	// StatusTodo, StatusInProgress, StatusInReview and StatusDone pin a lifecycle
+	// stage to an exact tracker status name. Empty leaves the stage to resolve
+	// against the workflow the tracker reports.
+	StatusTodo       string
+	StatusInProgress string
+	StatusInReview   string
+	StatusDone       string
+	// DeliveredState is the status merged work moves to, overriding StatusDone for
+	// that write alone. A workflow with a QA gate parks delivery in a column its
+	// own team, not the loop, moves out of. Empty means Done.
+	DeliveredState string
 
 	BaseBranch string
 	Remote     string
@@ -138,7 +151,10 @@ type Config struct {
 	CITimeout           int
 	CIPoll              int
 	ExpectedChecks      string
-	RequireCI           bool
+	// RequireCI selects the merge gate's mode: auto requires CI whenever a PR
+	// workflow targets the PR's base and merges with a warning when none does, 1
+	// always requires green checks, 0 never waits for them.
+	RequireCI CIGate
 	// RequireRepoChanges gates the post-build empty-diff guard: when on (default),
 	// a build that left the managed repo unchanged faults instead of advancing to a
 	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
@@ -460,7 +476,7 @@ func Defaults() Config {
 		CITimeout:              600,
 		CIPoll:                 30,
 		ExpectedChecks:         "",
-		RequireCI:              true,
+		RequireCI:              CIGateAuto,
 		RequireRepoChanges:     true,
 		AutoStash:              true,
 		LintFix:                true,
@@ -765,8 +781,14 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("JIRA_EPIC_TYPE", &c.JiraEpicType)
 	str("AZURE_ORG_URL", &c.AzureOrgURL)
 	str("AZURE_PAT", &c.AzurePAT)
+	str("AZURE_AREA_PATH", &c.AzureAreaPath)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
+	str("STATUS_TODO", &c.StatusTodo)
+	str("STATUS_IN_PROGRESS", &c.StatusInProgress)
+	str("STATUS_IN_REVIEW", &c.StatusInReview)
+	str("STATUS_DONE", &c.StatusDone)
+	str("DELIVERED_STATE", &c.DeliveredState)
 	strAllowEmpty("QUEUED_LABEL", &c.QueuedLabel)
 	str("SPLIT_LABEL", &c.SplitLabel)
 	str("PROJECT", &c.Project)
@@ -859,6 +881,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.FallbackProviders = splitCSV(v)
 		sources["FALLBACK_PROVIDERS"] = src.name
 	}
+	if v, src := get("AZURE_TEAMS"); v != "" {
+		c.AzureTeams = splitCSV(v)
+		sources["AZURE_TEAMS"] = src.name
+	}
 	num("MAX_ITERATIONS", &c.MaxIterations)
 	num("MAX_REPAIRS", &c.MaxRepairs)
 	num("MAX_BUGFIXES", &c.MaxBugfixes)
@@ -875,7 +901,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("CI_POLL", &c.CIPoll)
 	str("EXPECTED_CHECKS", &c.ExpectedChecks)
 	if v, src := get("REQUIRE_CI"); v != "" {
-		c.RequireCI = v == "1"
+		c.RequireCI = ParseCIGate(v)
 		sources["REQUIRE_CI"] = src.name
 	}
 	if v, src := get("REQUIRE_REPO_CHANGES"); v != "" {
@@ -1051,21 +1077,27 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("MAX_DAILY_TOKENS", &c.MaxDailyTokens)
 
 	c.IssuePrefixConfigured = strings.ToUpper(strings.TrimSpace(c.IssuePrefix))
-	c.IssuePrefix = ResolvePrefix(c.IssuePrefix, c.LinearTeam)
+	c.IssuePrefix = ResolvePrefix(c.EffectiveTrackerProvider(), c.IssuePrefix, c.LinearTeam)
 
 	return c, sources, nil
 }
 
 // ResolvePrefix settles the issue-identifier prefix used for ticket-ID parsing,
-// branch inference, and sentinel matching. An explicit ISSUE_PREFIX wins; failing
+// branch inference, and sentinel matching. Azure DevOps numbers its work items
+// uniquely organization-wide, so its identifiers are the bare number and there is no
+// prefix to settle (ADR 0024 §1). Otherwise an explicit ISSUE_PREFIX wins; failing
 // that the tracker team/project key is the natural source (a Linear team keyed COD
-// owns COD-123 issues); failing both it falls back to COD for back-compat. The
-// result is always upper-cased and trimmed so downstream regexes are stable.
-func ResolvePrefix(prefix, team string) string {
-	if p := strings.ToUpper(strings.TrimSpace(prefix)); p != "" {
+// owns COD-123 issues); failing both it falls back to COD for back-compat. Whatever
+// wins is reduced to the uppercase alphanumeric token an identifier's prefix has to
+// be, since a prefix git refuses in a branch name cannot address a ticket at all.
+func ResolvePrefix(provider, prefix, team string) string {
+	if provider == "azure" {
+		return ""
+	}
+	if p := sanitizePrefix(prefix); p != "" {
 		return p
 	}
-	if t := strings.ToUpper(strings.TrimSpace(team)); t != "" {
+	if t := sanitizePrefix(team); t != "" {
 		return t
 	}
 	return "COD"
@@ -1141,6 +1173,13 @@ func (c Config) HasJiraCredentials() bool {
 		strings.TrimSpace(c.JiraAPIToken) != ""
 }
 
+// HasAzureCredentials reports whether the resolved config carries the full set of
+// direct Azure DevOps REST credentials, whichever layer supplied them.
+func (c Config) HasAzureCredentials() bool {
+	return strings.TrimSpace(c.AzureOrgURL) != "" &&
+		strings.TrimSpace(c.AzurePAT) != ""
+}
+
 // hasProjectJiraCreds reports whether the project layer alone supplies the full set
 // of direct Jira REST credentials — the signal that a repo configured outside the
 // wizard means to use Jira even with no explicit TRACKER_PROVIDER.
@@ -1184,9 +1223,11 @@ func sanitizePrefix(s string) string {
 }
 
 // ValidatePrefix checks that a ticket id supplied on the command line matches the
-// resolved issue prefix. The pre-config arg scan accepts any <PREFIX>-<n> shape; this
-// is the after-load gate that rejects a TMS-5 run against a COD-configured repo
-// before branch/sentinel parsing silently mismatches. An empty id is a no-op.
+// resolved issue prefix. The pre-config arg scan accepts any ticket shape; this is
+// the after-load gate that rejects a TMS-5 run against a COD-configured repo before
+// branch/sentinel parsing silently mismatches. A repo whose tracker settles on no
+// prefix addresses tickets by number, so there a bare number is the only id that
+// belongs to it. An empty id is a no-op.
 func ValidatePrefix(id, prefix string) error {
 	if strings.TrimSpace(id) == "" {
 		return nil
@@ -1196,10 +1237,14 @@ func ValidatePrefix(id, prefix string) error {
 	if i := strings.LastIndex(id, "-"); i > 0 {
 		got = strings.ToUpper(id[:i])
 	}
-	if got != want {
+	switch {
+	case got == want:
+		return nil
+	case want == "":
+		return fmt.Errorf("ticket %q carries a prefix, but this repo's tracker numbers its tickets — pass the bare number", id)
+	default:
 		return fmt.Errorf("ticket %q does not match the configured issue prefix %s- (got %s-)", id, want, got)
 	}
-	return nil
 }
 
 var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "commit", "pick"}
@@ -1678,7 +1723,7 @@ func KnownKeys() []KeyMeta {
 	providerOptions := agent.DefaultRegistry().Names()
 	keys := []KeyMeta{
 		{Key: "LINEAR_TEAM", Group: sectionTracker, WebEditable: true, Description: "Linear team / Jira project / Azure DevOps project / GitHub repo"},
-		{Key: "ISSUE_PREFIX", Group: sectionTracker, WebEditable: true, Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
+		{Key: "ISSUE_PREFIX", Group: sectionTracker, WebEditable: true, Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG); ignored for azure, whose work items are addressed by number"},
 		{Key: "LINEAR_API_KEY", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Linear personal API key"},
 		{Key: "JIRA_BASE_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
 		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
@@ -1686,10 +1731,17 @@ func KnownKeys() []KeyMeta {
 		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
 		{Key: "AZURE_ORG_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps organization URL for the direct REST adapter (e.g. https://dev.azure.com/acme)"},
 		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
+		{Key: "AZURE_AREA_PATH", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Area Path the hub's Azure DevOps sync is narrowed to, including everything under it (e.g. Acme\\Platform); empty syncs the whole team project"},
+		{Key: "AZURE_TEAMS", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated Azure DevOps team names whose board areas scope this repo (e.g. Platform,Payments); empty syncs the whole team project"},
 		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | azure | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "azure", "github", "internal"}},
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
 		{Key: "QUEUED_LABEL", Group: sectionTracker, WebEditable: true, Default: "queued", Description: "Label mirrored onto tickets waiting in the hub queue"},
+		{Key: "STATUS_TODO", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for unstarted work; empty resolves it from the tracker's own transitions"},
+		{Key: "STATUS_IN_PROGRESS", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for work in progress; empty resolves it from the tracker's own transitions"},
+		{Key: "STATUS_IN_REVIEW", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for work awaiting review (e.g. READY FOR QA); empty resolves it from the tracker's own transitions"},
+		{Key: "STATUS_DONE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for delivered work; empty resolves it from the tracker's own transitions"},
+		{Key: "DELIVERED_STATE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status a merged ticket moves to (e.g. READY FOR QA when only QA sign-off closes work); empty delivers to Done"},
 		{Key: "PROJECT", Group: sectionTracker, WebEditable: true, Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
 		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
@@ -1731,7 +1783,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CI_TIMEOUT", Group: sectionCI, Kind: "int", WebEditable: true, Default: "600", Description: "Seconds to wait for CI checks"},
 		{Key: "CI_POLL", Group: sectionCI, Kind: "int", WebEditable: true, Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Group: sectionCI, WebEditable: true, Description: "Required CI check names (comma-separated)"},
-		{Key: "REQUIRE_CI", Group: sectionCI, WebEditable: true, Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
+		{Key: "REQUIRE_CI", Group: sectionCI, WebEditable: true, Default: string(CIGateAuto), Options: []string{string(CIGateAuto), string(CIGateOn), string(CIGateOff)}, Description: "Merge gate on CI: auto (wait for checks when a pull_request workflow targets the PR's base branch; merge with a warning when none does, so a base with no CI never quarantines) | 1 (always wait, absent checks time out) | 0 (never wait)"},
 		{Key: "AUTO_STASH", Group: sectionGit, Default: "1", Description: "Stash uncommitted tracked WIP before a fresh run and restore it when the run ends; 0 aborts instead (1 = yes, 0 = no)", Bool: true},
 		{Key: "AUTO_INSTALL_SKILLS", Group: sectionSkills, WebEditable: true, Default: "0", Description: "Install the recommended skill set for the repo's project type at loop start when no skills are present (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "REQUIRED_SKILLS", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the build, repair and bugfix agents must load whatever the ticket touches, on top of the repo's routing rules in .trau/skills-rules.json. Names the repo cannot load warn at loop start. Empty with no matching rule = the project type's recommended skills, or every installed skill when none match"},
@@ -1949,6 +2001,10 @@ var trackerConfigKeys = []string{
 	"JIRA_BASE_URL",
 	"JIRA_EMAIL",
 	"JIRA_API_TOKEN",
+	"AZURE_ORG_URL",
+	"AZURE_PAT",
+	"AZURE_AREA_PATH",
+	"AZURE_TEAMS",
 }
 
 // TrackerConfigKeys returns the keys that describe a repo's tracker.
@@ -2221,12 +2277,26 @@ func keyValue(cfg Config, key string) string {
 		return cfg.AzureOrgURL
 	case "AZURE_PAT":
 		return cfg.AzurePAT
+	case "AZURE_AREA_PATH":
+		return cfg.AzureAreaPath
+	case "AZURE_TEAMS":
+		return strings.Join(cfg.AzureTeams, ",")
 	case "READY_LABEL":
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":
 		return cfg.QuarantineLabel
 	case "QUEUED_LABEL":
 		return cfg.QueuedLabel
+	case "STATUS_TODO":
+		return cfg.StatusTodo
+	case "STATUS_IN_PROGRESS":
+		return cfg.StatusInProgress
+	case "STATUS_IN_REVIEW":
+		return cfg.StatusInReview
+	case "STATUS_DONE":
+		return cfg.StatusDone
+	case "DELIVERED_STATE":
+		return cfg.DeliveredState
 	case "SPLIT_LABEL":
 		return cfg.SplitLabel
 	case "PROJECT":
@@ -2320,10 +2390,7 @@ func keyValue(cfg Config, key string) string {
 	case "EXPECTED_CHECKS":
 		return cfg.ExpectedChecks
 	case "REQUIRE_CI":
-		if cfg.RequireCI {
-			return "1"
-		}
-		return "0"
+		return string(cfg.RequireCI)
 	case "AUTO_STASH":
 		if cfg.AutoStash {
 			return "1"

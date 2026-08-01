@@ -57,6 +57,19 @@ QUEUED_LABEL=queued          # label mirrored onto tickets waiting in the hub qu
                              # heals whatever drifted from queue membership. Empty = no writes.
 SPLIT_LABEL=needs-split      # label the pre-flight size judge applies to a ticket it flags as
                              # too large to build in one window (see SIZE_JUDGE under loop control)
+# The loop moves a ticket through four lifecycle stages. It resolves each one against the
+# workflow the tracker reports — the Jira transitions, the Linear state types, the Azure DevOps
+# process template — so a project that spells review "READY FOR QA" needs no configuration at all.
+# Set a key below only when the category alone is ambiguous (two In Progress statuses, say) and
+# the loop picks the wrong one; the value must be a status name the workflow actually offers.
+STATUS_TODO=                 # e.g. Backlog
+STATUS_IN_PROGRESS=          # e.g. In Development
+STATUS_IN_REVIEW=            # e.g. READY FOR QA
+STATUS_DONE=                 # e.g. Released
+DELIVERED_STATE=             # status a merged ticket (and a merged epic) moves to, for workflows where a
+                             # merge is not the end of the line — e.g. READY FOR QA when only QA sign-off
+                             # closes work. The loop never moves a ticket out of this state again, and the
+                             # epic gate goes on trusting its own merge record. Empty = Done.
 PROJECT=                     # Linear project this repo owns (e.g. salonradar.com). When set, the loop only
                              # picks tickets in this project, refuses a run on a ticket from another project
                              # before any branch/checkpoint, and files bugs here. Empty = no project scoping.
@@ -156,10 +169,16 @@ EXPECTED_CHECKS=             # named checks (substring, case-insensitive) that m
                              # with none pending. Empty is right when your repo's tests run
                              # locally (the loop's verify phase is the gate); set to e.g.
                              # "tests,lint" when those checks run on the PR itself.
-REQUIRE_CI=1                 # 1 = gate merge on CI checks. Set 0 when the repo has NO PR-triggered
-                             # CI (e.g. only a deploy-on-push workflow): the PR then has zero checks,
-                             # which would otherwise spin to CI_TIMEOUT and quarantine. With 0 the
-                             # gate is skipped and the loop merges/leaves the clean PR per AUTO_MERGE.
+REQUIRE_CI=auto              # merge gate mode. auto (default) = gate on CI whenever a pull_request
+                             # workflow targets the PR's base branch. When the repo has PR workflows
+                             # but none targets that base (an epic/release base the triggers are
+                             # scoped away from) no check can appear, so the gate merges with a
+                             # warning a couple of minutes in instead of spinning to CI_TIMEOUT and
+                             # quarantining. A repo with no pull_request workflow at all may still
+                             # run CI elsewhere, so there the gate gives a first check the full
+                             # CI_TIMEOUT before merging with the same warning. 1 = always wait, so
+                             # absent checks still time out. 0 = never wait; merge/leave the clean
+                             # PR per AUTO_MERGE. Red and pending checks gate the same under auto and 1.
 REQUIRE_REPO_CHANGES=1       # 1 = after build, fault when the managed repo is unchanged (clean tree
                              # AND no new commits vs base) instead of advancing to a hollow handoff /
                              # empty PR — catches an agent that built in the wrong repo or escaped its
@@ -401,15 +420,34 @@ JIRA_API_TOKEN=              # classic API token (never commit)
 AZURE_ORG_URL=               # e.g. https://dev.azure.com/acme
 AZURE_PAT=                   # personal access token (never commit)
 #
-# Work items are numbered organization-wide with no per-project key, so trau
-# addresses them through ISSUE_PREFIX: work item 1234 in a TRAU-prefixed repo is
-# TRAU-1234 everywhere (branch names, sentinels, the web UI), and the PR trailer
-# carries "AB#1234" so Azure Boards auto-links the work item.
+# AZURE_AREA_PATH narrows the team project to one Area Path and everything under
+# it — the hub mirrors only those work items and the loop picks only from them, so
+# a shared team project can be split between repos. Empty (the default) is the
+# whole team project. It needs no extra PAT scope.
+AZURE_AREA_PATH=             # e.g. Contoso\Platform
+#
+# AZURE_TEAMS narrows the same way but by naming teams instead of areas: trau reads
+# each team's own board settings and mirrors exactly the areas that board covers, so
+# two repos on one team project each see their own team's work instead of all of it.
+# Several teams mirror the union of their boards. It combines with AZURE_AREA_PATH —
+# both narrow — and needs no extra PAT scope.
+AZURE_TEAMS=                 # e.g. Platform,Payments
+#
+# The hub mirrors an Azure DevOps board into its own store like Linear and Jira:
+# a WIQL query returns the ids that changed since the last pull, a batched read
+# fills in the details, and the board, Inbox, search and queue-by-id confirm all
+# read from the mirror. File attachments on a work item are the one thing not
+# mirrored — their bytes sit behind the same PAT the pull holds.
+#
+# Work items are numbered uniquely across the whole organization, so trau addresses
+# them by number and ISSUE_PREFIX does not apply: work item 6694 is 6694 on the
+# board, `trau 6694` on the CLI and feature/6694-slug as the branch, and the PR
+# trailer carries "AB#6694" so Azure Boards auto-links the work item.
 #
 #   # ~/work/contoso-app/.trau.ini
 #   TRACKER_PROVIDER=azure
 #   LINEAR_TEAM=Contoso            # the team project name, not a key
-#   ISSUE_PREFIX=CON               # renders work item 1234 as CON-1234
+#   AZURE_TEAMS=Contoso Platform   # this repo mirrors one team's board
 #   AZURE_ORG_URL=https://dev.azure.com/contoso
 #   AZURE_PAT=<contoso PAT>
 #

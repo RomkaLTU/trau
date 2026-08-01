@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
@@ -59,6 +63,8 @@ func TestNewReaderUnavailableWithoutCredentials(t *testing.T) {
 	}{
 		{"linear without key", "linear", Config{Team: "COD"}},
 		{"jira missing token", "jira", Config{Team: "PROJ", BaseURL: "https://acme.atlassian.net", Email: "me@acme.com"}},
+		{"azure missing organization url", "azure", Config{Team: "Contoso", APIKey: "pat"}},
+		{"azure missing token", "azure", Config{Team: "Contoso", BaseURL: "https://dev.azure.com/acme"}},
 		{"github has no direct read API", "github", Config{Team: "acme/app"}},
 	}
 	for _, tc := range cases {
@@ -76,6 +82,46 @@ func TestJiraReaderResolveBindingNoProjectKey(t *testing.T) {
 	_, err := r.ResolveBinding(context.Background())
 	if !errors.Is(err, ErrNoProjectKey) {
 		t.Fatalf("ResolveBinding err = %v, want ErrNoProjectKey", err)
+	}
+	if errors.Is(err, ErrReaderUnavailable) {
+		t.Fatalf("ResolveBinding err = %v, must not read as no credentials", err)
+	}
+	if got := err.Error(); strings.Contains(got, "credentials") || !strings.Contains(got, "LINEAR_TEAM") {
+		t.Fatalf("ResolveBinding err = %q, want it to name LINEAR_TEAM and not mention credentials", got)
+	}
+}
+
+// A user-layer LINEAR_API_KEY makes every repo on the machine look linear, so a
+// repo with no team must be refused here rather than spending a request per sync
+// tick on a lookup that can only ever answer not-found.
+func TestLinearReaderResolveBindingNoTeamKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("ResolveBinding reached the Linear API with no team key configured")
+	}))
+	t.Cleanup(srv.Close)
+
+	c := linearapi.New("lin_key")
+	c.Endpoint = srv.URL
+	r := &linearReader{client: c, project: "Trau Web"}
+
+	_, err := r.ResolveBinding(context.Background())
+	if !errors.Is(err, ErrNoTeamKey) {
+		t.Fatalf("ResolveBinding err = %v, want ErrNoTeamKey", err)
+	}
+	if errors.Is(err, ErrReaderUnavailable) {
+		t.Fatalf("ResolveBinding err = %v, must not read as no credentials", err)
+	}
+	if got := err.Error(); strings.Contains(got, "credentials") || !strings.Contains(got, "LINEAR_TEAM") {
+		t.Fatalf("ResolveBinding err = %q, want it to name LINEAR_TEAM and not mention credentials", got)
+	}
+}
+
+func TestAzureReaderResolveBindingNoTeamProject(t *testing.T) {
+	r := &azureReader{client: azureapi.New("https://dev.azure.com/acme", "pat")}
+
+	_, err := r.ResolveBinding(context.Background())
+	if !errors.Is(err, ErrNoTeamProject) {
+		t.Fatalf("ResolveBinding err = %v, want ErrNoTeamProject", err)
 	}
 	if errors.Is(err, ErrReaderUnavailable) {
 		t.Fatalf("ResolveBinding err = %v, must not read as no credentials", err)
@@ -199,3 +245,81 @@ func TestJiraReaderBacklogMaps(t *testing.T) {
 		t.Errorf("items[2] = %+v, want a canceled (duplicate) done issue", items[2])
 	}
 }
+
+// Every provider's rate-limit refusal has to read as one, or the repo it belongs
+// to is backed off as a failure for a condition that heals itself.
+func TestRateLimited(t *testing.T) {
+	reset := time.Now().Add(15 * time.Minute).UTC()
+	cases := []struct {
+		name string
+		err  error
+		want time.Time
+	}{
+		{"linear", &linearapi.RateLimitError{Message: "budget spent", ResetAt: reset}, reset},
+		{"jira", fmt.Errorf("sync pull: %w", &jiraapi.RateLimitError{ResetAt: reset}), reset},
+		{"azure", fmt.Errorf("sync pull: %w", &azureapi.RateLimitError{ResetAt: reset}), reset},
+		{"a refusal that named no reset", &jiraapi.RateLimitError{}, time.Time{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetAt, limited := RateLimited(tc.err)
+			if !limited {
+				t.Fatalf("RateLimited(%v) = false, want a rate limit", tc.err)
+			}
+			if !resetAt.Equal(tc.want) {
+				t.Fatalf("resetAt = %v, want %v", resetAt, tc.want)
+			}
+		})
+	}
+	if _, limited := RateLimited(ErrNoProjectKey); limited {
+		t.Fatal("a missing project key is not a rate limit")
+	}
+}
+
+func TestUnauthorized(t *testing.T) {
+	rejected := []error{
+		linearapi.ErrUnauthorized,
+		jiraapi.ErrUnauthorized,
+		azureapi.ErrUnauthorized,
+		fmt.Errorf("resolve identity: %w", azureapi.ErrUnauthorized),
+	}
+	for _, err := range rejected {
+		if !Unauthorized(err) {
+			t.Errorf("Unauthorized(%v) = false, want rejected credentials", err)
+		}
+	}
+	if Unauthorized(ErrIssueNotFound) {
+		t.Error("a missing issue is not a credential rejection")
+	}
+}
+
+func TestClassify(t *testing.T) {
+	timeout := &net.OpError{Op: "dial", Err: &timeoutErr{}}
+	cases := []struct {
+		name string
+		err  error
+		want ErrorKind
+	}{
+		{"linear rate limit", &linearapi.RateLimitError{Message: "budget spent"}, ErrorRateLimit},
+		{"jira 429 the retries could not outlast", jiraapi.ErrRateLimited, ErrorRateLimit},
+		{"a wrapped rate limit still classifies", fmt.Errorf("sync: %w", jiraapi.ErrRateLimited), ErrorRateLimit},
+		{"a transport timeout", timeout, ErrorTransient},
+		{"a context deadline", context.DeadlineExceeded, ErrorTransient},
+		{"rejected credentials", linearapi.ErrUnauthorized, ErrorConfig},
+		{"a missing project key", ErrNoProjectKey, ErrorConfig},
+		{"a missing team key", ErrNoTeamKey, ErrorConfig},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(tc.err); got != tc.want {
+				t.Fatalf("Classify(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+type timeoutErr struct{}
+
+func (*timeoutErr) Error() string   { return "i/o timeout" }
+func (*timeoutErr) Timeout() bool   { return true }
+func (*timeoutErr) Temporary() bool { return true }

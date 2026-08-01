@@ -40,10 +40,11 @@ const (
 // description the agent proposed in the outcome. SubIssues carries the user-edited
 // split (or create-epic) breakdown; nil falls back to the agent's proposal. Title is
 // the user-edited title for a create outcome; empty falls back to the proposal.
-// Destination is where a create outcome files: "tracker" (the default — omitting it
-// keeps the repo's configured tracker) or "internal" for the hub issue store.
-// Assignee is who every issue the apply creates is assigned to; omitting it leaves
-// them unassigned.
+// Destination is where the outcome lands: "tracker" (the default — omitting it
+// keeps the repo's configured tracker) or "internal" for the hub issue store. On a
+// session anchored to a synced ticket, "internal" converts that ticket and its
+// subtree into internal issues and applies there. Assignee is who every issue the
+// apply creates is assigned to; omitting it leaves them unassigned.
 type GrillApplyRequest struct {
 	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
@@ -80,10 +81,13 @@ type GrillApplyStep struct {
 // GrillApplyResponse reports the session after an apply attempt, whether every step
 // landed, and each step's outcome in the order they ran. Applied is true only when
 // all steps succeeded; a partial apply leaves the session finished for re-apply.
+// Warnings carry what the apply could not do on the way but never gated on — the
+// external note a detached ticket did not receive.
 type GrillApplyResponse struct {
-	Session GrillSessionView `json:"session"`
-	Applied bool             `json:"applied"`
-	Steps   []GrillApplyStep `json:"steps"`
+	Session  GrillSessionView `json:"session"`
+	Applied  bool             `json:"applied"`
+	Steps    []GrillApplyStep `json:"steps"`
+	Warnings []string         `json:"warnings,omitempty"`
 }
 
 type grillOutcome struct {
@@ -101,7 +105,9 @@ type grillOutcome struct {
 // label transition — each reported independently; the session settles as applied
 // only when all of them succeed, so a partial failure stays finished and re-apply
 // retries. Each landed step is mirrored onto the stored synced row so the next
-// inbound sync sees no divergence (ADR 0007).
+// inbound sync sees no divergence (ADR 0007). An anchored session applied to the
+// internal store detaches its ticket first, so the plan runs against the internal
+// issue that ticket became — the recovery path when the tracker is unreachable.
 func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -166,7 +172,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 				sess = stamped
 			}
 		}
-		s.settleGrillApplied(w, &sess, nil)
+		s.settleGrillApplied(w, &sess, nil, nil)
 		return
 	}
 
@@ -179,6 +185,26 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeWriterErr(w, err)
 		return
+	}
+
+	// A tracker anchor has to become an internal issue before the internal writer
+	// can touch it at all. A create converts too — its anchor is the parent an
+	// earlier pass filed, so a destination switch supersedes that ticket instead of
+	// stranding it ready-labelled beside the internal issue that replaces it — but
+	// only when an apply recorded where it filed: an anchor with no destination is
+	// the ticket the session was opened on, which a create files beside, not over.
+	converts := outcome.Disposition != grillDispCreate || sess.IssueDestination != ""
+	var (
+		detach   []GrillApplyStep
+		warnings []string
+	)
+	if converts && grillDestination(req.Destination, cfg) == grillDestInternal {
+		var ok bool
+		detach, warnings, ok = s.detachGrillAnchor(r.Context(), repo, cfg, &sess)
+		if !ok {
+			s.writeGrillPartial(w, sess, detach, nil)
+			return
+		}
 	}
 
 	description := strings.TrimSpace(req.ProposedDescription)
@@ -248,11 +274,41 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		plan.addLabels, plan.removeLabels = grillLabelTransition(outcome.Disposition, cfg)
 		steps, applied = s.applyGrillOutcome(r.Context(), writer, repo.Root, issueID, plan)
 	}
+	steps = append(detach, steps...)
 	if applied {
-		s.settleGrillApplied(w, &sess, steps)
+		s.settleGrillApplied(w, &sess, steps, warnings)
 		return
 	}
-	writeJSON(w, http.StatusOK, GrillApplyResponse{Session: s.grillSessionView("", sess), Applied: false, Steps: steps})
+	s.writeGrillPartial(w, sess, steps, warnings)
+}
+
+// writeGrillPartial reports an apply that did not land in full: the session stays
+// finished, so the review keeps the steps it can retry the plan from. The warnings
+// are stamped on the session first — the retry converts nothing a second time, so
+// this pass is the only one that can record what the conversion left behind.
+func (s *Server) writeGrillPartial(w http.ResponseWriter, sess hubstore.GrillSession, steps []GrillApplyStep, warnings []string) {
+	s.recordGrillWarnings(&sess, warnings)
+	writeJSON(w, http.StatusOK, GrillApplyResponse{
+		Session:  s.grillSessionView("", sess),
+		Applied:  false,
+		Steps:    steps,
+		Warnings: sess.ApplyWarnings,
+	})
+}
+
+// recordGrillWarnings stamps what an apply could not do onto the session, so a
+// review remounted on it reads them back instead of losing them with the response
+// that carried them. A failure is logged but not fatal — the writes the warnings
+// qualify already landed.
+func (s *Server) recordGrillWarnings(sess *hubstore.GrillSession, warnings []string) {
+	if len(warnings) == 0 {
+		return
+	}
+	if stamped, _, err := s.stores.Grill().SetApplyWarnings(sess.ID, warnings); err == nil {
+		*sess = stamped
+	} else {
+		logger.Verbosef("grill apply %d: record warnings: %v", sess.ID, err)
+	}
 }
 
 // grillAnchoredIssue returns the session's anchor issue for the dispositions that
@@ -269,6 +325,81 @@ func grillAnchoredIssue(w http.ResponseWriter, sess hubstore.GrillSession) (stri
 	return issueID, true
 }
 
+// detachGrillAnchor converts the session's tracker anchor and everything nested
+// under it into internal issues, then re-anchors the session on the new root so
+// the plan that follows writes against an identifier the store owns rather than a
+// tracker id it has never seen. It reports the detach step, the write-back
+// warnings, and whether the apply may go on: a refused conversion — a member the
+// queue still holds — leaves a failed step behind and nothing else runs. An anchor
+// that is already internal needs no conversion, which is what lets a re-apply
+// after a partial failure retry the plan without detaching a second time; it is
+// still stamped with the destination, so the settled session names where it wrote.
+func (s *Server) detachGrillAnchor(ctx context.Context, repo registry.Repo, cfg config.Config, sess *hubstore.GrillSession) ([]GrillApplyStep, []string, bool) {
+	anchor := strings.TrimSpace(sess.IssueID)
+	if anchor == "" {
+		return nil, nil, true
+	}
+	iss, found, err := s.stores.Issues().Get(repo.Root, anchor)
+	if err != nil {
+		return []GrillApplyStep{grillDetachFailure(anchor, err)}, nil, false
+	}
+	if !found {
+		return nil, nil, true
+	}
+	if iss.Source == hubstore.SourceInternal {
+		s.anchorGrillSession(sess, anchor, grillDestInternal)
+		return nil, nil, true
+	}
+	prefix := config.InternalPrefix(cfg.IssuePrefixConfigured, repo.Name)
+	detached, ok, err := s.stores.Issues().DetachToInternal(repo.Root, prefix, anchor)
+	if err != nil {
+		return []GrillApplyStep{grillDetachFailure(anchor, err)}, nil, false
+	}
+	if !ok {
+		return nil, nil, true
+	}
+	s.anchorGrillSession(sess, detached.To, grillDestInternal)
+	step := GrillApplyStep{Step: "detach: " + detached.From + " → " + detached.To, Status: grillStepOK}
+	return []GrillApplyStep{step}, s.noteSupersededTickets(ctx, cfg, detached), true
+}
+
+// grillDetachFailure names the refused conversion so the review UI shows which
+// ticket blocked it, and why.
+func grillDetachFailure(anchor string, err error) GrillApplyStep {
+	return GrillApplyStep{Step: "detach: " + anchor, Status: grillStepFailed, Error: err.Error()}
+}
+
+// noteSupersededTickets tells the tracker what a detach retired: every converted
+// member takes the superseded note and loses the ready label, so nothing on the
+// board still reads as work trau will pick up. The conversion has already
+// committed by then, so an unreachable tracker or missing credentials is reported
+// as a warning and never fails the apply.
+func (s *Server) noteSupersededTickets(ctx context.Context, cfg config.Config, detached hubstore.DetachResult) []string {
+	if len(detached.Converted) == 0 {
+		return nil
+	}
+	writer, err := s.newWriter(cfg)
+	if err != nil {
+		return []string{"converted, but the tickets were left as they were on the tracker: " + err.Error()}
+	}
+	var warnings []string
+	for _, member := range detached.Converted {
+		if err := writer.AddComment(ctx, member.From, grillSupersededComment(member.To)); err != nil {
+			warnings = append(warnings, member.From+": the superseded note failed: "+err.Error())
+		}
+		if err := writer.UpdateLabels(ctx, member.From, nil, []string{cfg.ReadyLabel}); err != nil {
+			warnings = append(warnings, member.From+": removing "+cfg.ReadyLabel+" failed: "+err.Error())
+		}
+	}
+	return warnings
+}
+
+// grillSupersededComment is the note a detached ticket takes on the tracker, so
+// the ticket itself says where the work went.
+func grillSupersededComment(internalID string) string {
+	return "Superseded by " + internalID + " in trau after a re-grill; this ticket no longer drives trau automation."
+}
+
 // grillPlanSubIssues prefers the user-edited breakdown from the review UI, falling
 // back to the agent's proposal when the request carries none.
 func grillPlanSubIssues(edited, proposed []grillSubIssue) []grillSubIssue {
@@ -279,9 +410,13 @@ func grillPlanSubIssues(edited, proposed []grillSubIssue) []grillSubIssue {
 }
 
 // settleGrillApplied moves the session to applied and returns the apply response.
-// A transition failure is logged but not fatal — the tracker writes already landed
-// — and the session is returned as-is.
-func (s *Server) settleGrillApplied(w http.ResponseWriter, sess *hubstore.GrillSession, steps []GrillApplyStep) {
+// The warnings are stamped on the session first, so a review remounted on the
+// settled session reads them back instead of losing them with this response; the
+// response then reports the session's warnings, which on a retry are the ones an
+// earlier pass left there. A transition failure is logged but not fatal — the
+// tracker writes already landed — and the session is returned as-is.
+func (s *Server) settleGrillApplied(w http.ResponseWriter, sess *hubstore.GrillSession, steps []GrillApplyStep, warnings []string) {
+	s.recordGrillWarnings(sess, warnings)
 	if applied, err := s.stores.Grill().Transition(sess.ID, hubstore.GrillApplied, ""); err == nil {
 		*sess = applied
 		s.publishGrillState(applied)
@@ -291,7 +426,12 @@ func (s *Server) settleGrillApplied(w http.ResponseWriter, sess *hubstore.GrillS
 	if steps == nil {
 		steps = []GrillApplyStep{}
 	}
-	writeJSON(w, http.StatusOK, GrillApplyResponse{Session: s.grillSessionView("", *sess), Applied: true, Steps: steps})
+	writeJSON(w, http.StatusOK, GrillApplyResponse{
+		Session:  s.grillSessionView("", *sess),
+		Applied:  true,
+		Steps:    steps,
+		Warnings: sess.ApplyWarnings,
+	})
 }
 
 // grillApplyPlan is the resolved write plan for one disposition: the fields to
@@ -472,8 +612,10 @@ type grillCreatePlan struct {
 // rather than filing a duplicate; an anchor from a different destination is no
 // anchor here — reusing it would graft children onto an identifier the requested
 // store has never seen — so a destination switch files a fresh parent and
-// re-anchors. A parent with proposed slices is drafted as an epic so a tracker
-// with a typed hierarchy files it a level above the children it is about to take.
+// re-anchors. A parent this session filed on the tracker never reaches that path
+// on a switch to internal: it is converted before the plan runs. A parent with
+// proposed slices is drafted as an epic so a tracker with a typed hierarchy files
+// it a level above the children it is about to take.
 // An epic then creates its sub-issues as children, wires the sibling relations,
 // and comments on the parent — reusing the split machinery. A single
 // issue is created with the default ready label and takes the summary comment
@@ -715,12 +857,11 @@ func grillLabelTransition(disposition string, cfg config.Config) (add, remove []
 
 // grillWriterFor resolves the repo's layered config and the Writer the requested
 // destination reaches, returning the config so the caller can read its label
-// names. An internal apply — chosen by the request or forced by a repo on the
-// internal provider — gets the hub's in-process store-backed writer; everything
-// else gets a direct tracker Writer.
+// names and stamp what it created. An internal apply — chosen by the request or
+// forced by a repo on the internal provider — gets the hub's in-process
+// store-backed writer; everything else gets a direct tracker Writer.
 func (s *Server) grillWriterFor(repo registry.Repo, destination string) (config.Config, tracker.Writer, error) {
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
+	cfg, _, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		return config.Config{}, nil, err
 	}

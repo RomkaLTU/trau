@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -83,9 +84,14 @@ func (c *countingGitHub) MergedPRURL(ctx context.Context, branch string) (string
 	return c.epicGitHub.MergedPRURL(ctx, branch)
 }
 
-func (c *countingGitHub) CreatePR(ctx context.Context, base, head, title, body string) (string, error) {
+func (c *countingGitHub) CreatePR(ctx context.Context, base, head, title, body string, draft bool) (string, error) {
 	c.touched++
-	return c.epicGitHub.CreatePR(ctx, base, head, title, body)
+	return c.epicGitHub.CreatePR(ctx, base, head, title, body, draft)
+}
+
+func (c *countingGitHub) MarkPRReady(ctx context.Context, pr string) error {
+	c.touched++
+	return c.epicGitHub.MarkPRReady(ctx, pr)
 }
 
 func (c *countingGitHub) PRState(context.Context, string) (string, error) {
@@ -103,7 +109,7 @@ func (c *countingGitHub) Merge(ctx context.Context, pr, method string, deleteBra
 	return c.epicGitHub.Merge(ctx, pr, method, deleteBranch)
 }
 
-func localTestPipeline(t *testing.T, git *localGit, gh GitHub, tr tracker.Tracker) *Pipeline {
+func localTestPipeline(t *testing.T, git Git, gh GitHub, tr tracker.Tracker) *Pipeline {
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
@@ -116,7 +122,7 @@ func localTestPipeline(t *testing.T, git *localGit, gh GitHub, tr tracker.Tracke
 		Remote:              "origin",
 		Prefix:              "COD",
 		AutoMerge:           true,
-		RequireCI:           true,
+		RequireCI:           config.CIGateOn,
 		MergeMethod:         "squash",
 		DeterministicCommit: true,
 	}
@@ -191,7 +197,7 @@ func TestCIAndMergeLandsLocallyWithoutRemote(t *testing.T) {
 			tr := &epicTracker{}
 			p := localTestPipeline(t, git, gh, tr)
 			p.EpicID = c.epicID
-			p.epicBranch = "epic/COD-1-rebuild"
+			p.exit.epicBranch = "epic/COD-1-rebuild"
 			if err := p.State.Set(id, "BRANCH", "feature/COD-96403-thing"); err != nil {
 				t.Fatal(err)
 			}
@@ -217,7 +223,7 @@ func TestCIAndMergeLandsLocallyWithoutRemote(t *testing.T) {
 			if got := p.State.Get(id, "PHASE"); got != state.Merged {
 				t.Errorf("PHASE = %q, want %q", got, state.Merged)
 			}
-			if set := tr.setFor(id); set == nil || set.status != "Done" {
+			if set := tr.setFor(id); set == nil || set.stage != tracker.StageDone {
 				t.Errorf("tracker status = %+v, want Done", set)
 			}
 		})
@@ -302,7 +308,7 @@ func TestFinalizeEpicMergesLocallyWithoutRemote(t *testing.T) {
 	gh := &countingGitHub{}
 	p := localTestPipeline(t, git, gh, tr)
 	p.EpicID = "COD-1"
-	p.epicBranch = "epic/COD-1-checkout-rebuild"
+	p.exit.epicBranch = "epic/COD-1-checkout-rebuild"
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("FinalizeEpic = %v, want nil", err)
@@ -322,7 +328,7 @@ func TestFinalizeEpicMergesLocallyWithoutRemote(t *testing.T) {
 	if got := p.State.Get("COD-1", "PR_URL"); got != "" {
 		t.Errorf("epic PR_URL = %q, want it unset — there is no PR", got)
 	}
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, localDeliveryNote) {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, localDeliveryNote) {
 		t.Errorf("epic closed as %q %q, want Done naming local delivery", tr.setStatus, tr.setExtra)
 	}
 }
@@ -339,7 +345,7 @@ func TestFinalizeEpicLeavesTheMergeToTheOperatorWhenAutoMergeIsOff(t *testing.T)
 	p := localTestPipeline(t, git, &countingGitHub{}, tr)
 	p.AutoMerge = false
 	p.EpicID = "COD-1"
-	p.epicBranch = "epic/COD-1-checkout-rebuild"
+	p.exit.epicBranch = "epic/COD-1-checkout-rebuild"
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("FinalizeEpic = %v, want nil", err)
@@ -347,7 +353,7 @@ func TestFinalizeEpicLeavesTheMergeToTheOperatorWhenAutoMergeIsOff(t *testing.T)
 	if git.squashCalls != 0 {
 		t.Errorf("squash-merged %d times with AUTO_MERGE=0, want 0", git.squashCalls)
 	}
-	if tr.setStatus == "Done" {
+	if tr.setStatus == tracker.StageDone {
 		t.Error("epic closed Done, want it left open until the operator merges")
 	}
 }

@@ -83,6 +83,74 @@ func TestHasPullRequestCI(t *testing.T) {
 	}
 }
 
+func TestParseCIGate(t *testing.T) {
+	cases := map[string]CIGate{
+		"auto":     CIGateAuto,
+		"1":        CIGateOn,
+		"0":        CIGateOff,
+		" 1 ":      CIGateOn,
+		"":         CIGateAuto,
+		"nonsense": CIGateAuto,
+	}
+	for in, want := range cases {
+		if got := ParseCIGate(in); got != want {
+			t.Errorf("ParseCIGate(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if Defaults().RequireCI != CIGateAuto {
+		t.Errorf("default RequireCI = %q, want %q", Defaults().RequireCI, CIGateAuto)
+	}
+}
+
+func TestScanPullRequestCICoversBranch(t *testing.T) {
+	cases := []struct {
+		name     string
+		workflow string
+		branch   string
+		want     bool
+	}{
+		{name: "no PR workflow covers nothing", workflow: "on:\n  push:\n    branches: [main]\n", branch: "main"},
+		{name: "unfiltered trigger covers every base", workflow: "on:\n  pull_request:\n", branch: "epic/COD-1", want: true},
+		{name: "sequence form covers every base", workflow: "on: [push, pull_request]\n", branch: "epic/COD-1", want: true},
+		{name: "scalar form covers every base", workflow: "on: pull_request\n", branch: "release/2.1", want: true},
+		{name: "named base", workflow: "on:\n  pull_request:\n    branches: [main]\n", branch: "main", want: true},
+		{name: "base outside the named list", workflow: "on:\n  pull_request:\n    branches: [main, develop]\n", branch: "epic/COD-1"},
+		{name: "single-level wildcard", workflow: "on:\n  pull_request:\n    branches: ['release/*']\n", branch: "release/2.1", want: true},
+		{name: "single-level wildcard stops at a slash", workflow: "on:\n  pull_request:\n    branches: ['release/*']\n", branch: "release/2/1"},
+		{name: "double wildcard crosses slashes", workflow: "on:\n  pull_request:\n    branches: ['release/**']\n", branch: "release/2/1", want: true},
+		{name: "scalar branches value", workflow: "on:\n  pull_request:\n    branches: main\n", branch: "main", want: true},
+		{name: "branches-ignore admits the rest", workflow: "on:\n  pull_request:\n    branches-ignore: ['docs/**']\n", branch: "main", want: true},
+		{name: "branches-ignore excludes its own", workflow: "on:\n  pull_request:\n    branches-ignore: ['docs/**']\n", branch: "docs/guide"},
+		{name: "negated pattern excludes", workflow: "on:\n  pull_request:\n    branches: ['**', '!epic/**']\n", branch: "epic/COD-1"},
+		{name: "negated pattern keeps the rest", workflow: "on:\n  pull_request:\n    branches: ['**', '!epic/**']\n", branch: "main", want: true},
+		{name: "unmodelled pattern form reads as covered", workflow: "on:\n  pull_request:\n    branches: ['releases/**/[0-9]']\n", branch: "main", want: true},
+		{name: "unmodelled branches-ignore pattern excludes nothing", workflow: "on:\n  pull_request:\n    branches-ignore: ['v[0-9]*']\n", branch: "main", want: true},
+		{name: "unmodelled negated pattern excludes nothing", workflow: "on:\n  pull_request:\n    branches: ['**', '!v?.x']\n", branch: "main", want: true},
+		{name: "unnamed base is covered when the repo has PR CI", workflow: "on:\n  pull_request:\n    branches: [main]\n", want: true},
+		{name: "unnamed base is uncovered without PR CI", workflow: "on:\n  push:\n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			wf := filepath.Join(root, ".github", "workflows")
+			if err := os.MkdirAll(wf, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(wf, "ci.yml"), []byte(tc.workflow), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if got := ScanPullRequestCI(root).CoversBranch(tc.branch); got != tc.want {
+				t.Fatalf("CoversBranch(%q) = %v, want %v", tc.branch, got, tc.want)
+			}
+		})
+	}
+
+	if ScanPullRequestCI(t.TempDir()).CoversBranch("main") {
+		t.Error("a repo with no workflows directory covers no branch")
+	}
+}
+
 func TestScanPullRequestCI(t *testing.T) {
 	cases := []struct {
 		name            string

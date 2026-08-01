@@ -102,7 +102,7 @@ func (f *mergeGitHub) Merge(ctx context.Context, pr, method string, deleteBranch
 	return f.always
 }
 
-func newMergePipeline(t *testing.T, git *mergeGit, gh *mergeGitHub, tr *fakeTracker) *Pipeline {
+func newMergePipeline(t *testing.T, git Git, gh *mergeGitHub, tr *fakeTracker) *Pipeline {
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
@@ -170,7 +170,7 @@ func TestCIAndMergeEpicChildConflictResolvedByAgent(t *testing.T) {
 	tr := &fakeTracker{}
 	p := newMergePipeline(t, git, gh, tr)
 	p.EpicID = "COD-90697"
-	p.epicBranch = "epic/COD-90697-y"
+	p.exit.epicBranch = "epic/COD-90697-y"
 	seedPROpen(t, p, id, "105", git.branch)
 
 	if err := p.CIAndMerge(context.Background(), id); err != nil {

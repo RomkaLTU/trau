@@ -57,9 +57,9 @@ func (t *fakeTracker) Pick(context.Context, tracker.Scope) (string, error) { ret
 func (t *fakeTracker) SubIssues(context.Context, string) ([]tracker.SubIssue, error) {
 	return nil, nil
 }
-func (t *fakeTracker) Title(context.Context, string) (string, error)           { return "", nil }
-func (t *fakeTracker) SetStatus(context.Context, string, string, string) error { return nil }
-func (t *fakeTracker) Reset(context.Context, string) error                     { return nil }
+func (t *fakeTracker) Title(context.Context, string) (string, error)                  { return "", nil }
+func (t *fakeTracker) SetStatus(context.Context, string, tracker.Stage, string) error { return nil }
+func (t *fakeTracker) Reset(context.Context, string) error                            { return nil }
 func (t *fakeTracker) Quarantine(context.Context, string, string) error {
 	t.quarantineCalls++
 	return nil
@@ -123,6 +123,7 @@ func (fakeGit) RemoteBranchExists(context.Context, string, string) (bool, error)
 	return false, nil
 }
 func (fakeGit) CheckoutRemoteBranch(context.Context, string, string) error { return nil }
+func (fakeGit) RemoteSHA(context.Context, string, string) (string, error)  { return "", nil }
 
 // writeHandoff drops a non-empty handoff brief so Verify skips regeneration and
 // goes straight to the verify attempt (where the bug lives). Cleans up the /tmp

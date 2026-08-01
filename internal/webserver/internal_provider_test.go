@@ -44,14 +44,14 @@ func TestInternalProviderDrivesIssuesThroughTheHub(t *testing.T) {
 		t.Fatalf("pick = %q, want ACME-1 (the only ready, unstarted leaf)", id)
 	}
 
-	if err := pm.SetStatus(ctx, id, "In Progress", ""); err != nil {
+	if err := pm.SetStatus(ctx, id, tracker.StageInProgress, ""); err != nil {
 		t.Fatalf("set in progress: %v", err)
 	}
 	if got, _, _ := store.Internal(root, id); got.StatusGroup != "started" {
 		t.Fatalf("status after In Progress = %q, want started", got.StatusGroup)
 	}
 
-	if err := pm.SetStatus(ctx, id, "Done", ""); err != nil {
+	if err := pm.SetStatus(ctx, id, tracker.StageDone, ""); err != nil {
 		t.Fatalf("set done: %v", err)
 	}
 	if got, _, _ := store.Internal(root, id); got.StatusGroup != "done" {

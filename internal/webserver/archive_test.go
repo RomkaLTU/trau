@@ -17,6 +17,7 @@ import (
 // the given issues, so the archive endpoint can flip them without a tracker call.
 func archiveServer(t *testing.T, issues []hubstore.Issue) (*Server, string, *httptest.Server) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), "acme")
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()

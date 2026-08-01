@@ -10,8 +10,10 @@ import { cn } from '@/lib/utils'
 // button that confirms first, then refreshes the repo list off the result. Only
 // the copy, the icon and the call differ between them. A blocked reason disables
 // the button and rides along as its tooltip, so the row says why the hub would
-// refuse instead of handing back a failed request.
-export function RepoRowAction({
+// refuse instead of handing back a failed request. successMessage reads the call's
+// result when the outcome is only known afterwards, so a partial removal can name
+// what it left behind.
+export function RepoRowAction<T>({
   icon: Icon,
   label,
   pendingLabel,
@@ -33,18 +35,23 @@ export function RepoRowAction({
   title: string
   description: ReactNode
   confirmLabel: string
-  successMessage: string
-  action: () => Promise<unknown>
+  successMessage: string | ((result: T) => string)
+  action: () => Promise<T>
 }) {
   const queryClient = useQueryClient()
   const [confirming, setConfirming] = useState(false)
 
   const run = useMutation({
     mutationFn: action,
-    onSuccess: () => {
-      toast.success(successMessage)
+    onSuccess: (result) => {
+      toast.success(
+        typeof successMessage === 'string'
+          ? successMessage
+          : successMessage(result),
+      )
       void queryClient.invalidateQueries({ queryKey: ['repos'] })
       void queryClient.invalidateQueries({ queryKey: ['instances'] })
+      void queryClient.invalidateQueries({ queryKey: ['projects'] })
     },
     onError: (err) => toast.error(err.message),
   })

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMacPlatform, isPaletteShortcut, shortcutLabel } from './palette-keys'
+import {
+  isMacPlatform,
+  isPaletteShortcut,
+  leavesSubmenu,
+  movesHighlight,
+  opensSubmenu,
+  shortcutLabel,
+} from './palette-keys'
 
 describe('isPaletteShortcut', () => {
   it('fires on the modified k', () => {
@@ -21,6 +28,49 @@ describe('isPaletteShortcut', () => {
     expect(
       isPaletteShortcut({ key: 'k', metaKey: true, isComposing: true }),
     ).toBe(false)
+  })
+})
+
+describe('movesHighlight', () => {
+  it('matches the arrow and vim keys that walk the list', () => {
+    expect(movesHighlight({ key: 'ArrowDown' })).toBe(true)
+    expect(movesHighlight({ key: 'ArrowUp' })).toBe(true)
+    expect(movesHighlight({ key: 'n', ctrlKey: true })).toBe(true)
+  })
+
+  it('ignores plain typing', () => {
+    expect(movesHighlight({ key: 'n' })).toBe(false)
+    expect(movesHighlight({ key: 'Enter' })).toBe(false)
+  })
+})
+
+describe('opensSubmenu', () => {
+  it('matches the Tab that steps into a row’s actions', () => {
+    expect(opensSubmenu({ key: 'Tab' })).toBe(true)
+  })
+
+  it('ignores typing and a composing keystroke', () => {
+    expect(opensSubmenu({ key: 't' })).toBe(false)
+    expect(opensSubmenu({ key: 'Tab', isComposing: true })).toBe(false)
+  })
+
+  it('leaves Shift+Tab to move focus backwards', () => {
+    expect(opensSubmenu({ key: 'Tab', shiftKey: true })).toBe(false)
+  })
+})
+
+describe('leavesSubmenu', () => {
+  it('steps back out on Backspace once the query is empty', () => {
+    expect(leavesSubmenu({ key: 'Backspace' }, '')).toBe(true)
+  })
+
+  it('erases the query instead while there is one', () => {
+    expect(leavesSubmenu({ key: 'Backspace' }, 'arch')).toBe(false)
+  })
+
+  it('ignores other keys', () => {
+    expect(leavesSubmenu({ key: 'Escape' }, '')).toBe(false)
+    expect(leavesSubmenu({ key: 'a' }, '')).toBe(false)
   })
 })
 

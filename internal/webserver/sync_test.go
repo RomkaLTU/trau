@@ -218,6 +218,60 @@ func TestSyncSecondPullIsIncremental(t *testing.T) {
 	}
 }
 
+// An Azure DevOps mirror filled before work items were addressed by their bare number
+// still holds PREFIX-n rows, and the reconcile sweep behind the pull is about to
+// tombstone them. That pull has to be a full one, or every row it does not re-file
+// leaves the board with nothing under its number to replace it.
+func TestSyncRepullsTheBoardWhenTheMirrorHoldsPrefixedAzureIDs(t *testing.T) {
+	fake := &fakeReader{
+		synced: []tracker.SyncedIssue{{
+			ID:        "6694",
+			Title:     "Widen the id contract",
+			Group:     tracker.StatusGroupUnstarted,
+			UpdatedAt: "2026-07-30T11:00:00Z",
+		}},
+		identifiers: []string{"6694"},
+	}
+	ts, root, store := syncServer(t, fake)
+	writeRepoINI(t, root, "TRACKER_PROVIDER=azure\nLINEAR_TEAM=Contoso\n")
+	if _, _, err := store.Upsert(root, "azure", []hubstore.Issue{
+		{Identifier: "CON-6694", Title: "Widen the id contract", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed the pre-upgrade mirror: %v", err)
+	}
+	if err := store.RecordResult(root, hubstore.SyncResult{
+		Cursor:   "2026-07-29T10:00:00Z",
+		SyncedAt: "2026-07-29T10:00:01Z",
+	}); err != nil {
+		t.Fatalf("seed the cursor: %v", err)
+	}
+
+	res, out := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if fake.syncSince != "" {
+		t.Fatalf("pull since = %q, want the whole board while the mirror holds prefixed ids", fake.syncSince)
+	}
+	if out.Removed != 1 {
+		t.Fatalf("removed = %d, want the prefixed row swept once its bare-number row landed", out.Removed)
+	}
+	iss, found, err := store.Find(root, "6694")
+	if err != nil || !found {
+		t.Fatalf("find 6694: found=%v err=%v", found, err)
+	}
+	if iss.DeletedAt != "" {
+		t.Fatalf("6694 = tombstoned, want the bare-number row live on the board")
+	}
+
+	res, _ = postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if fake.syncSince != "2026-07-30T11:00:00Z" {
+		t.Fatalf("second pull since = %q, want the cursor once the mirror is renumbered", fake.syncSince)
+	}
+}
+
 func TestSyncEmptyIncrementalPullKeepsCursor(t *testing.T) {
 	fake := &fakeReader{synced: syncedFixture()}
 	ts, root, store := syncServer(t, fake)
@@ -351,7 +405,7 @@ func TestSyncInternalProviderClearsStaleError(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	store := testStoresAt(t, home).Issues()
-	if err := store.RecordError(root, "linear: no api key"); err != nil {
+	if err := store.RecordError(root, "linear: no api key", string(tracker.ErrorConfig)); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 
@@ -379,7 +433,7 @@ func TestSyncImplicitInternalKeepsError(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	store := testStoresAt(t, home).Issues()
-	if err := store.RecordError(root, "linear: 500"); err != nil {
+	if err := store.RecordError(root, "linear: 500", string(tracker.ErrorConfig)); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 
@@ -518,5 +572,66 @@ func TestRegisterTriggersSync(t *testing.T) {
 	}
 	if len(stored) != 1 || stored[0].Identifier != "COD-1" {
 		t.Fatalf("register did not seed the issue store: %+v", stored)
+	}
+}
+
+// A machine-wide LINEAR_API_KEY makes a repo that configured no tracker resolve to
+// linear. Its sync must refuse before any request leaves the machine and record
+// what to set, not the not-found a lookup with an empty team key answers with.
+func TestSyncRefusesLinearWithoutTeamKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeRepoINI(t, home, "LINEAR_API_KEY=user-linear-key\n")
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	writeRepoINI(t, root, "PROJECT=Trau Web\n")
+
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, _ := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 — a missing team key is a config state", res.StatusCode)
+	}
+
+	st, err := testStoresAt(t, home).Issues().SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	for _, want := range []string{"LINEAR_TEAM", "TRACKER_PROVIDER=internal"} {
+		if !strings.Contains(st.LastError, want) {
+			t.Fatalf("last error = %q, want it to mention %q", st.LastError, want)
+		}
+	}
+	if strings.Contains(st.LastError, "not found") {
+		t.Fatalf("last error = %q, want the configuration hint rather than the tracker's own error", st.LastError)
+	}
+	if st.LastErrorKind != string(tracker.ErrorConfig) {
+		t.Fatalf("last error kind = %q, want %q", st.LastErrorKind, tracker.ErrorConfig)
+	}
+}
+
+// The guard is about having nothing to bind with, not about the config key: a repo
+// whose stored binding already carries a team id keeps syncing on it.
+func TestSyncKeepsStoredBindingWithoutTeamKey(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture(), bindingErr: tracker.ErrNoTeamKey}
+	ts, root, store := syncServer(t, fake)
+	if err := store.SaveBinding(root, hubstore.SyncBinding{TeamID: "team-1"}); err != nil {
+		t.Fatalf("SaveBinding: %v", err)
+	}
+
+	res, out := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the stored binding is usable", res.StatusCode)
+	}
+	if fake.bindingCalls != 0 {
+		t.Fatalf("ResolveBinding called %d times, want the stored binding used as-is", fake.bindingCalls)
+	}
+	if out.Issues != 1 {
+		t.Fatalf("issues = %d, want the pull to have run", out.Issues)
 	}
 }

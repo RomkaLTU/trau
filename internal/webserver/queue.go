@@ -59,15 +59,13 @@ type QueueItemView struct {
 
 // QueueResponse is the /repos/{repo}/queue resource: the repo's queue in
 // registration order, whether the hub is currently draining it and since when,
-// whether a stop is ending the child that was running, and whether a full queue
-// shutdown is tearing it down. DrainingSince is absent unless the queue is
-// draining.
+// and whether a stop is ending the child that was running. DrainingSince is
+// absent unless the queue is draining.
 type QueueResponse struct {
 	Repo          string          `json:"repo"`
 	Draining      bool            `json:"draining"`
 	DrainingSince string          `json:"draining_since,omitempty"`
 	Stopping      bool            `json:"stopping"`
-	ShuttingDown  bool            `json:"shutting_down"`
 	Items         []QueueItemView `json:"items"`
 }
 
@@ -105,13 +103,27 @@ func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleQueueItem serves one queue row. Its wildcard also catches paths that name
+// no row at all — a stale client's POST to the deleted /queue/shutdown lands here —
+// so an id the queue does not hold is 404 whatever the method, and 405 stays
+// reserved for a row that really is there.
 func (s *Server) handleQueueItem(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
-		w.Header().Set("Allow", http.MethodDelete)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	if r.Method == http.MethodDelete {
+		s.dequeue(w, r)
 		return
 	}
-	s.dequeue(w, r)
+	root, ok := s.queueRoot(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, queued := s.queuedItem(root, id); !queued {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
+		return
+	}
+	w.Header().Set("Allow", http.MethodDelete)
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 }
 
 // handleQueueDrain starts or pauses draining a repo's queue. Starting flips the
@@ -193,11 +205,12 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
 	return nil
 }
 
-// handleQueueMove reorders a pending item: one slot up or down with dir, or to
-// the first pending slot with to "front", which the running view's Run next uses
-// to promote an item mid-drain. It is gated like a dequeue on any repo whose
-// queue the hub can see, reports 404 for an unknown item and 409 for one that
-// has started or settled, and answers with the reordered queue.
+// handleQueueMove reorders a queued item: one slot up or down with dir, or to
+// the front of the run order with to "front", which the running view's Run next
+// and Resume both use to name what the drain launches next mid-drain. It is
+// gated like a dequeue on any repo whose queue the hub can see, reports 404 for
+// an unknown item and 409 for one that has started or settled, and answers with
+// the reordered queue.
 func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -242,7 +255,7 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is running and cannot be reordered", id)})
 	case errors.Is(err, queue.ErrNotPending):
 		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("%s has already started or settled — only a pending item can be promoted", id),
+			"error": fmt.Sprintf("%s has already settled — only a pending or paused item can be promoted", id),
 		})
 	case err != nil:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reorder: " + err.Error()})
@@ -255,9 +268,9 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 // child exactly as a drain would, then starts the loop that waits for it —
 // without arming draining, so the tick that settles the item finds the drain off
 // and stops instead of picking up the next row. It refuses with 409 whenever the
-// repo already has work in flight: a shutdown, an armed drain, a running queue
-// item, or a live loop — and, so the one-shot cannot bypass the drain's dedup,
-// whenever an unsettled queued epic already covers the item.
+// repo already has work in flight: an armed drain, a running queue item, or a
+// live loop — and, so the one-shot cannot bypass the drain's dedup, whenever an
+// unsettled queued epic already covers the item.
 func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -270,10 +283,6 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": fmt.Sprintf("repo %q is observe-only; only a Registered repo can run queued work — register it first", name),
 		})
-		return
-	}
-	if s.isShuttingDown(root) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "the queue is shutting down — wait for the teardown to finish"})
 		return
 	}
 	store := s.stores.Queue(root)
@@ -335,11 +344,11 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateQueueTarget confirms a to-be-queued id exists in the repo's tracker and
-// belongs to this repo's project, returning its title and the answering tracker's
-// source binding — the same provider name the sync records on the stored issue. It
-// is best-effort: a repo without direct tracker credentials cannot be checked, so
-// it passes and the id is queued unvalidated; a definite not-found or cross-project
-// answer is refused with a clear status and ok=false.
+// falls inside the slice of it this repo owns, returning its title and the answering
+// tracker's source binding — the same provider name the sync records on the stored
+// issue. It is best-effort: a repo without direct tracker credentials cannot be
+// checked, so it passes and the id is queued unvalidated; a definite not-found or
+// out-of-scope answer is refused with a clear status and ok=false.
 func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, name, id string) (title, source string, ok bool) {
 	repo, found := s.findRepo(name)
 	if !found {
@@ -359,7 +368,7 @@ func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, nam
 	}
 	if !item.InProject {
 		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("%s belongs to project %q, not this repo's project — refusing to queue a cross-project ticket", id, item.Project),
+			"error": fmt.Sprintf("%s (project %q) is outside the slice of the tracker this repo owns — refusing to queue a ticket it does not mirror", id, item.Project),
 		})
 		return "", "", false
 	}
@@ -418,7 +427,6 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
 		Stopping:      s.isStopping(root),
-		ShuttingDown:  s.isShuttingDown(root),
 		Items:         queueItemViews(items, pins, blockers, s.removingItems(root)),
 	}, nil
 }
@@ -426,9 +434,8 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 // handleQueueStop stops a repo's loop where it stands: it disarms the drain
 // synchronously so no tick spawns a new child, then — in the background — ends
 // the child that was running (runningChild) with the same escalation a per-run
-// Stop uses.
-// Unlike a shutdown it clears nothing: the stopped item parks at its checkpoint
-// and every row stays queued, so Start picks the queue back up from there. It
+// Stop uses. It clears nothing: the stopped item parks at its checkpoint and
+// every row stays queued, so Start picks the queue back up from there. It
 // answers with the queue — 202 while the stop is in flight, 200 when there was
 // no child to end — and a second POST during a stop is a no-op that answers the
 // same way. It is gated on the workspace allowlist like a drain start: only a
@@ -473,47 +480,6 @@ func (s *Server) handleQueueStop(w http.ResponseWriter, r *http.Request) {
 	// clear the in-flight flag out from under the ack that reports it.
 	s.writeQueue(w, http.StatusAccepted, root)
 	go s.stopRunningChild(root, ticket, pid)
-}
-
-// handleQueueShutdown tears a repo's loop down completely in one gesture:
-// disarming the drain synchronously so no drainer tick spawns a new child, then
-// — in the background — stopping any running child with escalation, dropping
-// the checkpoints a live loop would otherwise refuse to have touched, and
-// emptying the queue. It answers 202 immediately; clears never run until the
-// child is confirmed dead, so refuseWhenLive is never tripped. A second POST
-// while a teardown is already in flight is a no-op that answers the same way.
-// It is gated on the workspace allowlist like a drain start: only a Registered
-// repo can be shut down.
-func (s *Server) handleQueueShutdown(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	name := r.PathValue("repo")
-	root, ok := s.allowedRoot(name)
-	if !ok {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": fmt.Sprintf("repo %q is observe-only; only a Registered repo can be shut down — register it first", name),
-		})
-		return
-	}
-	store := s.stores.Queue(root)
-	if err := store.SetDraining(false); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "disarm drain: " + err.Error()})
-		return
-	}
-	if s.beginShutdown(root) {
-		items, _, err := store.Snapshot()
-		if err != nil {
-			s.endShutdown(root)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
-			return
-		}
-		running, hasRunning := firstWithStatus(items, queue.StatusRunning)
-		go s.teardownQueue(root, running, hasRunning)
-	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "shutting_down"})
 }
 
 // enqueue registers a ticket or epic for execution. It is gated on the workspace
@@ -658,12 +624,14 @@ func (s *Server) afterEnqueue(ctx context.Context, root string, item queue.Item)
 }
 
 // dequeue removes an item from the queue by identifier, returning the resulting
-// queue. It never touches the ticket: its checkpoint, run history and tracker row
-// stay exactly as they were, so a removed item is re-queueable. It reports 404
-// when the item is not queued. A running item is refused 409 as before unless the
-// request opts in with stop=1, which stops the item's child first and answers 202
-// — the row goes once the process is confirmed gone, and an armed drain moves on
-// to the next runnable item.
+// queue. It ejects the work with the row: the run's saved progress is wiped and
+// the ticket goes back to Ready on the tracker, so a later pickup starts a fresh
+// run rather than resuming this one. It reports 404 when the item is not queued.
+// A running item is refused 409 as before unless the request opts in with stop=1,
+// which stops the item's child first and answers 202 — the row goes once the
+// process is confirmed gone, and an armed drain moves on to the next runnable
+// item. Every other row is wiped behind the response, since a reset spawns a
+// child of its own.
 func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	root, ok := s.queueRoot(r.PathValue("repo"))
 	if !ok {
@@ -693,6 +661,7 @@ func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	}
 	if queued {
 		s.clearQueued(r.Context(), root, item)
+		go s.wipeRemovedRun(root, item)
 	}
 	s.writeQueue(w, http.StatusOK, root)
 }

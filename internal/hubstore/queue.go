@@ -130,9 +130,9 @@ func (q *Queue) Add(item queue.Item) ([]queue.Item, error) {
 	return st.items, nil
 }
 
-// AddFront inserts item at the first pending position — behind every running or
-// paused item, so it never displaces one — stamping it pending like Add, and
-// returns the resulting queue. When the same id is already queued pending it is
+// AddFront inserts item at the front of the run order — behind the running item,
+// so it never displaces one — stamping it pending like Add, and returns the
+// resulting queue. When the same id is already queued pending it is
 // moved to that position instead of refused, adopting the incoming Provider
 // override so the latest gesture describes the run; moved reports which case
 // ran. Any other already-queued status keeps Add's ErrAlreadyQueued refusal.
@@ -153,7 +153,7 @@ func (q *Queue) AddFront(item queue.Item) (items []queue.Item, moved bool, err e
 		existing := st.items[i]
 		existing.Provider = item.Provider
 		st.items = append(st.items[:i], st.items[i+1:]...)
-		st.items = insertAtFirstPending(st.items, existing)
+		st.items = insertAtFront(st.items, existing)
 		if err := q.persist(st); err != nil {
 			return nil, false, err
 		}
@@ -161,20 +161,22 @@ func (q *Queue) AddFront(item queue.Item) (items []queue.Item, moved bool, err e
 	}
 	item.Status = queue.StatusPending
 	item.QueuedAt = time.Now().UTC()
-	st.items = insertAtFirstPending(st.items, item)
+	st.items = insertAtFront(st.items, item)
 	if err := q.persist(st); err != nil {
 		return nil, false, err
 	}
 	return st.items, false, nil
 }
 
-// insertAtFirstPending places item where the first pending item sits, appending
-// when nothing is pending, so a front insert lands ahead of the waiting work but
-// behind anything running, paused, or settled.
-func insertAtFirstPending(items []queue.Item, item queue.Item) []queue.Item {
+// insertAtFront places item at the slot the drain launches from next, appending
+// when nothing runnable is left, so a front insert lands ahead of every waiting
+// and paused row but behind anything running or settled. The gesture names what
+// runs next whether it promotes pending work or resumes a pause, because the
+// drain launches whichever runnable row comes first.
+func insertAtFront(items []queue.Item, item queue.Item) []queue.Item {
 	idx := len(items)
 	for i := range items {
-		if items[i].Status == queue.StatusPending {
+		if queue.Runnable(items[i].Status) {
 			idx = i
 			break
 		}
@@ -465,12 +467,12 @@ func (q *Queue) Move(id string, dir int) ([]queue.Item, error) {
 	return st.items, nil
 }
 
-// MoveToFront repositions the item with id at the first pending position —
-// behind anything running, paused, or settled — and returns the resulting queue,
-// so the drain picks it as soon as the run in flight settles. The item keeps
-// every field it carries, its Provider override and QueuedAt stamp included,
-// unlike the AddFront path which adopts the incoming request's. Only a pending
-// item can be promoted.
+// MoveToFront repositions the item with id at the front of the run order —
+// behind anything running or settled, ahead of every row the drain would still
+// launch — and returns the resulting queue, so the drain picks it as soon as the
+// run in flight settles. The item keeps every field it carries, its Provider
+// override and QueuedAt stamp included, unlike the AddFront path which adopts
+// the incoming request's. A settled item cannot be promoted.
 func (q *Queue) MoveToFront(id string) ([]queue.Item, error) {
 	queueMu.Lock()
 	defer queueMu.Unlock()
@@ -491,37 +493,16 @@ func (q *Queue) MoveToFront(id string) ([]queue.Item, error) {
 	if st.items[idx].Status == queue.StatusRunning {
 		return nil, queue.ErrRunning
 	}
-	if st.items[idx].Status != queue.StatusPending {
+	if !queue.Runnable(st.items[idx].Status) {
 		return nil, queue.ErrNotPending
 	}
 	item := st.items[idx]
 	st.items = append(st.items[:idx], st.items[idx+1:]...)
-	st.items = insertAtFirstPending(st.items, item)
+	st.items = insertAtFront(st.items, item)
 	if err := q.persist(st); err != nil {
 		return nil, err
 	}
 	return st.items, nil
-}
-
-// Clear empties root's queue entirely — every item and its sub-issues — and
-// disarms the drain, all in one persist. It carries no running-item guard: the
-// queue shutdown endpoint sequences the child's confirmed death before ever
-// calling it. It returns the items that were removed, so the caller can log or
-// report what a teardown tore down.
-func (q *Queue) Clear() ([]queue.Item, error) {
-	queueMu.Lock()
-	defer queueMu.Unlock()
-	st, err := q.loadImported()
-	if err != nil {
-		return nil, err
-	}
-	removed := st.items
-	st.items = []queue.Item{}
-	st.disarm()
-	if err := q.persist(st); err != nil {
-		return nil, err
-	}
-	return removed, nil
 }
 
 func (q *Queue) settle(id, status, reason string, pid int) error {

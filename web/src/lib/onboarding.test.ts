@@ -43,6 +43,19 @@ function inspection(over: Partial<RepoInspection> = {}): RepoInspection {
   }
 }
 
+function fields(over: Partial<TrackerFields> = {}): TrackerFields {
+  return {
+    linearKey: '',
+    jiraBaseUrl: '',
+    jiraEmail: '',
+    jiraToken: '',
+    azureOrgUrl: '',
+    azurePat: '',
+    binding: '',
+    ...over,
+  }
+}
+
 describe('preselectProvider', () => {
   it('prefers the detected provider', () => {
     expect(preselectProvider(inspection({ detected_provider: 'jira' }))).toBe('jira')
@@ -67,6 +80,21 @@ describe('preselectProvider', () => {
     ).toBe('jira')
   })
 
+  it('re-selects azure from a prefill and from credentials alone', () => {
+    expect(
+      preselectProvider(
+        inspection({
+          prefill: { provider: 'azure', team: 'Contoso', ready_label: '', epic_flow: false },
+        }),
+      ),
+    ).toBe('azure')
+    expect(
+      preselectProvider(
+        inspection({ credentials: [{ provider: 'azure', layer: 'project' }] }),
+      ),
+    ).toBe('azure')
+  })
+
   it('is null when nothing is detected and no credentials exist', () => {
     expect(preselectProvider(inspection())).toBeNull()
   })
@@ -86,24 +114,12 @@ describe('credentialLayer', () => {
 
 describe('trackerConfigValues', () => {
   it('always sets TRACKER_PROVIDER and skips empty secrets', () => {
-    const keys = trackerConfigValues('linear', {
-      linearKey: '',
-      jiraBaseUrl: '',
-      jiraEmail: '',
-      jiraToken: '',
-      binding: 'COD',
-    })
+    const keys = trackerConfigValues('linear', fields({ binding: 'COD' }))
     expect(keys).toEqual({ TRACKER_PROVIDER: 'linear', LINEAR_TEAM: 'COD' })
   })
 
   it('includes a non-empty linear key', () => {
-    const keys = trackerConfigValues('linear', {
-      linearKey: 'lin_secret',
-      jiraBaseUrl: '',
-      jiraEmail: '',
-      jiraToken: '',
-      binding: 'COD',
-    })
+    const keys = trackerConfigValues('linear', fields({ linearKey: 'lin_secret', binding: 'COD' }))
     expect(Object.keys(keys)).toEqual([
       'TRACKER_PROVIDER',
       'LINEAR_API_KEY',
@@ -112,13 +128,10 @@ describe('trackerConfigValues', () => {
   })
 
   it('sets only the Jira fields that are filled in', () => {
-    const keys = trackerConfigValues('jira', {
-      linearKey: '',
-      jiraBaseUrl: 'https://acme.atlassian.net',
-      jiraEmail: '',
-      jiraToken: 'tok',
-      binding: 'MELGA',
-    })
+    const keys = trackerConfigValues(
+      'jira',
+      fields({ jiraBaseUrl: 'https://acme.atlassian.net', jiraToken: 'tok', binding: 'MELGA' }),
+    )
     expect(Object.keys(keys)).toEqual([
       'TRACKER_PROVIDER',
       'JIRA_BASE_URL',
@@ -127,14 +140,34 @@ describe('trackerConfigValues', () => {
     ])
   })
 
-  it('sets only the provider for internal', () => {
-    const keys = trackerConfigValues('internal', {
-      linearKey: '',
-      jiraBaseUrl: '',
-      jiraEmail: '',
-      jiraToken: '',
-      binding: '',
+  it('writes the whole azure set with the team project as LINEAR_TEAM', () => {
+    const keys = trackerConfigValues(
+      'azure',
+      fields({
+        azureOrgUrl: '  https://dev.azure.com/contoso  ',
+        azurePat: 'pat',
+        binding: 'Contoso',
+      }),
+    )
+    expect(keys).toEqual({
+      TRACKER_PROVIDER: 'azure',
+      AZURE_ORG_URL: 'https://dev.azure.com/contoso',
+      AZURE_PAT: 'pat',
+      LINEAR_TEAM: 'Contoso',
     })
+  })
+
+  it('omits a blank azure PAT so the stored one survives', () => {
+    const keys = trackerConfigValues(
+      'azure',
+      fields({ azureOrgUrl: 'https://dev.azure.com/contoso', binding: 'Contoso' }),
+    )
+    expect(keys.AZURE_ORG_URL).toBe('https://dev.azure.com/contoso')
+    expect(keys).not.toHaveProperty('AZURE_PAT')
+  })
+
+  it('sets only the provider for internal', () => {
+    const keys = trackerConfigValues('internal', fields())
     expect(keys).toEqual({ TRACKER_PROVIDER: 'internal' })
   })
 })
@@ -166,26 +199,28 @@ describe('essentialsConfigWrites', () => {
 
 describe('trackerCanContinue', () => {
   it('lets internal through with no binding or test', () => {
-    expect(trackerCanContinue('internal', '', 'idle')).toBe(true)
+    expect(trackerCanContinue('internal', fields(), 'idle')).toBe(true)
   })
 
   it('blocks an external provider until a binding is chosen and the test passes', () => {
-    expect(trackerCanContinue('linear', '', 'ok')).toBe(false)
-    expect(trackerCanContinue('linear', 'COD', 'idle')).toBe(false)
-    expect(trackerCanContinue('linear', 'COD', 'fail')).toBe(false)
-    expect(trackerCanContinue('linear', 'COD', 'ok')).toBe(true)
+    expect(trackerCanContinue('linear', fields(), 'ok')).toBe(false)
+    expect(trackerCanContinue('linear', fields({ binding: 'COD' }), 'idle')).toBe(false)
+    expect(trackerCanContinue('linear', fields({ binding: 'COD' }), 'fail')).toBe(false)
+    expect(trackerCanContinue('linear', fields({ binding: 'COD' }), 'ok')).toBe(true)
+  })
+
+  it('needs nothing beyond the team project for azure — its work items carry no prefix', () => {
+    expect(trackerCanContinue('azure', fields({ binding: 'Contoso' }), 'ok')).toBe(true)
+    expect(trackerCanContinue('azure', fields({ binding: 'Contoso' }), 'idle')).toBe(false)
+    expect(trackerCanContinue('azure', fields(), 'ok')).toBe(false)
   })
 
   it('blocks when no provider is chosen', () => {
-    expect(trackerCanContinue(null, 'COD', 'ok')).toBe(false)
+    expect(trackerCanContinue(null, fields({ binding: 'COD' }), 'ok')).toBe(false)
   })
 })
 
 describe('trackerCanTest', () => {
-  function fields(over: Partial<TrackerFields> = {}): TrackerFields {
-    return { linearKey: '', jiraBaseUrl: '', jiraEmail: '', jiraToken: '', binding: '', ...over }
-  }
-
   it('blocks jira until the site URL, email, and token are all filled', () => {
     expect(
       trackerCanTest('jira', fields({ jiraEmail: 'e@x.com', jiraToken: 'tok' }), false),
@@ -204,9 +239,16 @@ describe('trackerCanTest', () => {
     expect(trackerCanTest('linear', fields({ linearKey: 'lin_key' }), false)).toBe(true)
   })
 
+  it('blocks azure until both the organization URL and the PAT are filled', () => {
+    const org = 'https://dev.azure.com/contoso'
+    expect(trackerCanTest('azure', fields({ azureOrgUrl: org }), false)).toBe(false)
+    expect(trackerCanTest('azure', fields({ azureOrgUrl: org, azurePat: 'pat' }), false)).toBe(true)
+  })
+
   it('allows blank fields when stored credentials exist to fall back to', () => {
     expect(trackerCanTest('jira', fields(), true)).toBe(true)
     expect(trackerCanTest('linear', fields(), true)).toBe(true)
+    expect(trackerCanTest('azure', fields(), true)).toBe(true)
   })
 
   it('never blocks internal', () => {

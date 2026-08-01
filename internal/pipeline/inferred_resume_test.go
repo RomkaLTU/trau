@@ -22,15 +22,15 @@ func (g parkedGit) CurrentBranch(context.Context) (string, error) { return g.bra
 type inferredTracker struct {
 	fakeTracker
 	status   tracker.IssueStatus
-	statuses []string
+	statuses []tracker.Stage
 }
 
 func (t *inferredTracker) IssueStatus(context.Context, string) (tracker.IssueStatus, error) {
 	return t.status, nil
 }
 
-func (t *inferredTracker) SetStatus(_ context.Context, _, status, _ string) error {
-	t.statuses = append(t.statuses, status)
+func (t *inferredTracker) SetStatus(_ context.Context, _ string, stage tracker.Stage, _ string) error {
+	t.statuses = append(t.statuses, stage)
 	return nil
 }
 
@@ -83,8 +83,8 @@ func TestInferredResumeDeclinesBranchWithMergedPR(t *testing.T) {
 	if got := p.State.Get(id, "BRANCH"); got != branch {
 		t.Errorf("BRANCH = %q, want %q", got, branch)
 	}
-	if len(tr.statuses) != 1 || tr.statuses[0] != "Done" {
-		t.Errorf("tracker statuses = %v, want [Done]", tr.statuses)
+	if len(tr.statuses) != 1 || tr.statuses[0] != tracker.StageDone {
+		t.Errorf("tracker statuses = %v, want [done]", tr.statuses)
 	}
 	if !logs.contains("already delivered via PR #215") {
 		t.Errorf("log lines %v, want one naming the merged PR", logs.lines)
@@ -181,6 +181,20 @@ func TestInferredResumeFuncAdoptsBranchInScope(t *testing.T) {
 	}
 	if !logs.contains("adopted in-progress branch " + branch) {
 		t.Errorf("log lines %v, want the adoption line naming %s", logs.lines, branch)
+	}
+}
+
+// An Azure DevOps board settles on no prefix, so the parked branch leads with the bare
+// work-item number and the resume path has to recognise it there.
+func TestInferredResumeFuncAdoptsABareNumberedBranch(t *testing.T) {
+	p, _ := newParkedPipeline(t, "feature/6694-bare-numeric-ids", &fakeGitHub{}, &inferredTracker{})
+	p.Prefix = ""
+	p.TrackerProvider = "azure"
+
+	gotID, gotPhase := p.InferredResumeFunc(context.Background(), nil)
+
+	if gotID != "6694" || gotPhase != state.Built {
+		t.Fatalf("InferredResumeFunc = (%q, %q), want (6694, %q)", gotID, gotPhase, state.Built)
 	}
 }
 

@@ -324,3 +324,78 @@ func TestRequestHubReloadUnreachableHub(t *testing.T) {
 		t.Fatalf("err = %v, want an unreachable-hub error", err)
 	}
 }
+
+func TestUpdateInternalIssueSendsDraft(t *testing.T) {
+	var got InternalDraft
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != apiPrefix+"/repos/acme/issues/internal/ACME-1" {
+			t.Errorf("%s %s, want PATCH the internal issue path", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeJSON(w, http.StatusOK, Issue{ID: "ACME-1", Priority: 2, DueDate: "2026-08-14", BlockedBy: []string{"ACME-2"}})
+	}))
+	defer ts.Close()
+
+	iss, err := New(ts.URL, "").UpdateInternalIssue(context.Background(), "acme", "ACME-1", InternalDraft{
+		Title: "Edited", Priority: 2, DueDate: "2026-08-14", BlockedBy: []string{"ACME-2"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateInternalIssue: %v", err)
+	}
+	if got.Priority != 2 || got.DueDate != "2026-08-14" || len(got.BlockedBy) != 1 {
+		t.Fatalf("sent draft = %+v", got)
+	}
+	if iss.Priority != 2 || iss.DueDate != "2026-08-14" || len(iss.BlockedBy) != 1 {
+		t.Fatalf("issue = %+v", iss)
+	}
+}
+
+func TestIssueRelationCallsUseTheRelationsPath(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		call   func(*Client) (Issue, error)
+		method string
+	}{
+		{
+			name:   "add",
+			method: http.MethodPost,
+			call: func(c *Client) (Issue, error) {
+				return c.AddIssueRelations(context.Background(), "acme", "ACME-1", IssueRelations{BlockedBy: []string{"ACME-2"}})
+			},
+		},
+		{
+			name:   "remove",
+			method: http.MethodDelete,
+			call: func(c *Client) (Issue, error) {
+				return c.RemoveIssueRelations(context.Background(), "acme", "ACME-1", IssueRelations{BlockedBy: []string{"ACME-2"}})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got IssueRelations
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != tc.method || r.URL.Path != apiPrefix+"/repos/acme/issues/ACME-1/relations" {
+					t.Errorf("%s %s, want %s the relations path", r.Method, r.URL.Path, tc.method)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Errorf("decode body: %v", err)
+				}
+				writeJSON(w, http.StatusOK, Issue{ID: "ACME-1", BlockedBy: []string{"ACME-2"}})
+			}))
+			defer ts.Close()
+
+			iss, err := tc.call(New(ts.URL, ""))
+			if err != nil {
+				t.Fatalf("%s relations: %v", tc.name, err)
+			}
+			if len(got.BlockedBy) != 1 || got.BlockedBy[0] != "ACME-2" {
+				t.Fatalf("sent body = %+v", got)
+			}
+			if len(iss.BlockedBy) != 1 {
+				t.Fatalf("issue = %+v", iss)
+			}
+		})
+	}
+}

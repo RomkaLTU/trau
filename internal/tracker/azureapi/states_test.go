@@ -53,26 +53,3 @@ func TestTerminalIsCompletedOrRemoved(t *testing.T) {
 		}
 	}
 }
-
-// TargetCategory reads the loop's own vocabulary, which no template uses verbatim.
-func TestTargetCategoryAcceptsLoopStatusNames(t *testing.T) {
-	cases := []struct {
-		status string
-		want   StateCategory
-	}{
-		{"In Progress", CategoryInProgress},
-		{"In Review", CategoryResolved},
-		{"Done", CategoryCompleted},
-		{"To Do", CategoryProposed},
-		{"started", CategoryInProgress},
-		{"review", CategoryResolved},
-		{"shipped", CategoryCompleted},
-		{"Canceled", CategoryRemoved},
-		{"Marinating", CategoryUnknown},
-	}
-	for _, tc := range cases {
-		if got := TargetCategory(tc.status); got != tc.want {
-			t.Errorf("TargetCategory(%q) = %q, want %q", tc.status, got, tc.want)
-		}
-	}
-}

@@ -16,17 +16,42 @@ import (
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
-// stopServer is shutdownServer with the drain's own cadence compressed and its
-// context bound to the test, since a stop leans on the drain tick to park the
-// item once the child it ended is gone.
+// stopServer builds a server with one Registered repo, a fake supervisor, and
+// the stop-and-wait timings compressed, so a halt test never sleeps for real
+// seconds. The drain's own cadence is compressed and its context bound to the
+// test too, since a stop leans on the drain tick to park the item once the child
+// it ended is gone.
 func stopServer(t *testing.T, name string) (*Server, *fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
-	s, fake, root, ts := shutdownServer(t, name)
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), name)
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
+	s.home = home
+	fake := &fakeSupervisor{}
+	s.sup = fake
+
+	compressStopTimings(t)
+
 	s.drain.poll = 5 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	s.drainCtx = ctx
 	t.Cleanup(cancel)
+
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
 	return s, fake, root, ts
+}
+
+// compressStopTimings shrinks the stop-and-wait timings for one test, so a halt
+// never sleeps for the real grace.
+func compressStopTimings(t *testing.T) {
+	t.Helper()
+	prevPoll, prevConfirm, prevGrace := stopWaitPoll, stopKillConfirm, stopKillGrace
+	stopWaitPoll, stopKillConfirm, stopKillGrace = 5*time.Millisecond, time.Second, 20*time.Millisecond
+	t.Cleanup(func() {
+		stopWaitPoll, stopKillConfirm, stopKillGrace = prevPoll, prevConfirm, prevGrace
+	})
 }
 
 func postStop(t *testing.T, ts *httptest.Server, repo string) (*http.Response, QueueResponse) {

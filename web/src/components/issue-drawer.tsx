@@ -465,7 +465,6 @@ function runGateReason(
     return `${issue.id} is already running`;
   }
   if (liveLoop) return liveGateMessage(liveLoop);
-  if (queue?.shutting_down) return "The loop is shutting down…";
   if (queue?.draining) return "The queue is draining — stop it first";
   return null;
 }
@@ -627,7 +626,14 @@ function Notice({
 }
 
 function trackerName(provider: string): string {
-  return provider === "jira" ? "Jira" : "Linear";
+  switch (provider) {
+    case "jira":
+      return "Jira";
+    case "azure":
+      return "Azure Boards";
+    default:
+      return "Linear";
+  }
 }
 
 function when(ts: string): string {

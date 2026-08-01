@@ -121,10 +121,135 @@ func TestResolveReaderReportsJiraCredsWhenLinearTried(t *testing.T) {
 	}
 }
 
+// TestResolveReaderNamesTeamKeyFixForInferredLinear covers the machine-wide Linear
+// key: a repo that never configured a tracker still resolves to linear, so the
+// refusal it records must name both ways out rather than the tracker's own error.
+func TestResolveReaderNamesTeamKeyFixForInferredLinear(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeRepoINI(t, home, "LINEAR_API_KEY=user-linear-key\n")
+
+	root := t.TempDir()
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+
+	res, err := s.resolveReader(registry.Repo{Name: "acme", Root: root})
+	if err != nil {
+		t.Fatalf("resolveReader: %v", err)
+	}
+	if res.provider != "linear" || res.explicit {
+		t.Fatalf("resolution = %+v, want an inferred linear provider", res)
+	}
+
+	got := res.actionableErr(tracker.ErrNoTeamKey)
+	if !errors.Is(got, tracker.ErrNoTeamKey) {
+		t.Fatalf("actionableErr = %v, want the refusal still classifiable through the hint", got)
+	}
+	for _, want := range []string{"inferred linear", "LINEAR_TEAM", "TRACKER_PROVIDER=internal"} {
+		if !strings.Contains(got.Error(), want) {
+			t.Fatalf("actionableErr = %q, want it to mention %q", got, want)
+		}
+	}
+}
+
 // TestDefaultReaderUnavailableForInternal keeps a repo with no external tracker on
 // the graceful no-credentials path instead of the unknown-provider error.
 func TestDefaultReaderUnavailableForInternal(t *testing.T) {
 	if _, err := defaultReader(config.Config{TrackerProvider: "linear"}); !errors.Is(err, tracker.ErrReaderUnavailable) {
 		t.Fatalf("defaultReader err = %v, want ErrReaderUnavailable", err)
+	}
+}
+
+// TestDefaultWriterUnavailableForInternal keeps the write side on the same
+// no-credentials path the read side answers with, so a repo that resolves to the
+// internal provider is reported as a config state rather than a build failure.
+func TestDefaultWriterUnavailableForInternal(t *testing.T) {
+	if _, err := defaultWriter(config.Config{TrackerProvider: "linear"}); !errors.Is(err, tracker.ErrWriterUnavailable) {
+		t.Fatalf("defaultWriter err = %v, want ErrWriterUnavailable", err)
+	}
+}
+
+// writeProbeServer builds a hub over one repo carrying projectINI, with userINI as
+// the machine-wide layer, and a Writer factory that records the provider a write
+// path resolved instead of reaching a tracker.
+func writeProbeServer(t *testing.T, projectINI, userINI string) (*Server, registry.Repo, func() string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeRepoINI(t, home, userINI)
+
+	root := filepath.Join(t.TempDir(), "acme")
+	writeRepoINI(t, root, projectINI)
+
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
+	built := ""
+	s.newWriter = func(cfg config.Config) (tracker.Writer, error) {
+		built = cfg.TrackerProvider
+		return newFakeWriter(), nil
+	}
+	return s, registry.Repo{Name: "acme", Root: root}, func() string { return built }
+}
+
+// TestWritePathsResolveTrackerProvider pins every hub write path to the provider
+// the sync path reads from, so a repo whose Jira config only the project layer
+// carries never builds a Linear writer off a machine-wide LINEAR_API_KEY.
+func TestWritePathsResolveTrackerProvider(t *testing.T) {
+	const jiraCreds = "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\n"
+	tests := []struct {
+		name       string
+		projectINI string
+		userINI    string
+		want       string
+	}{
+		{
+			name:       "project jira creds outrank a user linear key",
+			projectINI: jiraCreds,
+			userINI:    "LINEAR_API_KEY=user-linear-key\n",
+			want:       "jira",
+		},
+		{
+			name:       "explicit provider wins over project jira creds",
+			projectINI: "TRACKER_PROVIDER=linear\nLINEAR_TEAM=COD\n" + jiraCreds,
+			userINI:    "LINEAR_API_KEY=user-linear-key\n",
+			want:       "linear",
+		},
+		{
+			name: "no credentials at all resolve to the internal provider",
+			want: "internal",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, repo, built := writeProbeServer(t, "QUEUED_LABEL=queued\n"+tc.projectINI, tc.userINI)
+
+			provider, _, err := s.writerFor(repo)
+			if err != nil {
+				t.Fatalf("writerFor: %v", err)
+			}
+			if provider != tc.want {
+				t.Errorf("writerFor provider = %q, want %q", provider, tc.want)
+			}
+			if got := built(); got != tc.want {
+				t.Errorf("writerFor built a %q writer, want %q", got, tc.want)
+			}
+
+			lb, ok := s.queuedLabeler(repo.Root)
+			if !ok {
+				t.Fatal("queuedLabeler did not resolve a labeler for a repo with a queued label")
+			}
+			if lb.writer == nil {
+				t.Error("queuedLabeler writer is nil, want the resolved provider's writer")
+			}
+			if got := built(); got != tc.want {
+				t.Errorf("queuedLabeler built a %q writer, want %q", got, tc.want)
+			}
+
+			cfg, _, err := s.grillWriterFor(repo, "")
+			if err != nil {
+				t.Fatalf("grillWriterFor: %v", err)
+			}
+			if cfg.TrackerProvider != tc.want {
+				t.Errorf("grill writer config provider = %q, want %q", cfg.TrackerProvider, tc.want)
+			}
+		})
 	}
 }

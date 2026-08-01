@@ -32,6 +32,10 @@ var (
 	ErrNotFound     = errors.New("azure: work item not found")
 	ErrUnauthorized = errors.New("azure: unauthorized")
 	ErrNotEnabled   = errors.New("azure: direct API not enabled")
+	// ErrRateLimited marks a 429 the retry ladder could not outlast: the
+	// organization's request budget refills on its own, so it is transient, not
+	// misconfiguration.
+	ErrRateLimited = errors.New("azure: rate limit exceeded")
 )
 
 // TokenHelpURL is where a user mints or regenerates a personal access token.
@@ -81,6 +85,12 @@ const (
 
 	// batchLimit is the work-item ceiling one ids= read accepts.
 	batchLimit = 200
+
+	// requestTimeout bounds one REST request. A board-wide WIQL pull is a single
+	// request the service spends real time planning before it answers a row, so the
+	// ceiling sits well above what an ordinary work-item read needs — a first full
+	// pull otherwise times out before the query ever returns.
+	requestTimeout = 60 * time.Second
 )
 
 // Client talks to a single Azure DevOps organization over the REST 7.1 API.
@@ -96,7 +106,7 @@ func New(orgURL, pat string) *Client {
 	orgURL = strings.TrimRight(strings.TrimSpace(orgURL), "/")
 	c := &Client{
 		baseURL: orgURL,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{Timeout: requestTimeout},
 	}
 	if orgURL != "" {
 		c.auth = basicAuth(pat)
@@ -242,6 +252,8 @@ func decode(res *http.Response, dst any) error {
 		return ErrUnauthorized
 	case http.StatusNotFound:
 		return ErrNotFound
+	case http.StatusTooManyRequests:
+		return &RateLimitError{ResetAt: retryAfterReset(res.Header.Get("Retry-After"), time.Now())}
 	}
 
 	resBody, err := io.ReadAll(res.Body)
@@ -291,7 +303,12 @@ func retryAfter(header string, attempt int, jitter float64) time.Duration {
 }
 
 // projectPath renders the "/{project}/_apis/wit/..." prefix every work-item
-// route hangs off, escaping a project name that may contain spaces.
+// route hangs off, escaping a project name that may contain spaces. An empty
+// project addresses the organization-scoped route, which reads a work item
+// whatever team project it belongs to.
 func projectPath(project, suffix string) string {
-	return "/" + url.PathEscape(strings.TrimSpace(project)) + "/_apis/wit" + suffix
+	if project = strings.TrimSpace(project); project == "" {
+		return "/_apis/wit" + suffix
+	}
+	return "/" + url.PathEscape(project) + "/_apis/wit" + suffix
 }

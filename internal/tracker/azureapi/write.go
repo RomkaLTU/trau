@@ -11,9 +11,10 @@ import (
 	"strings"
 )
 
-// ErrNoState is returned by SetState when the work-item type's workflow declares
-// no state matching the requested target. Like Jira's missing transition, it is a
-// real error rather than a fallback signal: the template simply has no such stage.
+// ErrNoState is returned when the work-item type's workflow declares no state
+// matching the lifecycle stage a caller asked for. Like Jira's missing
+// transition, it is a real error rather than a fallback signal: the template
+// simply has no such stage.
 var ErrNoState = errors.New("azure: no matching state")
 
 // fieldPath is the JSON-Patch path prefix every work-item field update writes to.
@@ -39,83 +40,22 @@ func historyOp(body string) patchOp {
 	return setField("System.History", textToHTML(body))
 }
 
-// SetState moves a work item to the state matching target, optionally appending a
-// comment in the same request. Azure DevOps has no transition graph to walk:
-// System.State is written directly, so the work is resolving the loop's target
-// name against whatever states the project's process template declares.
-func (c *Client) SetState(ctx context.Context, project string, id int, target, comment string) error {
+// SetState writes state onto a work item, optionally appending a comment in the
+// same request. Azure DevOps has no transition graph to walk — System.State is
+// written directly — so state must already be one the project's process template
+// declares (see States).
+func (c *Client) SetState(ctx context.Context, project string, id int, state, comment string) error {
 	if !c.enabled() {
 		return ErrNotEnabled
 	}
-	if strings.TrimSpace(target) == "" {
+	if strings.TrimSpace(state) == "" {
 		return fmt.Errorf("azure: empty target state for %d", id)
-	}
-	item, err := c.WorkItem(ctx, project, id)
-	if err != nil {
-		return err
-	}
-	states, err := c.States(ctx, project, item.Type)
-	if err != nil {
-		return err
-	}
-	state, err := resolveState(states, target)
-	if err != nil {
-		return fmt.Errorf("%w on %s #%d", err, item.Type, id)
 	}
 	ops := []patchOp{setField("System.State", state)}
 	if body := strings.TrimSpace(comment); body != "" {
 		ops = append(ops, historyOp(body))
 	}
 	return c.patch(ctx, workItemPath(project, id), ops, nil)
-}
-
-// resolveState picks the state name to write for target. An exact
-// (case-insensitive) name match wins; failing that the target's category selects
-// the first state the type declares in that category.
-func resolveState(states []State, target string) (string, error) {
-	for _, s := range states {
-		if strings.EqualFold(strings.TrimSpace(s.Name), target) {
-			return s.Name, nil
-		}
-	}
-	for _, want := range categoryFallbacks(TargetCategory(target)) {
-		for _, s := range states {
-			if strings.EqualFold(strings.TrimSpace(s.Category), string(want)) {
-				return s.Name, nil
-			}
-		}
-	}
-	return "", fmt.Errorf("%w %q (available: %s)", ErrNoState, target, stateNames(states))
-}
-
-// categoryFallbacks orders the categories a target may settle for when the
-// project's template declares no state in its first choice. Scrum has no Resolved
-// category, so an "In Review" target lands on the in-progress state instead of
-// failing — the work is still live either way.
-func categoryFallbacks(want StateCategory) []StateCategory {
-	switch want {
-	case CategoryResolved:
-		return []StateCategory{CategoryResolved, CategoryInProgress}
-	case CategoryInProgress:
-		return []StateCategory{CategoryInProgress, CategoryResolved}
-	case CategoryRemoved:
-		return []StateCategory{CategoryRemoved, CategoryCompleted}
-	case CategoryUnknown:
-		return nil
-	default:
-		return []StateCategory{want}
-	}
-}
-
-func stateNames(states []State) string {
-	if len(states) == 0 {
-		return "none"
-	}
-	names := make([]string, len(states))
-	for i, s := range states {
-		names[i] = s.Name
-	}
-	return strings.Join(names, ", ")
 }
 
 // UpdateTags adds and removes tags on a work item without disturbing the rest.
@@ -187,10 +127,13 @@ func (c *Client) Comments(ctx context.Context, project string, id int) ([]Commen
 	}
 	var dst struct {
 		Comments []struct {
+			ID        int    `json:"id"`
 			Text      string `json:"text"`
 			CreatedBy struct {
 				DisplayName string `json:"displayName"`
 			} `json:"createdBy"`
+			CreatedDate  string `json:"createdDate"`
+			ModifiedDate string `json:"modifiedDate"`
 		} `json:"comments"`
 	}
 	path := projectPath(project, "/workitems/"+strconv.Itoa(id)+"/comments") +
@@ -204,15 +147,26 @@ func (c *Client) Comments(ctx context.Context, project string, id int) ([]Commen
 		if body == "" {
 			continue
 		}
-		out = append(out, Comment{Author: raw.CreatedBy.DisplayName, Body: body})
+		out = append(out, Comment{
+			ID:        raw.ID,
+			Author:    raw.CreatedBy.DisplayName,
+			Body:      body,
+			CreatedAt: raw.CreatedDate,
+			UpdatedAt: raw.ModifiedDate,
+		})
 	}
 	return out, nil
 }
 
-// Comment is one entry in a work item's discussion.
+// Comment is one entry in a work item's discussion. ID is the comment's own
+// identifier, which a sync stores so a re-pull updates the entry rather than
+// filing it again.
 type Comment struct {
-	Author string
-	Body   string
+	ID        int
+	Author    string
+	Body      string
+	CreatedAt string
+	UpdatedAt string
 }
 
 // CreateWorkItem files a new work item of itemType and returns its id. The type

@@ -571,6 +571,41 @@ func TestGrillApplyCreateBuildsWriterFromRepoConfig(t *testing.T) {
 	}
 }
 
+func TestGrillApplyCreateStampsResolvedProvider(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "ACME-100"}}}
+	var got config.Config
+	ts, stores, root := grillApplyServerWriter(t, func(cfg config.Config) (tracker.Writer, error) {
+		got = cfg
+		return fake, nil
+	})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeRepoINI(t, home, "LINEAR_API_KEY=user-linear-key\n")
+	writeRepoINI(t, root, "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\nLINEAR_TEAM=ACME\n")
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Wire the preview drawer",
+		ProposedDescription: "Clicking a task id opens the preview.",
+		Summary:             "specced the drawer",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if got.TrackerProvider != "jira" {
+		t.Errorf("writer config provider = %q, want jira inferred from the project layer", got.TrackerProvider)
+	}
+	iss, found, err := stores.Issues().Get(root, "ACME-100")
+	if err != nil || !found {
+		t.Fatalf("get created issue: found=%v err=%v", found, err)
+	}
+	if iss.Source != "jira" {
+		t.Errorf("created issue source = %q, want jira", iss.Source)
+	}
+}
+
 func TestGrillApplyCreateEpic(t *testing.T) {
 	fake := newFakeWriter()
 	fake.createQueue = []fakeCreate{
@@ -846,54 +881,6 @@ func TestGrillApplyCreateInternalDestination(t *testing.T) {
 	}
 	if !hasLabel(iss.Labels, "ready-for-agent") {
 		t.Errorf("internal issue labels = %v, want the default ready label", iss.Labels)
-	}
-}
-
-func TestGrillApplyCreateDestinationSwitchReanchors(t *testing.T) {
-	fake := newFakeWriter()
-	// Pass 1 to the tracker: the epic parent lands, the child fails, and the
-	// session anchors to the tracker parent.
-	fake.createQueue = []fakeCreate{
-		{issue: tracker.NewIssue{Identifier: "COD-300"}},
-		{err: errString("linear: 502")},
-	}
-	ts, stores, root := grillApplyServer(t, fake)
-	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
-		Disposition:         grillDispCreate,
-		Title:               "New epic",
-		ProposedDescription: "Epic body.",
-		Summary:             "one slice",
-		SubIssues:           []grillSubIssue{{Title: "S1", Description: "d1"}},
-	})
-
-	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
-	if out.Applied || out.Session.IssueID != "COD-300" {
-		t.Fatalf("partial apply = %+v, want not applied and anchored to COD-300", out)
-	}
-
-	// Pass 2 files internally instead: the tracker anchor is foreign to the new
-	// destination, so a fresh internal parent takes the children — nothing grafts
-	// onto COD-300 and the tracker is not touched again.
-	fake.created = nil
-	fake.createIdx = 0
-	fake.createQueue = nil
-
-	_, out = applyGrill(t, ts, sid, GrillApplyRequest{Destination: "internal"})
-	if !out.Applied || out.Session.State != hubstore.GrillApplied {
-		t.Fatalf("internal re-apply = %+v, want applied", out)
-	}
-	if len(fake.created) != 0 {
-		t.Fatalf("re-apply wrote %d issues to the tracker, want 0", len(fake.created))
-	}
-	if out.Session.IssueID != "ACME-1" {
-		t.Errorf("re-anchor = %q, want the internal parent ACME-1", out.Session.IssueID)
-	}
-	kids, err := stores.Issues().Children(root, "ACME-1")
-	if err != nil || len(kids) != 1 || kids[0].Title != "S1" {
-		t.Fatalf("internal children = %+v (err=%v), want the one slice under ACME-1", kids, err)
-	}
-	if kids, err := stores.Issues().Children(root, "COD-300"); err != nil || len(kids) != 0 {
-		t.Fatalf("tracker parent children = %+v (err=%v), want none grafted", kids, err)
 	}
 }
 

@@ -26,6 +26,16 @@ var (
 	ErrNotEnabled   = errors.New("linear: direct API not enabled")
 )
 
+const (
+	// maxRetries bounds the in-request retry loop so a rate-limited key cannot
+	// stall a sync indefinitely.
+	maxRetries = 4
+
+	// maxBackoff caps a single in-request wait; a longer one is left to the
+	// caller's own backoff.
+	maxBackoff = 30 * time.Second
+)
+
 // Client talks to Linear's GraphQL API.
 type Client struct {
 	apiKey string
@@ -641,6 +651,19 @@ func (c *Client) ProjectByName(ctx context.Context, name string) (*Project, erro
 	return nil, ErrNotFound
 }
 
+// WorkflowStates returns the workflow states of the team owning identifier — the
+// names and types this team actually declares, rather than Linear's defaults.
+func (c *Client) WorkflowStates(ctx context.Context, identifier string) ([]State, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	issue, err := c.Issue(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	return c.workflowStates(ctx, issue.Team.ID)
+}
+
 // workflowStates returns the workflow states for a team.
 func (c *Client) workflowStates(ctx context.Context, teamID string) ([]State, error) {
 	var dst workflowStatesQueryResponse
@@ -689,6 +712,9 @@ query TeamLabels($teamId: ID!) {
 	return out, nil
 }
 
+// do performs a GraphQL request and decodes the response into dst, pacing it
+// against the API key's shared request budget. A rate-limit refusal is retried in
+// place while the wait stays short, and surfaced as *RateLimitError otherwise.
 func (c *Client) do(ctx context.Context, query string, vars map[string]any, dst any) error {
 	body, err := json.Marshal(map[string]any{
 		"query":     query,
@@ -701,59 +727,109 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, dst 
 	if c.Endpoint != "" {
 		target = c.Endpoint
 	}
+	lim := limiterFor(c.apiKey, target)
+	for attempt := 0; ; attempt++ {
+		if err := lim.wait(ctx); err != nil {
+			return err
+		}
+		res, resBody, err := c.post(ctx, target, body)
+		if err != nil {
+			return err
+		}
+		remaining, reset, metered := rateLimitHeaders(res.Header)
+		if metered {
+			lim.observe(remaining, reset)
+		}
+		if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+			return ErrUnauthorized
+		}
+
+		var gr graphResponse
+		decodeErr := json.Unmarshal(resBody, &gr)
+		if limit := rateLimitRefusal(res.StatusCode, gr, reset); limit != nil {
+			lim.block(limit.ResetAt)
+			wait, worth := retryWait(res.Header.Get("Retry-After"), limit.ResetAt, attempt)
+			if !worth || attempt >= maxRetries {
+				return limit
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
+		}
+		if decodeErr != nil {
+			return fmt.Errorf("linear: invalid response (%d): %w", res.StatusCode, decodeErr)
+		}
+		if len(gr.Errors) > 0 {
+			msgs := make([]string, 0, len(gr.Errors))
+			for _, e := range gr.Errors {
+				msgs = append(msgs, e.message())
+			}
+			return fmt.Errorf("linear: %s", strings.Join(msgs, "; "))
+		}
+		if res.StatusCode >= 400 {
+			return fmt.Errorf("linear: HTTP %d: %s", res.StatusCode, string(resBody))
+		}
+		return json.Unmarshal(resBody, dst)
+	}
+}
+
+// post sends one GraphQL request and returns the response with its body already
+// read, so the caller can inspect headers and status after the body is closed.
+func (c *Client) post(ctx context.Context, target string, body []byte) (*http.Response, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", c.apiKey)
 
 	res, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	defer func() { _ = res.Body.Close() }()
 
 	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-
-	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
-		return ErrUnauthorized
-	}
-
-	var gr graphResponse
-	if err := json.Unmarshal(resBody, &gr); err != nil {
-		return fmt.Errorf("linear: invalid response (%d): %w", res.StatusCode, err)
-	}
-	if len(gr.Errors) > 0 {
-		msgs := make([]string, 0, len(gr.Errors))
-		for _, e := range gr.Errors {
-			msg := e.Message
-			if p := e.Extensions.UserPresentableMessage; p != "" && p != msg {
-				msg += ": " + p
-			}
-			msgs = append(msgs, msg)
-		}
-		return fmt.Errorf("linear: %s", strings.Join(msgs, "; "))
-	}
-	if res.StatusCode >= 400 {
-		return fmt.Errorf("linear: HTTP %d: %s", res.StatusCode, string(resBody))
-	}
-	return json.Unmarshal(resBody, dst)
+	return res, resBody, nil
 }
 
-// graphResponse carries the errors half of a GraphQL response. Linear often puts
-// the actionable detail (e.g. which input field failed validation) in
-// extensions.userPresentableMessage rather than the generic top-level message.
+// graphResponse carries the errors half of a GraphQL response.
 type graphResponse struct {
-	Errors []struct {
-		Message    string `json:"message"`
-		Extensions struct {
-			UserPresentableMessage string `json:"userPresentableMessage"`
-		} `json:"extensions"`
-	} `json:"errors"`
+	Errors []graphError `json:"errors"`
+}
+
+// graphError is one GraphQL error. Linear often puts the actionable detail (e.g.
+// which input field failed validation) in extensions.userPresentableMessage rather
+// than the generic top-level message, and tags the kind of failure in
+// extensions.code / extensions.type.
+type graphError struct {
+	Message    string `json:"message"`
+	Extensions struct {
+		UserPresentableMessage string `json:"userPresentableMessage"`
+		Code                   string `json:"code"`
+		Type                   string `json:"type"`
+	} `json:"extensions"`
+}
+
+// message is the error's text with the user-presentable detail folded in, skipping
+// the fold when either string already contains the other — Linear repeats the
+// message there often enough that appending it blindly prints it twice.
+func (e graphError) message() string {
+	p := strings.TrimSpace(e.Extensions.UserPresentableMessage)
+	switch {
+	case p == "" || strings.Contains(e.Message, p):
+		return e.Message
+	case strings.Contains(p, e.Message):
+		return p
+	default:
+		return e.Message + ": " + p
+	}
 }
 
 // Response wrappers for unmarshalling.

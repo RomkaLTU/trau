@@ -26,6 +26,8 @@ func (s *Server) handleIssueAction(w http.ResponseWriter, r *http.Request) {
 		s.handleIssueAssignee(w, r)
 	case "provider":
 		s.handleIssueProviderPin(w, r)
+	case "relations":
+		s.handleIssueRelations(w, r)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("unknown issue action %q", action)})
 	}

@@ -1090,13 +1090,44 @@ func TestTrackerConfigKeysAreCatalogued(t *testing.T) {
 		known[m.Key] = true
 	}
 	keys := TrackerConfigKeys()
-	if !slices.Contains(keys, "TRACKER_PROVIDER") {
-		t.Fatalf("tracker keys = %v, want TRACKER_PROVIDER among them", keys)
+	for _, want := range []string{"TRACKER_PROVIDER", "AZURE_ORG_URL", "AZURE_PAT"} {
+		if !slices.Contains(keys, want) {
+			t.Fatalf("tracker keys = %v, want %s among them", keys, want)
+		}
 	}
 	for _, key := range keys {
 		if !known[key] {
 			t.Errorf("tracker key %s is not in the config catalog", key)
 		}
+	}
+}
+
+// DELIVERED_STATE carries a status name with spaces verbatim and defaults to
+// empty, so the loop keeps delivering to Done.
+func TestLoadDeliveredState(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	if err := os.WriteFile(local, []byte("DELIVERED_STATE=READY FOR QA\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DeliveredState != "READY FOR QA" {
+		t.Errorf("DeliveredState = %q, want %q", cfg.DeliveredState, "READY FOR QA")
+	}
+	if got := keyValue(cfg, "DELIVERED_STATE"); got != "READY FOR QA" {
+		t.Errorf("keyValue(DELIVERED_STATE) = %q, want %q", got, "READY FOR QA")
+	}
+
+	bare, err := LoadLayered("", "", filepath.Join(dir, "missing.ini"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bare.DeliveredState != "" {
+		t.Errorf("default DeliveredState = %q, want empty", bare.DeliveredState)
 	}
 }
 

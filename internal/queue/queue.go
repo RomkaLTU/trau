@@ -110,9 +110,9 @@ var (
 	// ErrRunning is returned when removing an item the hub is currently
 	// draining, so a running child is never orphaned by a dequeue.
 	ErrRunning = errors.New("cannot remove a running item")
-	// ErrNotPending is returned when promoting an item that has already started
-	// or settled, so only work the queue is still waiting to run can be moved.
-	ErrNotPending = errors.New("only a pending item can be promoted")
+	// ErrNotPending is returned when promoting an item that has already settled,
+	// so only work the queue would still launch can be moved.
+	ErrNotPending = errors.New("only a pending or paused item can be promoted")
 	// ErrNoRunnableItems is returned when a start is asked of a queue with
 	// nothing pending or paused, so an empty or fully settled queue stays idle
 	// instead of arming over work that does not exist.

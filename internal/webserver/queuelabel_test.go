@@ -241,25 +241,6 @@ func TestDrainPausedItemKeepsQueuedLabel(t *testing.T) {
 	}
 }
 
-func TestQueueShutdownStripsQueuedLabel(t *testing.T) {
-	s, writer, _, root, _ := queuedLabelServer(t, "QUEUED_LABEL=queued\n")
-	seedQueue(t, s, root, false, queue.Item{
-		Kind:      queue.KindEpic,
-		ID:        "COD-10",
-		SubIssues: []queue.SubIssue{{ID: "COD-12"}},
-	})
-
-	s.teardownQueue(root, queue.Item{}, false)
-
-	want := []labelCall{
-		{id: "COD-10", remove: []string{"queued"}},
-		{id: "COD-12", remove: []string{"queued"}},
-	}
-	if !reflect.DeepEqual(writer.labels, want) {
-		t.Errorf("label writes = %+v, want the torn-down epic and its sub-issue stripped", writer.labels)
-	}
-}
-
 // Archiving prunes an issue's pending queue entry, so the label has to come off
 // with it; the running entry an archive leaves in place keeps its own.
 func TestArchiveStripsQueuedLabelFromPrunedEntriesOnly(t *testing.T) {

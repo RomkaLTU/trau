@@ -35,11 +35,12 @@ const eligibleTimeout = 2 * time.Minute
 // but never hang the request.
 const epicPreviewTimeout = 2 * time.Minute
 
-// reTicketID matches a bare tracker identifier of any prefix (ACME-42, TMS-456).
-// The exact prefix is validated against the target repo's config by the spawned
-// loop; the hub only rejects shapes that are clearly not a ticket before it
-// bothers launching a run for them.
-var reTicketID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
+// reTicketID matches a bare tracker identifier of any prefix (ACME-42, TMS-456), or
+// the bare work-item number an Azure DevOps board addresses tickets by (6694). The
+// exact prefix is validated against the target repo's config by the spawned loop; the
+// hub only rejects shapes that are clearly not a ticket before it bothers launching a
+// run for them.
+var reTicketID = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*-)?[0-9]+$`)
 
 // handleStopInstance asks a registered loop to stop, hub-started or not, so a
 // web stop flows through the same graceful shutdown as Ctrl-C and in-flight work
@@ -212,6 +213,50 @@ func (s *Server) handleHubRestart(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	s.triggerRestart()
+}
+
+// StopAck is the answer to an accepted stop: the version that is on its way out,
+// which the caller can only learn over the connection the shutdown closes.
+type StopAck struct {
+	Stopping bool   `json:"stopping"`
+	Version  string `json:"version"`
+}
+
+// EnableStop wires the stop endpoint to fn, which the serve command implements
+// as a drain with no successor. Like the restart hook it must return promptly —
+// it is called from the request goroutine, and the drain waits on that request —
+// so it signals the shutdown rather than performing it. Without a hook the
+// endpoint answers 503, the way an unrestartable hub refuses a restart.
+func (s *Server) EnableStop(fn func()) {
+	s.stop = fn
+}
+
+// handleHubStop acknowledges before shutting down, so the caller learns the
+// outgoing version over a connection that is about to close. A supervised hub
+// refuses: KeepAlive respawns the process the moment it exits, so exiting is not
+// stopping. Like a restart it fires once — a second POST arriving during the
+// drain is acknowledged without doing anything twice.
+func (s *Server) handleHubStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.supervised() {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "launchd supervises this hub and would restart it; `trau hub unsupervise` stops it as it releases the agent",
+		})
+		return
+	}
+	if s.stop == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "this hub cannot stop itself"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, StopAck{Stopping: true, Version: s.version})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	s.stopOnce.Do(s.stop)
 }
 
 // triggerRestart restarts onto whatever binary the successor resolves for

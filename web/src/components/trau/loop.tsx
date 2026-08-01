@@ -14,7 +14,6 @@ import {
   ListPlus,
   Play,
   Plus,
-  Power,
   RefreshCw,
   Search,
   Square,
@@ -83,7 +82,6 @@ import {
   QUEUE_NOT_RUNNABLE,
   runNext as runNextRequest,
   runQueueItem,
-  shutdownQueue,
   skipResumeApplies,
   stopQueue,
   type OnFault,
@@ -122,68 +120,11 @@ function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function shutdownDescription(queuedCount: number): string {
-  const noun = queuedCount === 1 ? "item" : "items";
-  return `Stops the running task if any (force-killed if it hasn't exited after ~30s), removes all ${queuedCount} queued ${noun}, and clears paused run leftovers. Work in progress on feature branches is kept; tracker tickets are not changed.`;
-}
-
 function ActionCaption({ children }: { children: string }) {
   return (
     <p className="text-pretty text-right font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
       {children}
     </p>
-  );
-}
-
-// ShutdownAction is the destructive teardown gesture shared by both Loop card
-// shapes: it stays hidden until there is something to tear down (a queued
-// item or a live child), then disables itself and reads "Shutting down…"
-// until the hub confirms the teardown and the queue query clears.
-function ShutdownAction({
-  repo,
-  queuedCount,
-  hasRunningChild,
-  shuttingDown,
-  onConfirm,
-  error,
-}: {
-  repo: string;
-  queuedCount: number;
-  hasRunningChild: boolean;
-  shuttingDown: boolean;
-  onConfirm: () => void;
-  error: unknown;
-}) {
-  if (!shuttingDown && queuedCount === 0 && !hasRunningChild) return null;
-
-  return (
-    <div className="flex flex-col items-end gap-2">
-      {error ? (
-        <p className="font-mono text-xs text-destructive">
-          {actionError(error)}
-        </p>
-      ) : null}
-      <ConfirmDialog
-        windowTitle="confirm"
-        trigger={
-          <Button
-            variant="destructive"
-            size="sm"
-            className="font-mono"
-            disabled={shuttingDown}
-          >
-            <Power className="size-4" aria-hidden="true" />
-            {shuttingDown ? "Shutting down…" : "Shut down"}
-          </Button>
-        }
-        title={`Shut down the loop on ${repo}?`}
-        description={shutdownDescription(queuedCount)}
-        confirmLabel="Shut down"
-        destructive
-        onConfirm={onConfirm}
-      />
-      <ActionCaption>Kills the run and clears the entire queue.</ActionCaption>
-    </div>
   );
 }
 
@@ -215,9 +156,10 @@ function RemoveFromQueueDialog({
   );
 }
 
-// RemoveFromQueueButton is the queue's own X: it drops the row and keeps the
-// ticket. It stays enabled on a running item — the confirm behind it stops the
-// run first — and reads as waiting while that stop is in flight.
+// RemoveFromQueueButton is the queue's own X: it ejects the row's work
+// altogether — the saved progress goes and the ticket returns to Ready. It stays
+// enabled on a running item — the confirm behind it stops the run first — and
+// reads as waiting while that stop is in flight.
 function RemoveFromQueueButton({
   item,
   disabled,
@@ -234,7 +176,9 @@ function RemoveFromQueueButton({
       type="button"
       onClick={() => onRemove(item.id)}
       disabled={disabled || removing}
-      title={removing ? "Removing…" : "Remove from queue (the ticket is kept)"}
+      title={
+        removing ? "Removing…" : "Remove from queue (the ticket goes back to Ready)"
+      }
       aria-label={`Remove ${item.id} from queue`}
       className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-fail disabled:pointer-events-none disabled:opacity-30"
     >
@@ -616,18 +560,10 @@ function QueueBuilderRow({
 function LaunchQueueCard({
   repo,
   freshness,
-  hasRunningChild,
-  shuttingDown,
-  onShutdown,
-  shutdownError,
   onPeek,
 }: {
   repo: string;
   freshness?: RepoFreshness;
-  hasRunningChild: boolean;
-  shuttingDown: boolean;
-  onShutdown: () => void;
-  shutdownError: unknown;
   onPeek: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -731,7 +667,8 @@ function LaunchQueueCard({
     remove.reset();
     setRemoveId(id);
   };
-  const removeTarget = builder.queue.find((it) => it.id === removeId);
+  const itemsById = new Map(items.map((it) => [it.id, it]));
+  const removeTarget = removeId ? itemsById.get(removeId) : undefined;
 
   const runOne = useMutation({
     mutationFn: (id: string) => runQueueItem(repo, id),
@@ -756,8 +693,7 @@ function LaunchQueueCard({
     runOne.isPending ||
     add.isPending ||
     addAll.isPending ||
-    runNext.isPending ||
-    shuttingDown;
+    runNext.isPending;
 
   // The ticket is fetched for confirmation the moment the user commits an id —
   // on Enter or on blur — so there's no extra "fetch" click to reach the confirm.
@@ -821,7 +757,6 @@ function LaunchQueueCard({
                   placeholder="COD-### (ticket or epic)"
                   autoComplete="off"
                   spellCheck={false}
-                  disabled={shuttingDown}
                   className="h-auto w-56 px-2.5 py-1.5 font-mono text-sm placeholder:text-muted-foreground/60"
                 />
                 <Button
@@ -830,7 +765,7 @@ function LaunchQueueCard({
                   size="sm"
                   className="font-mono"
                   onClick={fetchTicket}
-                  disabled={issue.isFetching || draft.trim() === "" || shuttingDown}
+                  disabled={issue.isFetching || draft.trim() === ""}
                 >
                   {issue.isFetching ? "Fetching…" : "Fetch ticket"}
                 </Button>
@@ -840,7 +775,6 @@ function LaunchQueueCard({
                   size="sm"
                   className="font-mono"
                   onClick={() => setBrowseOpen(true)}
-                  disabled={shuttingDown}
                 >
                   <Search className="size-4" aria-hidden="true" />
                   Browse…
@@ -852,7 +786,7 @@ function LaunchQueueCard({
                     size="sm"
                     className="font-mono"
                     onClick={() => addAll.mutate()}
-                    disabled={addAll.isPending || shuttingDown}
+                    disabled={addAll.isPending}
                   >
                     <ListPlus className="size-4" aria-hidden="true" />
                     {addAll.isPending ? "Adding…" : addAllLabel(addAllPlan)}
@@ -975,9 +909,10 @@ function LaunchQueueCard({
                       aria-hidden="true"
                     />
                     <span>
-                      {ticket.id} belongs to another project
-                      {ticket.project ? ` (${ticket.project})` : ""}, not {repo}
-                      . Switch to that project's repo to run it.
+                      {ticket.id}
+                      {ticket.project ? ` (project ${ticket.project})` : ""} is
+                      not on {repo}'s board. Switch to the repo that owns it to
+                      run it.
                     </span>
                   </p>
                 ) : (
@@ -1055,7 +990,7 @@ function LaunchQueueCard({
                           pendingHandback(runs.data?.runs, submittedId),
                         )
                       }
-                      disabled={runNext.isPending || add.isPending || shuttingDown}
+                      disabled={runNext.isPending || add.isPending}
                     >
                       {runNext.isPending ? "Starting…" : "Run next"}
                     </Button>
@@ -1065,7 +1000,7 @@ function LaunchQueueCard({
                       size="sm"
                       className="font-mono"
                       onClick={() => add.mutate()}
-                      disabled={add.isPending || runNext.isPending || shuttingDown}
+                      disabled={add.isPending || runNext.isPending}
                     >
                       <Plus className="size-4" aria-hidden="true" />
                       {add.isPending ? "Adding…" : "Add to queue"}
@@ -1141,7 +1076,7 @@ function LaunchQueueCard({
               size="sm"
               className="w-fit font-mono"
               onClick={() => start.mutate()}
-              disabled={!runnable || start.isPending || shuttingDown}
+              disabled={!runnable || start.isPending}
               title={runnable ? undefined : QUEUE_NOT_RUNNABLE}
             >
               {start.isPending ? "Starting…" : "Start queue"}
@@ -1178,19 +1113,13 @@ function LaunchQueueCard({
         />
       </TerminalCard>
 
-      <ShutdownAction
-        repo={repo}
-        queuedCount={builder.queue.length}
-        hasRunningChild={hasRunningChild}
-        shuttingDown={shuttingDown}
-        onConfirm={onShutdown}
-        error={shutdownError}
-      />
-
       {builder.settled.length > 0 ? (
         <FinishedSection
           repo={repo}
           settled={builder.settled}
+          itemsById={itemsById}
+          busy={busy}
+          onRemove={askRemove}
           onPeek={onPeek}
         />
       ) : null}
@@ -1275,10 +1204,16 @@ function TicketReason({ children }: { children: string }) {
 function SettledRow({
   repo,
   ticket,
+  item,
+  busy,
+  onRemove,
   onPeek,
 }: {
   repo: string;
   ticket: TimelineTicket;
+  item?: QueueItem;
+  busy: boolean;
+  onRemove: (id: string) => void;
   onPeek: (id: string) => void;
 }) {
   const pill = ticketPill(ticket);
@@ -1304,25 +1239,34 @@ function SettledRow({
   const reason = ticket.reason ? (
     <TicketReason>{ticket.reason}</TicketReason>
   ) : null;
-
-  if (ticket.hasRun) {
-    return (
-      <li className="border-b border-border/60 last:border-0">
-        <Link
-          to="/runs/$repo/$ticket"
-          params={{ repo, ticket: ticket.id }}
-          className="flex flex-col gap-1.5 px-4 py-2.5 transition-colors hover:bg-secondary/40"
-        >
-          {head}
-          {reason}
-        </Link>
-      </li>
-    );
-  }
-  return (
-    <li className="flex flex-col gap-1.5 border-b border-border/60 px-4 py-2.5 last:border-0">
+  const body = ticket.hasRun ? (
+    <Link
+      to="/runs/$repo/$ticket"
+      params={{ repo, ticket: ticket.id }}
+      className="flex min-w-0 flex-1 flex-col gap-1.5 px-4 py-2.5 transition-colors hover:bg-secondary/40"
+    >
       {head}
       {reason}
+    </Link>
+  ) : (
+    <div className="flex min-w-0 flex-1 flex-col gap-1.5 px-4 py-2.5">
+      {head}
+      {reason}
+    </div>
+  );
+
+  return (
+    <li className="flex items-center border-b border-border/60 last:border-0">
+      {body}
+      {item ? (
+        <span className="flex pr-3">
+          <RemoveFromQueueButton
+            item={item}
+            disabled={busy}
+            onRemove={onRemove}
+          />
+        </span>
+      ) : null}
     </li>
   );
 }
@@ -1330,10 +1274,16 @@ function SettledRow({
 function FinishedSection({
   repo,
   settled,
+  itemsById,
+  busy,
+  onRemove,
   onPeek,
 }: {
   repo: string;
   settled: TimelineTicket[];
+  itemsById: Map<string, QueueItem>;
+  busy: boolean;
+  onRemove: (id: string) => void;
   onPeek: (id: string) => void;
 }) {
   const [state, dispatch] = useReducer(finishedReducer, FINISHED_INITIAL);
@@ -1389,6 +1339,9 @@ function FinishedSection({
                   key={ticket.id}
                   repo={repo}
                   ticket={ticket}
+                  item={itemsById.get(ticket.id)}
+                  busy={busy}
+                  onRemove={onRemove}
                   onPeek={onPeek}
                 />
               ))}
@@ -1577,24 +1530,27 @@ function FinalizeRow({
   );
 }
 
-// RunNextButton promotes a remaining item to the front of the queue, so the
-// drain picks it when the run in flight settles.
-function RunNextButton({
+// RemainingAction is the gesture a remaining row offers: move it to the front of
+// the queue so the drain picks it when the run in flight settles. A paused row
+// promotes the same way — Start re-attempts it from there.
+function RemainingAction({
   id,
-  disabled,
+  first,
+  busy,
   onRunNext,
 }: {
   id: string;
-  disabled: boolean;
+  first: boolean;
+  busy: boolean;
   onRunNext: (id: string) => void;
 }) {
   return (
     <button
       type="button"
       onClick={() => onRunNext(id)}
-      disabled={disabled}
+      disabled={busy || first}
       title="Run next"
-      aria-label={`Run ${id} next`}
+      aria-label={`Run next ${id}`}
       className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-primary disabled:pointer-events-none disabled:opacity-30"
     >
       <ChevronsUp className="size-3.5" aria-hidden="true" />
@@ -1604,15 +1560,22 @@ function RunNextButton({
 
 function PendingTicketRow({
   ticket,
+  item,
+  first,
+  busy,
   onPeek,
   onRunNext,
-  runNextDisabled,
+  onRemove,
 }: {
   ticket: TimelineTicket;
+  item?: QueueItem;
+  first: boolean;
+  busy: boolean;
   onPeek: (id: string) => void;
   onRunNext: (id: string) => void;
-  runNextDisabled: boolean;
+  onRemove: (id: string) => void;
 }) {
+  const pill = ticketPill(ticket);
   return (
     <li className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0">
       {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
@@ -1627,30 +1590,46 @@ function PendingTicketRow({
       <InternalTag source={ticket.source} />
       <ProviderTag provider={ticket.provider} pin={ticket.providerPin} />
       <BacklogPRBadge status={ticket.prStatus} />
-      <StatusPill state="todo" label="pending" className="shrink-0" />
-      <RunNextButton
+      <StatusPill state={pill.state} label={pill.label} className="shrink-0" />
+      <RemainingAction
         id={ticket.id}
-        disabled={runNextDisabled}
+        first={first}
+        busy={busy}
         onRunNext={onRunNext}
       />
+      {item ? (
+        <RemoveFromQueueButton item={item} disabled={busy} onRemove={onRemove} />
+      ) : null}
     </li>
   );
 }
 
 function PendingEpicGroup({
   entry,
+  item,
+  first,
+  busy,
   onPeek,
   onRunNext,
-  runNextDisabled,
+  onRemove,
 }: {
   entry: Extract<PendingEntry, { kind: "epic" }>;
+  item?: QueueItem;
+  first: boolean;
+  busy: boolean;
   onPeek: (id: string) => void;
   onRunNext: (id: string) => void;
-  runNextDisabled: boolean;
+  onRemove: (id: string) => void;
 }) {
+  const paused = item?.status === "paused";
   return (
     <li className="border-b border-border/60 last:border-0">
-      <div className="flex items-center gap-3 px-4 py-2.5">
+      <div
+        className={cn(
+          "flex items-center gap-3 px-4 py-2.5",
+          entry.active && "bg-teal/5",
+        )}
+      >
         <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm text-info">
           <span aria-hidden="true">◆</span>
           <TicketIdButton id={entry.id} onPeek={onPeek} className="text-info" />
@@ -1660,34 +1639,55 @@ function PendingEpicGroup({
         </span>
         <InternalTag source={entry.source} />
         <StatusPill
-          state="info"
-          label={`epic · ${entry.done}/${entry.total}`}
+          state={paused ? "warn" : "info"}
+          label={
+            paused
+              ? `epic · paused · ${entry.done}/${entry.total}`
+              : `epic · ${entry.done}/${entry.total}`
+          }
           className="shrink-0"
         />
-        <RunNextButton
+        <RemainingAction
           id={entry.id}
-          disabled={runNextDisabled}
+          first={first}
+          busy={busy}
           onRunNext={onRunNext}
         />
+        {item ? (
+          <RemoveFromQueueButton
+            item={item}
+            disabled={busy}
+            onRemove={onRemove}
+          />
+        ) : null}
       </div>
-      <ul className="border-t border-border/60 bg-secondary/20">
-        {entry.children.map((child) => (
-          <li
-            key={child.id}
-            className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-12 pr-4 last:border-0"
-          >
-            <TicketIdButton
-              id={child.id}
-              onPeek={onPeek}
-              className="text-xs text-primary/80"
-            />
-            <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
-              {child.title || "—"}
-            </span>
-            <StatusPill state="todo" label="pending" className="shrink-0" />
-          </li>
-        ))}
-      </ul>
+      {entry.children.length > 0 ? (
+        <ul className="border-t border-border/60 bg-secondary/20">
+          {entry.children.map((child) => {
+            const pill = ticketPill(child);
+            return (
+              <li
+                key={child.id}
+                className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-12 pr-4 last:border-0"
+              >
+                <TicketIdButton
+                  id={child.id}
+                  onPeek={onPeek}
+                  className="text-xs text-primary/80"
+                />
+                <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
+                  {child.title || "—"}
+                </span>
+                <StatusPill
+                  state={pill.state}
+                  label={pill.label}
+                  className="shrink-0"
+                />
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
     </li>
   );
 }
@@ -1714,10 +1714,6 @@ function RunningQueueView({
   onStop,
   stopping,
   stopError,
-  hasRunningChild,
-  shuttingDown,
-  onShutdown,
-  shutdownError,
   onPeek,
 }: {
   repo: string;
@@ -1729,10 +1725,6 @@ function RunningQueueView({
   onStop: () => void;
   stopping: boolean;
   stopError: unknown;
-  hasRunningChild: boolean;
-  shuttingDown: boolean;
-  onShutdown: () => void;
-  shutdownError: unknown;
   onPeek: (id: string) => void;
 }) {
   const now = useNow(1000);
@@ -1749,8 +1741,8 @@ function RunningQueueView({
     promote.reset();
     setRunNextId(id);
   };
-  const runNextTarget = queue.items.find((it) => it.id === runNextId);
-  const runNextBusy = promote.isPending || shuttingDown;
+  const itemsById = new Map(queue.items.map((it) => [it.id, it]));
+  const runNextTarget = runNextId ? itemsById.get(runNextId) : undefined;
 
   const remove = useMutation({
     mutationFn: (item: QueueItem) =>
@@ -1761,13 +1753,14 @@ function RunningQueueView({
     remove.reset();
     setRemoveId(id);
   };
-  const removeTarget = queue.items.find((it) => it.id === removeId);
+  const removeTarget = removeId ? itemsById.get(removeId) : undefined;
+  const rowBusy = promote.isPending || remove.isPending;
 
   // The running row's queue entry is the epic when the drain is working one of
   // its sub-issues, since that is the row a removal drops.
   const running = timeline.running;
   const runningItem = running
-    ? queue.items.find((it) => it.id === (running.epicId ?? running.id))
+    ? itemsById.get(running.epicId ?? running.id)
     : undefined;
 
   return (
@@ -1805,7 +1798,7 @@ function RunningQueueView({
                 item={runningItem}
                 instance={instance}
                 now={now}
-                busy={remove.isPending || shuttingDown}
+                busy={remove.isPending}
                 onRemove={askRemove}
                 onPeek={onPeek}
               />
@@ -1834,7 +1827,6 @@ function RunningQueueView({
               <button
                 type="button"
                 onClick={() => setAddOpen(true)}
-                disabled={shuttingDown}
                 className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline disabled:pointer-events-none disabled:opacity-30"
               >
                 <Plus className="size-3.5" aria-hidden="true" />
@@ -1850,17 +1842,23 @@ function RunningQueueView({
                         <PendingEpicGroup
                           key={entry.id}
                           entry={entry}
+                          item={itemsById.get(entry.id)}
+                          first={index === 0}
+                          busy={rowBusy}
                           onPeek={onPeek}
                           onRunNext={askRunNext}
-                          runNextDisabled={index === 0 || runNextBusy}
+                          onRemove={askRemove}
                         />
                       ) : (
                         <PendingTicketRow
                           key={entry.ticket.id}
                           ticket={entry.ticket}
+                          item={itemsById.get(entry.ticket.id)}
+                          first={index === 0}
+                          busy={rowBusy}
                           onPeek={onPeek}
                           onRunNext={askRunNext}
-                          runNextDisabled={index === 0 || runNextBusy}
+                          onRemove={askRemove}
                         />
                       ),
                     )}
@@ -1873,7 +1871,8 @@ function RunningQueueView({
                 ) : null}
                 <p className="font-sans text-xs leading-relaxed text-muted-foreground">
                   Remaining tickets run top to bottom — Run next moves one to the
-                  front for when the current run finishes.
+                  front for when the current run finishes, and Remove takes one
+                  out of the loop for good.
                 </p>
               </>
             ) : (
@@ -1886,7 +1885,6 @@ function RunningQueueView({
                     size="sm"
                     className="font-mono"
                     onClick={() => setAddOpen(true)}
-                    disabled={shuttingDown}
                   >
                     <Plus className="size-4" aria-hidden="true" />
                     Add ticket
@@ -1896,10 +1894,13 @@ function RunningQueueView({
             )}
           </section>
 
-          {timeline.settled.length > 0 ? (
+          {timeline.finished.length > 0 ? (
             <FinishedSection
               repo={repo}
-              settled={timeline.settled}
+              settled={timeline.finished}
+              itemsById={itemsById}
+              busy={rowBusy}
+              onRemove={askRemove}
               onPeek={onPeek}
             />
           ) : null}
@@ -1920,15 +1921,15 @@ function RunningQueueView({
                 variant="outline"
                 size="sm"
                 className="font-mono"
-                disabled={stopping || shuttingDown}
+                disabled={stopping}
               >
                 <Square className="size-4" aria-hidden="true" />
-                {stopping ? "Stopping…" : "Stop queue"}
+                {stopping ? "Stopping…" : "Stop"}
               </Button>
             }
-            title={`Stop the queue on ${repo}?`}
-            description="The run stops now. Work in progress is saved at the last checkpoint and the ticket stays resumable — Start again to pick it up from there."
-            confirmLabel="Stop queue"
+            title={`Stop the loop on ${repo}?`}
+            description="The run stops now. Work in progress is saved at the last checkpoint and the item stays resumable — Start picks it up from there. Every other row stays queued."
+            confirmLabel="Stop"
             destructive
             onConfirm={onStop}
           />
@@ -1937,14 +1938,6 @@ function RunningQueueView({
             Start.
           </ActionCaption>
         </div>
-        <ShutdownAction
-          repo={repo}
-          queuedCount={timeline.pending.length}
-          hasRunningChild={hasRunningChild}
-          shuttingDown={shuttingDown}
-          onConfirm={onShutdown}
-          error={shutdownError}
-        />
       </div>
 
       {runNextTarget ? (
@@ -2233,16 +2226,9 @@ export function Loop() {
   const startable = repos.filter((r) => r.allowed).map((r) => r.name);
   const canRun = repo !== "" && startable.includes(repo);
 
-  // shutdownArmed bridges the gap between confirming Shut down and the queue
-  // query catching up: it forces polling on immediately instead of waiting for
-  // a fetch that happens to land after the click to prove shutting_down is
-  // true, and it keeps polling alive until one lands showing teardown is done.
-  const [shutdownArmed, setShutdownArmed] = useState(false);
-
   const queue = useQuery({
     ...queueQueryOptions(repo),
-    refetchInterval: (q) =>
-      queueLive(q.state.data) || shutdownArmed ? 3000 : false,
+    refetchInterval: (q) => (queueLive(q.state.data) ? 3000 : false),
   });
   const { data: instData } = useQuery(instancesQueryOptions);
   const liveInstance = repoInstance(instData?.instances ?? [], repo);
@@ -2269,26 +2255,8 @@ export function Loop() {
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
 
-  const shutdown = useMutation({
-    mutationFn: () => shutdownQueue(repo),
-    onMutate: () => setShutdownArmed(true),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: queueQueryOptions(repo).queryKey }),
-  });
-
-  const shuttingDown =
-    shutdownArmed || (queue.data?.shutting_down ?? false) || shutdown.isPending;
-
-  useEffect(() => {
-    if (shutdownArmed && queue.data && !queue.data.shutting_down && !queue.data.draining) {
-      setShutdownArmed(false);
-    }
-  }, [shutdownArmed, queue.data]);
-
   useEffect(() => {
     stop.reset();
-    shutdown.reset();
-    setShutdownArmed(false);
   }, [repo]);
 
   if (!canRun) {
@@ -2324,10 +2292,6 @@ export function Loop() {
           onStop={() => stop.mutate()}
           stopping={stop.isPending || queue.data.stopping}
           stopError={stop.error}
-          hasRunningChild={Boolean(liveInstance)}
-          shuttingDown={shuttingDown}
-          onShutdown={() => shutdown.mutate()}
-          shutdownError={shutdown.error}
           onPeek={onPeek}
         />
         {drawer}
@@ -2341,10 +2305,6 @@ export function Loop() {
       <LaunchQueueCard
         repo={repo}
         freshness={repos.find((r) => r.name === repo)?.freshness}
-        hasRunningChild={Boolean(liveInstance)}
-        shuttingDown={shuttingDown}
-        onShutdown={() => shutdown.mutate()}
-        shutdownError={shutdown.error}
         onPeek={onPeek}
       />
       {drawer}

@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
-	if p.epicBranch != "" {
-		return p.epicBranch, nil
+	if p.exit.epicBranch != "" {
+		return p.exit.epicBranch, nil
 	}
 
 	// Resolve deterministically by epic ID, never by the drift-prone title slug. Any
@@ -22,7 +23,7 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 	// instead would let a renamed Linear epic spawn a SECOND branch that orphans the
 	// children's integration work.
 	if branch, _ := p.Git.FindEpicBranch(ctx, p.EpicID); branch != "" {
-		p.epicBranch = branch
+		p.exit.epicBranch = branch
 		return branch, nil
 	}
 
@@ -37,7 +38,7 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 				return "", fmt.Errorf("resolve epic branch %s: adopt from %s: %w", remote, p.Remote, err)
 			}
 			p.logf("  epic branch %s adopted from %s", remote, p.Remote)
-			p.epicBranch = remote
+			p.exit.epicBranch = remote
 			return remote, nil
 		}
 	}
@@ -47,17 +48,19 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 		p.logf("  epic title lookup error (using id-only branch): %v", err)
 	}
 	branch := epicBranch(p.EpicID, title)
-	base := p.baseRef()
+	base := p.epicBaseRef(ctx)
 	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
 		return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
 	}
 	p.logf("  epic branch %s ← %s", branch, base)
 	if !p.localDelivery(ctx) {
-		if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+		err := p.Git.Push(ctx, p.Remote, branch, false)
+		if err != nil {
 			p.logf("  push epic branch error (continuing): %v", err)
 		}
+		p.exit.epicPushed = err == nil
 	}
-	p.epicBranch = branch
+	p.exit.epicBranch = branch
 	return branch, nil
 }
 
@@ -68,7 +71,60 @@ func epicBranch(id, title string) string {
 	return "epic/" + id
 }
 
-func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) (string, error) {
+// epicBaseRef names the ref a brand-new epic branch is cut from: the base branch as
+// the remote has it, fetched first. An epic is a long-lived integration branch every
+// child stacks on, so cutting it from a local base that drifted behind the remote
+// starts it behind those commits — each child PR then diffs against them as if they
+// were the child's own work. Only a remote tip that cannot be resolved at all falls
+// back to the local ref.
+func (p *Pipeline) epicBaseRef(ctx context.Context) string {
+	if p.localDelivery(ctx) {
+		return p.baseRef()
+	}
+	// A fetch exits 0 without creating the tracking ref when the clone's refspec
+	// does not cover the base, so the tip is proven resolvable on both paths.
+	fetched := p.fetchBaseTip(ctx)
+	tip := p.remoteBaseTip(ctx)
+	if tip == "" {
+		p.logf("  ⚠ %s/%s could not be resolved — cutting the epic from the local %s", p.Remote, p.Base, p.Base)
+		return p.baseRef()
+	}
+	if !fetched {
+		p.logf("  fetch %s failed — cutting the epic from the last known remote tip", tip)
+	}
+	return tip
+}
+
+// epicWorkBase names the ref the epic branch's own commits are counted against: the
+// remote tip epicBaseRef cuts a new epic branch from, so the commits the branch was
+// merely cut on top of never read as work the epic carries. It reads the tracking ref
+// the cut already used rather than fetching again, and falls back to the local base
+// when that ref resolves to nothing.
+func (p *Pipeline) epicWorkBase(ctx context.Context) string {
+	if tip := p.remoteBaseTip(ctx); tip != "" {
+		return tip
+	}
+	return p.baseRef()
+}
+
+// remoteBaseTip names the base branch as the remote-tracking ref has it, or "" when
+// there is no such ref to read: local delivery, or a clone whose refspec never covered
+// the base.
+func (p *Pipeline) remoteBaseTip(ctx context.Context) string {
+	if p.localDelivery(ctx) {
+		return ""
+	}
+	tip := p.Remote + "/" + p.Base
+	if known, _ := p.Git.ResolvesToCommit(ctx, tip); !known {
+		return ""
+	}
+	return tip
+}
+
+// ensureEpicPR returns the epic branch's open PR, opening one when it has none.
+// draft opens it as a draft: exit hygiene tracks an unfinished epic that way, and
+// the finalize that later ships the epic adopts that same PR and marks it ready.
+func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bool) (string, error) {
 	prURL, _ := p.GitHub.PRURL(ctx, epicBranch)
 	if prURL != "" {
 		return prURL, nil
@@ -78,7 +134,7 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) (string,
 	if err != nil {
 		title = p.EpicID
 	}
-	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID))
+	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID), draft)
 	if err != nil {
 		if strings.Contains(err.Error(), "No commits between") {
 			if merged, _ := p.GitHub.MergedPRURL(ctx, epicBranch); merged != "" {
@@ -164,7 +220,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: sync with %s: %w", p.EpicID, p.Base, err)
 	}
-	prURL, err := p.ensureEpicPR(ctx, epic)
+	prURL, err := p.ensureEpicPR(ctx, epic, false)
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: create PR: %w", p.EpicID, err)
 	}
@@ -178,19 +234,23 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		return fmt.Errorf("finalize epic %s: ship: %w", p.EpicID, err)
 	}
 
-	extra := "All direct sub-issues are delivered."
-	if merged {
-		extra += " Epic merged to " + p.Base + " via " + prURL + "."
-	} else {
-		extra += " Epic PR ready for review: " + prURL + "."
+	// An epic PR nobody merged has shipped nothing, so the epic ticket goes to
+	// review beside it rather than closing on work still sitting in a branch.
+	if !merged {
+		extra := "All direct sub-issues are delivered. Epic PR ready for review: " + prURL + "."
+		if err := p.Tracker.SetStatus(ctx, p.EpicID, tracker.StageInReview, extra); err != nil {
+			return fmt.Errorf("finalize epic %s: mark epic in review: %w", p.EpicID, err)
+		}
+		p.logf("  ⏳ epic %s left open — PR awaiting review: %s", p.EpicID, prURL)
+		return nil
 	}
-	if err := p.Tracker.SetStatus(ctx, p.EpicID, "Done", extra); err != nil {
+
+	extra := "All direct sub-issues are delivered. Epic merged to " + p.Base + " via " + prURL + "."
+	if err := p.Tracker.SetStatus(ctx, p.EpicID, tracker.StageDone, extra); err != nil {
 		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
 	}
 	p.logf("  ✓ epic %s closed; PR %s", p.EpicID, prURL)
-	if merged {
-		p.reloadHubOntoBase(ctx)
-	}
+	p.reloadHubOntoBase(ctx)
 	return nil
 }
 
@@ -220,7 +280,7 @@ func (p *Pipeline) finalizeEpicLocally(ctx context.Context, epic string) error {
 	p.checkpointEpicMerged(ctx, "")
 	_ = p.State.Set(p.EpicID, "DELIVERY", deliveryLocal)
 	extra := "All direct sub-issues are delivered. Epic squash-merged into " + p.Base + " — " + localDeliveryNote + "."
-	if err := p.Tracker.SetStatus(ctx, p.EpicID, "Done", extra); err != nil {
+	if err := p.Tracker.SetStatus(ctx, p.EpicID, tracker.StageDone, extra); err != nil {
 		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
 	}
 	p.logf("  ✓ epic %s closed; merged into %s locally", p.EpicID, p.Base)
@@ -263,6 +323,71 @@ func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
 	}
 }
 
+// assertEpicBaseCurrent makes the remote epic branch carry the commit the run was
+// cut from, before a child PR is opened against it. syncEpicBest pushes the synced
+// epic best-effort, which is right mid-run but not here: a push that never landed
+// leaves the remote epic behind the recorded fork point, and GitHub then diffs the
+// child against a base older than the branch point — burying the base's own drift in
+// the child's PR as thousands of foreign lines. A remote a push can repair is
+// repaired; one that still misses the fork point fails the phase.
+func (p *Pipeline) assertEpicBaseCurrent(ctx context.Context, id, epic string) error {
+	pin := p.State.Get(id, "BASE_SHA")
+	if pin == "" {
+		return nil
+	}
+	carries, err := p.remoteCarries(ctx, epic, pin)
+	if err != nil {
+		return err
+	}
+	if carries {
+		return nil
+	}
+	p.logf("  ⚠ %s/%s is behind the commit %s was cut from — pushing the epic branch before opening the PR", p.Remote, epic, id)
+	if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
+		return fmt.Errorf("push epic base %s: %w", epic, err)
+	}
+	carries, err = p.remoteCarries(ctx, epic, pin)
+	if err != nil {
+		return err
+	}
+	if !carries {
+		return fmt.Errorf("epic base %s/%s does not carry %s, the commit %s was cut from — a PR opened against it would diff against a stale base", p.Remote, epic, pin, id)
+	}
+	p.logf("  ↻ %s/%s repaired — the PR base now carries %s", p.Remote, epic, pin)
+	return nil
+}
+
+// remoteCarries reports whether the remote copy of branch contains commit.
+func (p *Pipeline) remoteCarries(ctx context.Context, branch, commit string) (bool, error) {
+	sha, err := p.remoteTip(ctx, branch)
+	if err != nil || sha == "" {
+		return false, err
+	}
+	return p.Git.IsAncestor(ctx, commit, sha)
+}
+
+// remoteTip returns the commit remote/branch points at as the REMOTE reports it,
+// fetched into the local object store so its history can be judged locally. It is
+// read with ls-remote, never a remote-tracking ref: a push that failed leaves the
+// tracking ref exactly as convincing as a push that worked, and a tip that moved on
+// — a sibling squash-merged into the epic since — is missing from it entirely. A
+// branch the remote does not have is an expected ("", nil).
+func (p *Pipeline) remoteTip(ctx context.Context, branch string) (string, error) {
+	sha, err := p.Git.RemoteSHA(ctx, p.Remote, branch)
+	if err != nil {
+		return "", fmt.Errorf("read %s/%s: %w", p.Remote, branch, err)
+	}
+	if sha == "" {
+		return "", nil
+	}
+	if known, _ := p.Git.ResolvesToCommit(ctx, sha); !known {
+		if err := p.Git.Fetch(ctx, p.Remote, branch); err != nil {
+			return "", fmt.Errorf("fetch %s/%s: %w", p.Remote, branch, err)
+		}
+	}
+	return sha, nil
+}
+
 // syncEpicForMerge brings the base into the epic branch before the epic ships to
 // main so the epic PR is mergeable. The local epic is first fast-forwarded from
 // the remote epic (children squash-merged into the remote; pushing a stale local
@@ -294,9 +419,14 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		p.checkpointEpicMerged(ctx, prURL)
 		return true, nil
 	}
+	// The PR may be the draft an earlier run's exit hygiene opened; neither a merge
+	// nor a reviewer can take a draft, and one already open for review is not news.
+	if err := p.GitHub.MarkPRReady(ctx, pr); err != nil {
+		logger.Verbosef("mark epic PR %s ready: %v", pr, err)
+	}
 
 	for repair := 0; ; {
-		if err := p.pollCI(ctx, pr); err == nil {
+		if err := p.pollCI(ctx, pr, p.Base); err == nil {
 			break
 		} else {
 			p.logf("  ✗ epic CI: %v", err)
@@ -382,7 +512,9 @@ func epicRepairInstruction(r prompts.Renderer, epicID, prURL, branch string) str
 // checkpoint AND the TRACKER_DONE marker written once the tracker confirmed the
 // close, which is exactly what an external automation can undo behind trau's back.
 // A merged checkpoint alone means trau never saw the ticket close, and a status it
-// could not read at all says nothing, so both keep blocking.
+// could not read at all says nothing, so both keep blocking. A delivered child
+// still sitting in the delivered state is a delivery, not a regression: a QA gate
+// is non-terminal by design and belongs to the team, not to the loop.
 func (p *Pipeline) openSubIssues(ctx context.Context, statuser tracker.IssueStatuser, subs []tracker.SubIssue) ([]string, []string, error) {
 	var open, regressed []string
 	for _, sub := range subs {
@@ -396,11 +528,13 @@ func (p *Pipeline) openSubIssues(ctx context.Context, statuser tracker.IssueStat
 		switch {
 		case st == tracker.StatusUnknown:
 			open = append(open, sub.ID+" (unknown)")
-		case p.deliveredByTrau(sub.ID):
-			p.logf("  %s is not closed in the tracker but trau merged it — counting it delivered", sub.ID)
+		case !p.deliveredByTrau(sub.ID):
+			open = append(open, sub.ID)
+		case p.behindDeliveredState(st):
+			p.logf("  %s fell behind %s after trau merged it — restoring it", sub.ID, p.deliveredStateName())
 			regressed = append(regressed, sub.ID)
 		default:
-			open = append(open, sub.ID)
+			p.logf("  %s is not closed in the tracker but trau merged it — counting it delivered", sub.ID)
 		}
 	}
 	return open, regressed, nil
@@ -412,18 +546,19 @@ func (p *Pipeline) deliveredByTrau(id string) bool {
 	return p.State.Get(id, "PHASE") == state.Merged && p.State.Get(id, "TRACKER_DONE") == "1"
 }
 
-// reassertDone re-closes a delivered child whose tracker status regressed after
-// trau itself marked it Done. The merged checkpoint already settles terminality,
-// so the write is best-effort and never blocks the finalize.
+// reassertDone restores a delivered child that fell behind the delivered state
+// after trau itself set it. The merged checkpoint already settles terminality, so
+// the write is best-effort and never blocks the finalize.
 func (p *Pipeline) reassertDone(ctx context.Context, id string) {
+	delivered := p.deliveredStateName()
 	note := "Delivered by trau"
 	if pr := p.State.Get(id, "PR"); pr != "" {
 		note += " in PR #" + pr
 	}
-	note += " and moved out of Done afterwards — restoring it."
-	if err := p.Tracker.SetStatus(ctx, id, "Done", note); err != nil {
-		p.logf("  re-assert Done for %s error (continuing): %v", id, err)
+	note += " and moved out of " + delivered + " afterwards — restoring it."
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageDone, note); err != nil {
+		p.logf("  re-assert %s for %s error (continuing): %v", delivered, id, err)
 		return
 	}
-	p.logf("  ↻ %s re-closed after a tracker status regression", id)
+	p.logf("  ↻ %s restored to %s after a tracker status regression", id, delivered)
 }

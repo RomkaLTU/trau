@@ -214,6 +214,24 @@ than something the port introduces, and the §4 swap inherits it: whatever
 replaces `creack/pty` has to keep the loop able to end its own agent, because the
 group will not do it.
 
+**The port→pid lookup joins the same seam.** `trau hub restart --force`, `trau
+hub supervise` and `trau stop` all have to name the process holding the hub's
+port, and nothing in the standard library maps a port to a pid, so
+`proc.PortListeners` is the fourth spelling behind `internal/proc` — with
+`proc.PortInspectHint` beside it so a CLI suggestion ("see what holds the port
+with …") needs no `runtime.GOOS` branch of its own. Unix keeps `lsof -t -i
+tcp:<port> -sTCP:LISTEN` byte-for-byte, non-zero exit and all: that exit means
+"no match", not a failure worth reporting. Windows reads netstat's connection
+table, where two details are load-bearing. It is read **unfiltered** (`netstat
+-ano`): `-p tcp` lists IPv4 only, so a hub on an IPv6 bind would report *nothing*
+holding the port while it kept holding it — a forced restart that silently
+displaces no one. And a listening row is recognised by its **shape** — a local
+address ending in `:port` with an unspecified foreign address (`0.0.0.0:0` or
+`[::]:0`) — never by the `LISTENING` word, which netstat translates on a
+localized Windows; that same shape test is what excludes the UDP rows (`*:*`) an
+unfiltered table carries. One process listening on both families has a row per
+family, so pids are de-duplicated before they are returned.
+
 **Daemonization does not change.** The hub stays an ordinary console process
 whose singleton is a TCP port bind; no Windows Service, and no counterpart to the
 macOS LaunchAgent of [ADR 0022](0022-crash-resilient-orchestration.md), which
