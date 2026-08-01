@@ -15,20 +15,7 @@ import {
   type PRStatus,
   type Run,
 } from "./runs";
-import { stepPill } from "./steps";
-
-const PHASE_RANK: Record<string, number> = {
-  building: 1,
-  built: 2,
-  handed_off: 3,
-  verified: 4,
-  pr_open: 5,
-  merged: 6,
-};
-
-export function phaseRank(phase: string): number {
-  return PHASE_RANK[phase] ?? 0;
-}
+import { RELEASING, releasePill, stepPill } from "./steps";
 
 export function phasePill(phase: string): { state: RunState; label: string } {
   switch (phase) {
@@ -41,6 +28,8 @@ export function phasePill(phase: string): { state: RunState; label: string } {
       return { state: "verify", label: "verify" };
     case "pr_open":
       return { state: "info", label: "pr" };
+    case "releasing":
+      return { state: "active", label: "releasing" };
     case "merged":
       return { state: "success", label: "merged" };
     default:
@@ -63,7 +52,9 @@ export function prStatusPill(
   }
 }
 
-export function boardPill(run: Pick<Run, "phase" | "failure_class">): {
+export function boardPill(
+  run: Pick<Run, "phase" | "failure_class" | "release">,
+): {
   state: RunState;
   label: string;
 } {
@@ -77,6 +68,9 @@ export function boardPill(run: Pick<Run, "phase" | "failure_class">): {
     case "gave_up":
       return { state: "fail", label: "quarantined" };
     default:
+      // The checkpoint alone drives a releasing epic's pill; the board has no live
+      // Activity to name a sub-state with.
+      if (run.phase === RELEASING) return releasePill(run.release);
       return phasePill(run.phase);
   }
 }

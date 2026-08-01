@@ -611,7 +611,14 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const sync = syncState(activity, detail);
   const pill = takenOverHere
     ? sessionStatePill("takeover")
-    : headerPill(variant, phase, run?.failure_class, activity);
+    : headerPill(
+        variant,
+        phase,
+        run?.failure_class,
+        activity,
+        detail,
+        run?.release,
+      );
   const { steps, subLabel } = runSteps(variant, phase, activity, detail);
 
   usePageTitle(runTitle(ticket, pill.label));

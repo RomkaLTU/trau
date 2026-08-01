@@ -7,7 +7,6 @@ import {
   isActiveState,
   loopCardView,
   phasePill,
-  phaseRank,
   prStatusPill,
   repoBadgeState,
   sessionStatePill,
@@ -26,6 +25,21 @@ describe("boardPill", () => {
       label: "verify",
     });
     expect(boardPill({ phase: "merged" })).toEqual({
+      state: "success",
+      label: "merged",
+    });
+  });
+
+  it("tells a release trau still owns from one parked for a human", () => {
+    expect(boardPill({ phase: "releasing", release: "active" })).toEqual({
+      state: "active",
+      label: "releasing",
+    });
+    expect(boardPill({ phase: "releasing", release: "awaiting-human" })).toEqual({
+      state: "warn",
+      label: "awaiting human merge",
+    });
+    expect(boardPill({ phase: "merged", release: "awaiting-human" })).toEqual({
       state: "success",
       label: "merged",
     });
@@ -63,22 +77,6 @@ describe("attentionPill", () => {
       state: "fail",
       label: "quarantined",
     });
-  });
-});
-
-describe("phaseRank", () => {
-  it("ranks the checkpoint pipeline in order", () => {
-    expect(phaseRank("building")).toBe(1);
-    expect(phaseRank("built")).toBe(2);
-    expect(phaseRank("handed_off")).toBe(3);
-    expect(phaseRank("verified")).toBe(4);
-    expect(phaseRank("pr_open")).toBe(5);
-    expect(phaseRank("merged")).toBe(6);
-  });
-
-  it("treats unknown/empty phases as rank 0", () => {
-    expect(phaseRank("")).toBe(0);
-    expect(phaseRank("quarantined")).toBe(0);
   });
 });
 
