@@ -120,6 +120,11 @@ type Git interface {
 	// committed, so a build that only adds files is not mistaken for a no-op.
 	WorktreeDirty(ctx context.Context) (bool, error)
 
+	// WorktreeStatus returns what WorktreeDirty answers yes or no to: the porcelain
+	// status with untracked files included. Two readings of it taken at different
+	// points in a run are what tell work this run produced from work it found.
+	WorktreeStatus(ctx context.Context) (string, error)
+
 	// Stash saves uncommitted TRACKED changes under a label (git stash push),
 	// leaving untracked files in place to match StatusPorcelain's clean-base
 	// semantics, so a fresh run can reset to base without discarding the user's WIP.
@@ -687,12 +692,15 @@ type Pipeline struct {
 	// first localDelivery call resolves it.
 	localOnly *bool
 
-	// children and offLimits are a Folder repo run's scan of its Child repos and
-	// the start-of-run sweep's verdict on each; sliceChecks is the verify library
-	// the changed children resolved to. All three are resolved per run — offLimits
-	// from the checkpoint when the run is a resume (see startFolderRun).
+	// children is a Folder repo run's scan of its Child repos; offLimits and
+	// startDirt are the start-of-run sweep's verdict on each — why it may not be
+	// changed, and a fingerprint of the uncommitted work it already carried — and
+	// are always filled as a pair; sliceChecks is the verify library the changed
+	// children resolved to. All are resolved per run, the sweep from the checkpoint
+	// when the run is a resume (see startFolderRun).
 	children    []folderrepo.Child
 	offLimits   map[string]string
+	startDirt   map[string]string
 	sliceChecks []checks.Check
 
 	// buildProvider/buildSkills capture, from the last build agent call, which
@@ -1798,7 +1806,7 @@ func (p *Pipeline) assertRepoChanged(ctx context.Context, id string) error {
 		return nil
 	}
 	if p.FolderRepo {
-		return p.folderRepoChanged(ctx)
+		return p.assertFolderChanged(ctx)
 	}
 	dirty, err := p.Git.WorktreeDirty(ctx)
 	if err != nil {
@@ -5432,16 +5440,27 @@ func (g ExecGit) StatusPorcelain(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// WorktreeDirty reports whether the working tree has any uncommitted change,
-// untracked files included (git status --porcelain), so a build that only added
-// new files still counts as a change.
-func (g ExecGit) WorktreeDirty(ctx context.Context) (bool, error) {
+// WorktreeStatus returns the porcelain status with untracked files included
+// (git status --porcelain), so a file a build only added shows up like any other
+// change.
+func (g ExecGit) WorktreeStatus(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
 		"status", "--porcelain").Output()
 	if err != nil {
-		return false, fmt.Errorf("git status: %w", err)
+		return "", fmt.Errorf("git status: %w", err)
 	}
-	return strings.TrimSpace(string(out)) != "", nil
+	return strings.TrimSpace(string(out)), nil
+}
+
+// WorktreeDirty reports whether the working tree has any uncommitted change,
+// untracked files included, so a build that only added new files still counts as
+// a change.
+func (g ExecGit) WorktreeDirty(ctx context.Context) (bool, error) {
+	status, err := g.WorktreeStatus(ctx)
+	if err != nil {
+		return false, err
+	}
+	return status != "", nil
 }
 
 // Stash saves uncommitted tracked changes under msg (git stash push -m); untracked

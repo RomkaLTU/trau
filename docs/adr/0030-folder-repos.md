@@ -43,6 +43,13 @@ a PR in each Child repo it changed.**
   sweep and named to the build agent as off limits. The run gives up only if a
   change actually lands in one of them, because that change is entangled with
   work trau does not own.
+- **A child changed when its tree stops reading the way the sweep found it.**
+  The sweep fingerprints the uncommitted work each child already carried and the
+  ship set is the difference against that fingerprint, so a stray file an
+  operator left behind is neither shipped as this run's work nor mistaken for
+  the build reaching into an off-limits child. One definition of dirty serves
+  both — untracked files included, since a build that only adds files changed
+  the child as surely as one that edits it.
 - **Feature branches are cut lazily, at commit time, only in the children that
   changed.** A child the ticket never reached is never left holding an empty
   branch.
@@ -65,10 +72,11 @@ a PR in each Child repo it changed.**
 
 The plural ship set rides the checkpoint as `SHIP_TARGETS` and `PR_URLS`, two new
 free-form keys, with `PR` and `PR_URL` still naming the first target so every
-surface built for one PR keeps reading. The sweep rides it as `OFF_LIMITS`: it is
-taken once, before the build, and a resumed run reads the recorded census back
-instead of re-sweeping — by then the work the run itself left in the children is
-indistinguishable from the WIP the sweep exists to protect. `Pipeline.GitAt` and
+surface built for one PR keeps reading. The sweep rides it as `OFF_LIMITS` and
+`START_DIRT`: it is taken once, before the build, and a resumed run reads the
+recorded census back instead of re-sweeping — by then the work the run itself
+left in the children is indistinguishable from the WIP the sweep exists to
+protect. `Pipeline.GitAt` and
 `Pipeline.GitHubAt` bind the existing `Git`/`GitHub` seams to one child, so
 nothing about the single-repo path changes.
 

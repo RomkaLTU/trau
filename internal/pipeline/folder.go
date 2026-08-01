@@ -2,7 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,17 +25,21 @@ import (
 // and process spawn — not git — is what a serial sweep would wait on.
 const childSweepConcurrency = 8
 
-// offLimitsKey carries the start-of-run sweep's verdict on the ticket's
-// checkpoint, so a resumed run judges its children against the census taken
-// before the build ran instead of re-taking it against the build's own leftovers.
-const offLimitsKey = "OFF_LIMITS"
+// offLimitsKey and startDirtKey carry the start-of-run sweep on the ticket's
+// checkpoint — which children may not be changed and how dirty each one already
+// was — so a resumed run judges its children against the census taken before the
+// build ran instead of re-taking it against the build's own leftovers.
+const (
+	offLimitsKey = "OFF_LIMITS"
+	startDirtKey = "START_DIRT"
+)
 
 // childState is a Child repo's condition at the start of a run: the branch it
-// sits on and whether its tracked files carry uncommitted changes.
+// sits on and a fingerprint of the uncommitted work its tree already carries.
 type childState struct {
 	folderrepo.Child
 	Branch string
-	Dirty  bool
+	Dirt   string
 	Err    error
 }
 
@@ -41,12 +48,51 @@ func (s childState) offLimitsReason(base string) string {
 	switch {
 	case s.Err != nil:
 		return "its git state could not be read"
-	case s.Dirty:
+	case s.Dirt != "":
 		return "it has uncommitted changes"
 	case s.Branch != base:
 		return "it sits on " + s.Branch + ", not " + base
 	}
 	return ""
+}
+
+// childDirt fingerprints a Child repo's uncommitted work, untracked files
+// included. Both the start-of-run sweep and the changed-children check read it,
+// so a stray file an operator left behind cannot read as clean to one and as this
+// run's work to the other. A clean tree fingerprints as "".
+//
+// Each named path's size and mtime go into the fingerprint because the status
+// line alone does not move when a file that already read as dirty is written
+// again: without them, a build editing the very file an operator left behind
+// would slip past the off-limits guard.
+func childDirt(ctx context.Context, g Git, dir string) (string, error) {
+	status, err := g.WorktreeStatus(ctx)
+	if err != nil || status == "" {
+		return "", err
+	}
+	sum := sha256.New()
+	for _, line := range strings.Split(status, "\n") {
+		var size, modified int64
+		if fi, err := os.Stat(filepath.Join(dir, statusPath(line))); err == nil {
+			size, modified = fi.Size(), fi.ModTime().UnixNano()
+		}
+		fmt.Fprintf(sum, "%s\x00%d\x00%d\x00", line, size, modified)
+	}
+	return hex.EncodeToString(sum.Sum(nil))[:16], nil
+}
+
+// statusPath is the working-tree path a porcelain status line names: what follows
+// the two status columns, or the arrow when the entry is a rename. A path this
+// misreads simply contributes no size or mtime — both readings misread it alike.
+func statusPath(line string) string {
+	path := strings.TrimSpace(line)
+	if len(line) > 3 {
+		path = strings.TrimSpace(line[3:])
+	}
+	if _, renamed, ok := strings.Cut(path, " -> "); ok {
+		path = renamed
+	}
+	return strings.Trim(path, `"`)
 }
 
 // shipTarget is a Child repo a run changed, with the PR its branch carries.
@@ -73,6 +119,7 @@ func (p *Pipeline) RefuseEpic(epic string) error {
 func (p *Pipeline) resetFolderRun() {
 	p.children = nil
 	p.offLimits = nil
+	p.startDirt = nil
 	p.sliceChecks = nil
 }
 
@@ -115,51 +162,74 @@ func (p *Pipeline) folderChildren() []folderrepo.Child {
 // them off limits.
 func (p *Pipeline) startFolderRun(ctx context.Context, id string, resumed bool) {
 	if resumed {
-		p.offLimits = parseOffLimits(p.State.Get(id, offLimitsKey))
+		p.offLimits = parseCensus(p.State.Get(id, offLimitsKey))
+		p.startDirt = parseCensus(p.State.Get(id, startDirtKey))
 		return
 	}
-	if err := p.State.Set(id, offLimitsKey, formatOffLimits(p.folderOffLimits(ctx))); err != nil {
-		p.logf("  ⚠ could not record which child repos are off limits for %s: %v", id, err)
+	p.sweepChildren(ctx)
+	p.recordCensus(id, offLimitsKey, p.offLimits)
+	p.recordCensus(id, startDirtKey, p.startDirt)
+}
+
+func (p *Pipeline) recordCensus(id, key string, census map[string]string) {
+	if err := p.State.Set(id, key, formatCensus(census)); err != nil {
+		p.logf("  ⚠ could not record %s for %s: %v", key, id, err)
 	}
 }
 
-// formatOffLimits renders a census as name=reason entries. The separator is "; "
-// because a reason naming the branch a child sits on carries a comma of its own.
-func formatOffLimits(off map[string]string) string {
-	entries := make([]string, 0, len(off))
-	for _, name := range sortedNames(off) {
-		entries = append(entries, name+"="+off[name])
+// formatCensus renders a per-child census as name=value entries. The separator is
+// "; " because a reason naming the branch a child sits on carries a comma of its own.
+func formatCensus(census map[string]string) string {
+	entries := make([]string, 0, len(census))
+	for _, name := range sortedNames(census) {
+		entries = append(entries, name+"="+census[name])
 	}
 	return strings.Join(entries, "; ")
 }
 
-func parseOffLimits(recorded string) map[string]string {
-	off := map[string]string{}
+func parseCensus(recorded string) map[string]string {
+	census := map[string]string{}
 	for _, entry := range strings.Split(recorded, "; ") {
-		if name, reason, ok := strings.Cut(entry, "="); ok {
-			off[name] = reason
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			census[name] = value
 		}
 	}
-	return off
+	return census
 }
 
-// folderOffLimits names the Child repos this run must not change, mapped to why.
+// sweepChildren takes the census the whole run is judged against: which Child
+// repos are off limits and why, and what uncommitted work each one already held.
 // The sweep is two cheap reads per child — `status --porcelain` and `rev-parse
 // --abbrev-ref HEAD` — deliberately in place of the fetches and checkouts that
 // preparing every child would cost, and it neither aborts the run nor touches
 // anything: a child lands here only so the build agent is told to stay out.
-func (p *Pipeline) folderOffLimits(ctx context.Context) map[string]string {
+func (p *Pipeline) sweepChildren(ctx context.Context) {
 	if p.offLimits != nil {
-		return p.offLimits
+		return
 	}
-	off := map[string]string{}
+	off, dirt := map[string]string{}, map[string]string{}
 	for _, st := range readChildren(ctx, p.folderChildren(), p.readChildState) {
 		if reason := st.offLimitsReason(p.Base); reason != "" {
 			off[st.Name] = reason
 		}
+		if st.Dirt != "" {
+			dirt[st.Name] = st.Dirt
+		}
 	}
-	p.offLimits = off
-	return off
+	p.offLimits, p.startDirt = off, dirt
+}
+
+// folderOffLimits names the Child repos this run must not change, mapped to why.
+func (p *Pipeline) folderOffLimits(ctx context.Context) map[string]string {
+	p.sweepChildren(ctx)
+	return p.offLimits
+}
+
+// folderStartDirt fingerprints, per Child repo, the uncommitted work the run
+// found there before its build ran. Children the sweep read as clean are absent.
+func (p *Pipeline) folderStartDirt(ctx context.Context) map[string]string {
+	p.sweepChildren(ctx)
+	return p.startDirt
 }
 
 // readChildren reads one value per Child repo, concurrently but bounded, and
@@ -188,12 +258,9 @@ func (p *Pipeline) readChildState(ctx context.Context, c folderrepo.Child) child
 		return st
 	}
 	st.Branch = branch
-	dirty, err := g.StatusPorcelain(ctx)
-	if err != nil {
+	if st.Dirt, err = childDirt(ctx, g, c.Path); err != nil {
 		st.Err = err
-		return st
 	}
-	st.Dirty = strings.TrimSpace(dirty) != ""
 	return st
 }
 
@@ -214,18 +281,24 @@ func (p *Pipeline) sweepFolder(ctx context.Context) error {
 	return nil
 }
 
-// changedChildren lists the Child repos the build actually touched. A folder run
-// commits nothing until ship, so a dirty tree — untracked files included — is
-// what marks a child as changed.
+// changedChildren lists the Child repos the build actually touched: the ones
+// whose working tree no longer reads as the start-of-run sweep found it. A folder
+// run commits nothing until ship, so the change is still loose in the tree — but
+// so is whatever an operator left there, and that is theirs, not this run's. A
+// child whose status cannot be read now stays as the sweep found it.
 func (p *Pipeline) changedChildren(ctx context.Context) []folderrepo.Child {
 	children := p.folderChildren()
-	dirty := readChildren(ctx, children, func(ctx context.Context, c folderrepo.Child) bool {
-		d, err := p.childGit(c).WorktreeDirty(ctx)
-		return err == nil && d
+	start := p.folderStartDirt(ctx)
+	dirt := readChildren(ctx, children, func(ctx context.Context, c folderrepo.Child) string {
+		d, err := childDirt(ctx, p.childGit(c), c.Path)
+		if err != nil {
+			return start[c.Name]
+		}
+		return d
 	})
 	changed := make([]folderrepo.Child, 0, len(children))
 	for i, c := range children {
-		if dirty[i] {
+		if dirt[i] != start[c.Name] {
 			changed = append(changed, c)
 		}
 	}
@@ -271,9 +344,9 @@ func (p *Pipeline) assertChildrenInBounds(ctx context.Context, id string) error 
 	return &GiveUpError{ID: id, Reason: "the build changed " + strings.Join(hit, ", ") + ", which the start-of-run sweep named off limits"}
 }
 
-// folderRepoChanged is the Folder repo's empty-diff guard: the build must have
+// assertFolderChanged is the Folder repo's empty-diff guard: the build must have
 // left work in at least one child.
-func (p *Pipeline) folderRepoChanged(ctx context.Context) error {
+func (p *Pipeline) assertFolderChanged(ctx context.Context) error {
 	if len(p.changedChildren(ctx)) > 0 {
 		return nil
 	}
@@ -307,7 +380,7 @@ func (p *Pipeline) folderLintFix(ctx context.Context, id string) error {
 
 // folderChecks is the verify library for a Folder repo slice: each changed Child
 // repo's own .trau/checks, with the folder root's as the fallback for a child
-// that declares none. Check names are unique across the library, so one two
+// that declares none. Check names are unique across the library, so a check two
 // children share is rendered once.
 func (p *Pipeline) folderChecks(ctx context.Context) []checks.Check {
 	if len(p.Checks) == 0 {

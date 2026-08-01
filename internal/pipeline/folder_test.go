@@ -8,20 +8,26 @@ import (
 	"testing"
 )
 
-// childGit is one Child repo's git in the fan-out test: it reports whether the
-// build left work there and records what the ship phase did to it.
+// childGit is one Child repo's git in the fan-out tests: it reports what the
+// child's working tree carries and which branch it sits on (empty head meaning
+// the base branch), and records what the ship phase did to it.
 type childGit struct {
 	fakeGit
-	dirty   bool
 	status  string
+	head    string
 	branch  string
 	commits []string
 	pushed  []string
 }
 
-func (g *childGit) WorktreeDirty(context.Context) (bool, error) { return g.dirty, nil }
+func (g *childGit) WorktreeStatus(context.Context) (string, error) { return g.status, nil }
 
-func (g *childGit) StatusPorcelain(context.Context) (string, error) { return g.status, nil }
+func (g *childGit) CurrentBranch(ctx context.Context) (string, error) {
+	if g.head != "" {
+		return g.head, nil
+	}
+	return g.fakeGit.CurrentBranch(ctx)
+}
 
 func (g *childGit) CreateBranch(_ context.Context, branch, _ string) error {
 	g.branch = branch
@@ -47,8 +53,8 @@ func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 	branch := "feature/COD-93010-cross-repo-slice"
 	root := t.TempDir()
 	gits := map[string]*childGit{
-		"api-apigateway": {dirty: true},
-		"api-companies":  {dirty: true},
+		"api-apigateway": {},
+		"api-companies":  {},
 		"api-billing":    {},
 	}
 	ghs := map[string]*epicGitHub{
@@ -72,7 +78,12 @@ func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := p.CommitAndPR(context.Background(), id); err != nil {
+	ctx := context.Background()
+	p.startFolderRun(ctx, id, false)
+	gits["api-apigateway"].status = " M gateway.go"
+	gits["api-companies"].status = "?? companies/client.go"
+
+	if err := p.CommitAndPR(ctx, id); err != nil {
 		t.Fatalf("CommitAndPR: %v", err)
 	}
 
@@ -112,6 +123,62 @@ func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 	}
 }
 
+// TestFolderShipLeavesChildrenTheRunFoundDirty is the off-limits contract at ship
+// time: a child an operator left uncommitted work in — an untracked file is work —
+// is named off limits and then left exactly as it was found. Only the build's own
+// change makes a child a ship target, so the untouched child gets no branch, no
+// commit and no PR, and its dirt does not give the run up either.
+func TestFolderShipLeavesChildrenTheRunFoundDirty(t *testing.T) {
+	id := "COD-93012"
+	branch := "feature/COD-93012-one-child-slice"
+	root := t.TempDir()
+	gits := map[string]*childGit{
+		"api-a": {},
+		"api-b": {},
+		"api-c": {status: "?? scratch.md", head: "wip/local"},
+	}
+	ghs := map[string]*epicGitHub{
+		"api-a": {createURL: "https://github.com/acme/api-a/pull/4"},
+		"api-b": {},
+		"api-c": {},
+	}
+	for name := range gits {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.FolderRepo = true
+	p.RepoRoot = root
+	p.Remote = "origin"
+	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
+	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	if err := p.State.Set(id, "BRANCH", branch); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	p.startFolderRun(ctx, id, false)
+	gits["api-a"].status = " M handler.go"
+
+	if err := p.CommitAndPR(ctx, id); err != nil {
+		t.Fatalf("CommitAndPR: %v", err)
+	}
+
+	if got := p.State.Get(id, "SHIP_TARGETS"); got != "api-a" {
+		t.Errorf("SHIP_TARGETS = %q, want only the child the build changed", got)
+	}
+	if got := p.State.Get(id, offLimitsKey); !strings.Contains(got, "api-c=it has uncommitted changes") {
+		t.Errorf("%s = %q, want api-c named for the work it already carried", offLimitsKey, got)
+	}
+	stray := gits["api-c"]
+	if stray.branch != "" || len(stray.commits) > 0 || len(stray.pushed) > 0 || ghs["api-c"].createCalls > 0 {
+		t.Errorf("api-c was dirty before the run and untouched by it, but got branch %q, commits %v, pushes %v, %d PRs",
+			stray.branch, stray.commits, stray.pushed, ghs["api-c"].createCalls)
+	}
+}
+
 // TestFolderResumeKeepsTheStartOfRunSweep is the resume contract: the off-limits
 // census a run is judged against is the one taken before its build ran, so a run
 // picked up from a checkpoint ships the children its own build dirtied instead of
@@ -121,7 +188,7 @@ func TestFolderResumeKeepsTheStartOfRunSweep(t *testing.T) {
 	branch := "feature/COD-93011-resumed-slice"
 	root := t.TempDir()
 	gits := map[string]*childGit{
-		"api-a": {dirty: true},
+		"api-a": {},
 		"api-b": {},
 	}
 	ghs := map[string]*epicGitHub{
