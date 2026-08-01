@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -379,6 +380,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	}
 
 	for repair := 0; ; {
+		p.setActivity(p.EpicID, activity.CIWait, "")
 		if err := p.pollCI(ctx, pr, p.Base); err == nil {
 			break
 		} else {
@@ -397,6 +399,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 			return false, fmt.Errorf("epic repair %d: checkout %s: %w", repair, epic, err)
 		}
 		p.logf("  ⚠ epic CI red — repair attempt %d/%d", repair, p.MaxRepairs)
+		p.setActivity(p.EpicID, activity.Merge, fmt.Sprintf("epic-repair%d/%d", repair, p.MaxRepairs))
 		if _, err := p.agentStep(ctx, p.EpicID, fmt.Sprintf("epic-repair%d", repair), epicRepairInstruction(p.prompts, p.EpicID, prURL, epic)); err != nil {
 			return false, err
 		}
@@ -418,6 +421,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		p.logf("  ✓ epic merged to %s via %s", p.Base, prURL)
 		return true, nil
 	}
+	p.setActivity(p.EpicID, activity.Merge, "")
 	if err := p.retryGH(ctx, "gh pr merge", func() error {
 		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
 			return nil

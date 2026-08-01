@@ -3864,8 +3864,11 @@ func providerOf(err error) string {
 // writer, two displays: the TUI stepper and the web read the same signal. detail
 // carries the raw call label (e.g. repair2), empty when there is none; a bounded
 // loop whose display names the attempt counter appends its bound to that label
-// (epic-sync1/2), leaving the call label recoverable as the prefix. Checkpoint
-// phases are untouched; Activity is its own signal.
+// (epic-sync1/2), leaving the call label recoverable as the prefix. The epic's CI
+// repair loop rides on Merge (epic-repair1/2) rather than on Repair: it is part of
+// the ship gate, and Repair maps to Verify, which would walk the stepper backwards
+// mid-ship. Checkpoint phases are untouched; Activity is its own
+// signal.
 func (p *Pipeline) setActivity(id string, act activity.Activity, detail string) {
 	if p.Renderer != nil {
 		p.Renderer.Activity(act, detail)

@@ -614,6 +614,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		NoResume:     opts.NoResume,
 		ParentSuffix: parentSuffix,
 		ForcedID:     forcedID,
+		EpicID:       epicID,
 		Poller:       usagePoller(cfg, log),
 		Report:       reg.SetState,
 	}, con, result)
@@ -1719,7 +1720,9 @@ type loopParams struct {
 	NoResume     bool
 	ParentSuffix string
 	ForcedID     string
-	Poller       *probe.Poller
+	// EpicID names the epic the run builds under, empty for a standalone run.
+	EpicID string
+	Poller *probe.Poller
 	// Report, when set, records the loop's session-state transitions to the
 	// instance registry; nil disables reporting.
 	Report func(state, ticket, phase string)
@@ -1900,6 +1903,12 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			con.Logf("--once: stopping")
 			break
 		}
+	}
+	// The finalize is the epic's own work, but the loop arrives here grazing or
+	// still pinned to the child it last touched.
+	if p.EpicID != "" {
+		report(registry.StateWorking, p.EpicID, "")
+		defer report(registry.StateGrazing, "", "")
 	}
 	if err := eng.Finalize(ctx); err != nil {
 		if !ownsFinalize && pipeline.IsEpicUnfinalized(err) {
@@ -2982,7 +2991,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		}
 	}
 	start := time.Now()
-	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max, Poller: usagePoller(a.cfg, a.log), Report: a.reg.SetState}, r, result)
+	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max, EpicID: epic, Poller: usagePoller(a.cfg, a.log), Report: a.reg.SetState}, r, result)
 	a.reportAfterRun(lerr)
 	tk, cost, metered := total(processed)
 	r.LoopDone(applyFault(console.SessionSummary{
