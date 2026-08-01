@@ -1,9 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Lock } from 'lucide-react'
+import { Lock, Search } from 'lucide-react'
 
 import { useActiveRepo } from '@/components/trau/active-repo'
-import { GlobalSearch } from '@/components/trau/global-search'
 import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
 import { NotificationBell } from '@/components/trau/notification-bell'
 import { RepoSwitcher } from '@/components/trau/repo-switcher'
@@ -128,19 +127,23 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
           <NotificationBell />
         </div>
         <RepoSwitcher />
-        <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1">
-            <GlobalSearch />
-          </div>
-          <button
-            type="button"
-            onClick={onOpenPalette}
-            title="Open command palette"
-            className="shrink-0 rounded-md border border-border bg-input px-2 py-2 font-mono text-xs text-muted-foreground transition-colors hover:border-ring/50 hover:text-foreground"
-          >
+        <button
+          type="button"
+          onClick={onOpenPalette}
+          title="Open command palette"
+          className="group flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 transition-colors hover:border-ring/50 dark:bg-input"
+        >
+          <Search
+            className="size-3.5 shrink-0 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <span className="flex-1 text-left font-mono text-sm text-muted-foreground transition-colors group-hover:text-foreground">
+            Search…
+          </span>
+          <kbd className="shrink-0 rounded border border-border px-1 py-0.5 font-mono text-[0.65rem] text-muted-foreground">
             {shortcutLabel(isMacPlatform(navigator))}
-          </button>
-        </div>
+          </kbd>
+        </button>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-2">

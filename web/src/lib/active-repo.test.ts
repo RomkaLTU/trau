@@ -158,20 +158,21 @@ describe('parseRepoUsage', () => {
 
 describe('repoRouteAction', () => {
   it('stays when the scope already matches the route repo', () => {
-    expect(repoRouteAction('loop', 'loop', false)).toBe('stay')
-    expect(repoRouteAction('loop', 'loop', true)).toBe('stay')
+    expect(repoRouteAction('loop', 'loop', false, false)).toBe('stay')
+    expect(repoRouteAction('loop', 'loop', false, true)).toBe('stay')
   })
 
   it('adopts the route repo before the scope has synced', () => {
-    expect(repoRouteAction('loop', 'other', false)).toBe('adopt')
-    expect(repoRouteAction('loop', null, false)).toBe('adopt')
+    expect(repoRouteAction('loop', 'other', false, false)).toBe('adopt')
+    expect(repoRouteAction('loop', null, false, false)).toBe('adopt')
   })
 
   it('leaves once a synced route sees the scope switch to another repo', () => {
-    expect(repoRouteAction('loop', 'other', true)).toBe('leave')
+    expect(repoRouteAction('loop', 'other', false, true)).toBe('leave')
   })
 
-  it('leaves once a synced route sees the scope widen to all projects', () => {
-    expect(repoRouteAction('loop', null, true)).toBe('leave')
+  it('stays under all projects instead of narrowing the scope to the route repo', () => {
+    expect(repoRouteAction('loop', null, true, false)).toBe('stay')
+    expect(repoRouteAction('loop', null, true, true)).toBe('stay')
   })
 })

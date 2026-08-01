@@ -136,16 +136,17 @@ export type RepoRouteAction = 'stay' | 'adopt' | 'leave'
 
 // repoRouteAction reconciles a repo-bound route (one with a $repo URL segment,
 // e.g. a live run) with the active scope. Entering the route adopts its repo as
-// the scope, so deep links set the project. Once the scope has caught up (synced),
-// a scope pointing elsewhere means the user switched projects in the switcher, so
-// the route yields instead of leaving a stale run on screen. isAll resolves repo
-// to null, which also counts as a switch away.
+// the scope, so deep links set the project. "All projects" already spans every
+// repo, so the route stays without narrowing the scope to it. Once the scope has
+// caught up (synced), a scope pointing at another project means the user switched
+// in the switcher, so the route yields instead of leaving a stale run on screen.
 export function repoRouteAction(
   routeRepo: string,
   scopeRepo: string | null,
+  isAll: boolean,
   synced: boolean,
 ): RepoRouteAction {
-  if (scopeRepo === routeRepo) return 'stay'
+  if (isAll || scopeRepo === routeRepo) return 'stay'
   if (!synced) return 'adopt'
   return 'leave'
 }
