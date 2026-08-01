@@ -62,7 +62,7 @@ func (w *azureWriter) itemType(ctx context.Context, draft IssueDraft) (string, e
 		return "", err
 	}
 	level := azureapi.LevelRequirement
-	if draft.Slice {
+	if draft.Shape == DraftSlice {
 		level = azureapi.LevelTask
 	}
 	if pinned := strings.TrimSpace(draft.Type); pinned != "" {

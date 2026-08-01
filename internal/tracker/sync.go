@@ -245,10 +245,7 @@ func (r *azureReader) syncPull(ctx context.Context, project, since string) ([]Sy
 	if err != nil {
 		return nil, fmt.Errorf("read blockers: %w", err)
 	}
-	levels, err := r.client.BacklogLevels(ctx, project, levelTeam(r.teams))
-	if err != nil {
-		return nil, fmt.Errorf("read backlog levels: %w", err)
-	}
+	levels := readBacklogLevels(ctx, r.client, project, r.teams)
 	out := make([]SyncedIssue, len(items))
 	for i := range items {
 		out[i] = r.synced(project, &items[i], blockers, levels)

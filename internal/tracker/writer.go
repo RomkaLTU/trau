@@ -27,23 +27,31 @@ var ErrUnsupported = errors.New("tracker: operation not supported by this provid
 // a type.
 const jiraDefaultIssueType = "Task"
 
+// DraftShape is where a draft sits relative to the issue an apply is building out,
+// which a tracker with a typed hierarchy files a level apart: Jira rejects a child
+// whose parent sits at the child's own level, and Azure DevOps files a slice a
+// level down as a Task where Parent alone would read as the Feature a story hangs
+// off.
+type DraftShape string
+
+const (
+	DraftIssue DraftShape = ""      // a standalone issue, at the tracker's own default level
+	DraftEpic  DraftShape = "epic"  // a parent filed one level above the slices it will carry
+	DraftSlice DraftShape = "slice" // one piece of the issue named by Parent, filed one level down
+)
+
 // IssueDraft is a new issue to create: a title, an optional markdown description,
 // any labels to apply (e.g. the ready label), and an optional parent to nest the
-// issue under so an epic and its sub-issues can be filed from the board. Epic
-// marks a draft that will carry sub-issues of its own, so a tracker with a typed
-// hierarchy files it one level up — Jira rejects a child whose parent sits at the
-// child's own level. Slice is the mirror image: a draft filed as one piece of the
-// issue named by Parent, which Azure DevOps files a level down as a Task where
-// Parent alone would read as the Feature a story hangs off. Type pins the
-// tracker's own work-item type, for a provider whose hierarchy is typed and offers
-// more than one type at the draft's level; empty files that level's default.
+// issue under so an epic and its sub-issues can be filed from the board. Shape
+// places the draft in a tracker's typed hierarchy. Type pins the tracker's own
+// work-item type, for a provider whose hierarchy is typed and offers more than one
+// type at the draft's level; empty files that level's default.
 type IssueDraft struct {
 	Title       string
 	Description string
 	Labels      []string
 	Parent      string
-	Epic        bool
-	Slice       bool
+	Shape       DraftShape
 	Type        string
 }
 
@@ -312,7 +320,7 @@ func (w *jiraWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssu
 }
 
 func (w *jiraWriter) createKey(ctx context.Context, draft IssueDraft) (string, error) {
-	if draft.Epic {
+	if draft.Shape == DraftEpic {
 		return w.client.CreateEpic(ctx, w.project, w.epicType, draft.Title, draft.Description, draft.Labels)
 	}
 	return w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels, strings.TrimSpace(draft.Parent))

@@ -38,8 +38,10 @@ type Levels struct {
 func (l Levels) Of(itemType string) Level { return l.byType[levelKey(itemType)] }
 
 // At lists the work-item types the project places on level, each backlog's own
-// default type first, so a create with nothing pinned files At(level)[0].
-func (l Levels) At(level Level) []string { return l.types[level] }
+// default type first, so a create with nothing pinned files At(level)[0]. A level
+// the project declares nothing on lists nothing rather than nil: the list crosses a
+// JSON boundary, where nil would reach the picker as null.
+func (l Levels) At(level Level) []string { return append([]string{}, l.types[level]...) }
 
 // Default names the work-item type a create at level files, or "" when the
 // project has no backlog there.
@@ -91,6 +93,8 @@ func (c *Client) BacklogLevels(ctx context.Context, project, team string) (Level
 	levels.place(LevelTask, config.TaskBacklog)
 	if level, placed := bugLevel(settings.BugsBehavior); placed {
 		levels.place(level, config.BugWorkItems)
+	} else {
+		levels.unplace(config.BugWorkItems)
 	}
 	return levels, nil
 }
@@ -98,8 +102,8 @@ func (c *Client) BacklogLevels(ctx context.Context, project, team string) (Level
 // backlogLevel is one rung of the project's backlog configuration: the types it
 // holds, the one a create defaults to, and its rank among the portfolio backlogs.
 type backlogLevel struct {
-	Rank                int      `json:"rank"`
-	DefaultWorkItemType typeName `json:"defaultWorkItemType"`
+	Rank                int        `json:"rank"`
+	DefaultWorkItemType typeName   `json:"defaultWorkItemType"`
 	WorkItemTypes       []typeName `json:"workItemTypes"`
 }
 
@@ -108,26 +112,58 @@ type typeName struct {
 }
 
 // place records one backlog's work-item types on a level, its own default type
-// first so a create with nothing pinned files what the board itself would.
+// first so a create with nothing pinned files what the board itself would. A type
+// two backlogs both claim lands on the later one only — every project lists Bug on
+// a requirement or task backlog *and* under bugWorkItems, and the team's
+// bugsBehavior placement is the one that decides.
 func (l *Levels) place(level Level, backlog backlogLevel) {
-	names := make([]string, 0, len(backlog.WorkItemTypes)+1)
-	if preferred := strings.TrimSpace(backlog.DefaultWorkItemType.Name); preferred != "" {
+	for _, name := range backlog.names() {
+		l.detach(name)
+		l.byType[levelKey(name)] = level
+		l.types[level] = append(l.types[level], name)
+	}
+}
+
+// unplace takes a backlog's work-item types off every level, for a team whose
+// settings place them nowhere. Skipping the placement is not enough: the project
+// lists Bug on its requirement or task backlog whatever the team decided, so a Bug
+// only keeps no level once it is taken back off the one that listing put it on.
+func (l *Levels) unplace(backlog backlogLevel) {
+	for _, name := range backlog.names() {
+		l.detach(name)
+	}
+}
+
+// detach drops name from whichever level it currently sits on.
+func (l *Levels) detach(name string) {
+	key := levelKey(name)
+	prior, ok := l.byType[key]
+	if !ok {
+		return
+	}
+	l.types[prior] = slices.DeleteFunc(l.types[prior], func(placed string) bool {
+		return levelKey(placed) == key
+	})
+	delete(l.byType, key)
+}
+
+// names lists the backlog's own work-item types, its default first.
+func (b backlogLevel) names() []string {
+	names := make([]string, 0, len(b.WorkItemTypes)+1)
+	if preferred := strings.TrimSpace(b.DefaultWorkItemType.Name); preferred != "" {
 		names = append(names, preferred)
 	}
-	for _, t := range backlog.WorkItemTypes {
+	for _, t := range b.WorkItemTypes {
 		if name := strings.TrimSpace(t.Name); name != "" && !slices.Contains(names, name) {
 			names = append(names, name)
 		}
 	}
-	for _, name := range names {
-		l.byType[levelKey(name)] = level
-	}
-	l.types[level] = append(l.types[level], names...)
+	return names
 }
 
 // bugLevel reads the team's bugsBehavior — the setting behind the reference
-// diagram's note that a Bug sits at either level. A team that has bugs turned off
-// places them nowhere, so a Bug keeps no level at all.
+// diagram's note that a Bug sits at either level. A team that has bugs turned off,
+// or names a behavior trau does not know, places them on neither.
 func bugLevel(behavior string) (Level, bool) {
 	switch strings.ToLower(strings.TrimSpace(behavior)) {
 	case "asrequirements":

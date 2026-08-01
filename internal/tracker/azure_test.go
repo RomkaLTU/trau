@@ -37,6 +37,9 @@ func azureServer(t *testing.T, routes map[string]string) (*AzureDevOps, *[]recor
 			_, _ = w.Write([]byte(body))
 			return
 		}
+		if serveAzureWork(w, r) {
+			return
+		}
 		t.Errorf("unrouted request %s %s (route %q)", r.Method, r.URL.RequestURI(), azureRoute(r))
 	}))
 	t.Cleanup(srv.Close)
@@ -56,6 +59,36 @@ func azureRoute(r *http.Request) string {
 		return "/workitems?ids=" + ids
 	}
 	return strings.TrimPrefix(r.URL.Path, "/Contoso/_apis/wit")
+}
+
+// azureBacklogConfig is the Agile process as a project reports it: two portfolio
+// backlogs above the requirement one, a taskboard below it, and a bug section the
+// team settings place. azureTeamSettings files those bugs as requirements.
+const (
+	azureBacklogConfig = `{
+		"portfolioBacklogs":[
+			{"rank":2,"defaultWorkItemType":{"name":"Epic"},"workItemTypes":[{"name":"Epic"}]},
+			{"rank":1,"defaultWorkItemType":{"name":"Feature"},"workItemTypes":[{"name":"Feature"}]}],
+		"requirementBacklog":{"defaultWorkItemType":{"name":"User Story"},
+			"workItemTypes":[{"name":"User Story"},{"name":"Bug"}]},
+		"taskBacklog":{"defaultWorkItemType":{"name":"Task"},"workItemTypes":[{"name":"Task"}]},
+		"bugWorkItems":{"defaultWorkItemType":{"name":"Bug"},"workItemTypes":[{"name":"Bug"}]}}`
+	azureTeamSettings = `{"bugsBehavior":"asRequirements"}`
+)
+
+// serveAzureWork answers the Work API reads every azure caller makes before it can
+// place a work-item type on a backlog level, reporting whether it handled the
+// request so a fake organization keeps its own routes in charge.
+func serveAzureWork(w http.ResponseWriter, r *http.Request) bool {
+	switch {
+	case strings.HasSuffix(r.URL.Path, "/_apis/work/backlogconfiguration"):
+		_, _ = w.Write([]byte(azureBacklogConfig))
+	case strings.HasSuffix(r.URL.Path, "/_apis/work/teamsettings"):
+		_, _ = w.Write([]byte(azureTeamSettings))
+	default:
+		return false
+	}
+	return true
 }
 
 type recordedPatch struct {
@@ -166,6 +199,29 @@ func TestAzurePickSkipsContainersBlockedAndStartedWork(t *testing.T) {
 	}
 	if got != "4" {
 		t.Errorf("Pick = %q, want 4 (1 is a container, 2 is started, 3 is blocked)", got)
+	}
+}
+
+// A childless Feature carrying the ready tag is work nobody has broken down yet,
+// not a slice to build. HasChildren cannot tell the two apart, so the level the
+// project's own backlog configuration places the type on does.
+func TestAzurePickSkipsAFeatureWithNoChildren(t *testing.T) {
+	az, _ := azureServer(t, map[string]string{
+		"/wiql": `{"workItems":[{"id":1},{"id":2}]}`,
+		"/workitems?ids=1,2": `{"value":[
+			{"id":1,"fields":{"System.Title":"Keep the hierarchy","System.State":"New",
+				"System.WorkItemType":"Feature","System.Tags":"ready-for-agent",
+				"Microsoft.VSTS.Common.Priority":1}},
+			{"id":2,"fields":{"System.Title":"Carry the level through sync","System.State":"New",
+				"System.WorkItemType":"User Story","Microsoft.VSTS.Common.Priority":2}}]}`,
+	})
+
+	got, err := az.Pick(context.Background(), Scope{Team: "Contoso", Prefix: "CON"})
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if got != "2" {
+		t.Errorf("Pick = %q, want 2 (1 sits above requirement level)", got)
 	}
 }
 

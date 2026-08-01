@@ -507,8 +507,8 @@ func TestGrillApplyCreateSingle(t *testing.T) {
 	if fake.created[0].Title != "Add dark mode toggle" || fake.created[0].Parent != "" {
 		t.Fatalf("created draft = %+v, want a titled top-level issue", fake.created[0])
 	}
-	if fake.created[0].Epic {
-		t.Error("standalone issue is marked as an epic; a create with no slices keeps the default issue type")
+	if fake.created[0].Shape != tracker.DraftIssue {
+		t.Error("standalone issue is drafted as an epic; a create with no slices keeps the default issue type")
 	}
 	if got := fake.created[0].Labels; !slices.Equal(got, []string{"ready-for-agent"}) {
 		t.Errorf("single-issue labels = %v, want the default ready label", got)
@@ -532,6 +532,71 @@ func TestGrillApplyCreateSingle(t *testing.T) {
 	}
 	if iss, found, err := stores.Issues().Get(root, "COD-100"); err != nil || !found || iss.Title != "Add dark mode toggle" {
 		t.Errorf("mirrored issue = (%+v, found=%v, err=%v), want the created issue in the store", iss, found, err)
+	}
+}
+
+// On an Azure DevOps repo the picker's choice reaches the draft and the mirrored
+// row: the work item files as the picked requirement-level type under the picked
+// Feature.
+func TestGrillApplyCreateCarriesAzureHierarchy(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "9007"}}}
+	ts, stores, root := grillApplyServer(t, fake)
+	if err := os.WriteFile(config.ProjectConfigPath(root), []byte("TRACKER_PROVIDER=azure\n"), 0o644); err != nil {
+		t.Fatalf("write repo config: %v", err)
+	}
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Cache the board read",
+		ProposedDescription: "The board read is refetched per candidate.",
+		Summary:             "specced the cache",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{
+		AzureHierarchy: AzureHierarchy{WorkItemType: "Bug", Parent: "3"},
+	})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if len(fake.created) != 1 {
+		t.Fatalf("created = %d, want 1 work item", len(fake.created))
+	}
+	if fake.created[0].Type != "Bug" || fake.created[0].Parent != "3" {
+		t.Errorf("created draft = %+v, want a Bug under Feature 3", fake.created[0])
+	}
+	if iss, found, err := stores.Issues().Get(root, "9007"); err != nil || !found || iss.Parent != "3" {
+		t.Errorf("mirrored issue = (%+v, found=%v, err=%v), want it nested under Feature 3", iss, found, err)
+	}
+}
+
+// The hierarchy fields belong to Azure DevOps. A client posting them at a repo on
+// another tracker files exactly where it filed before they existed: top-level, at
+// the tracker's own default type.
+func TestGrillApplyCreateIgnoresAzureHierarchyOffAzure(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "COD-101"}}}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Add a keyboard shortcut",
+		ProposedDescription: "Pressing g then b opens the board.",
+		Summary:             "specced the shortcut",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{
+		AzureHierarchy: AzureHierarchy{WorkItemType: "Feature", Parent: "COD-1"},
+	})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if len(fake.created) != 1 {
+		t.Fatalf("created = %d, want 1 standalone issue", len(fake.created))
+	}
+	if fake.created[0].Parent != "" || fake.created[0].Type != "" {
+		t.Errorf("created draft = %+v, want no parent and no pinned type on a linear repo", fake.created[0])
+	}
+	if iss, found, err := stores.Issues().Get(root, "COD-101"); err != nil || !found || iss.Parent != "" {
+		t.Errorf("mirrored issue = (%+v, found=%v, err=%v), want the created issue with no parent", iss, found, err)
 	}
 }
 
@@ -635,8 +700,8 @@ func TestGrillApplyCreateEpic(t *testing.T) {
 	if fake.created[0].Parent != "" || fake.created[0].Title != "Checkout redesign" {
 		t.Errorf("parent draft = %+v, want a top-level epic", fake.created[0])
 	}
-	if !fake.created[0].Epic {
-		t.Error("parent draft is not marked as an epic; a typed tracker files it at the children's own level and every child create is rejected")
+	if fake.created[0].Shape != tracker.DraftEpic {
+		t.Error("parent draft is not drafted as an epic; a typed tracker files it at the children's own level and every child create is rejected")
 	}
 	if len(fake.created[0].Labels) != 0 {
 		t.Errorf("epic parent labels = %v, want none — readiness lives on the children", fake.created[0].Labels)
@@ -645,8 +710,8 @@ func TestGrillApplyCreateEpic(t *testing.T) {
 		if d.Parent != "COD-200" {
 			t.Errorf("child %q parent = %q, want COD-200", d.Title, d.Parent)
 		}
-		if d.Epic {
-			t.Errorf("child %q is marked as an epic, want a leaf under the epic", d.Title)
+		if d.Shape == tracker.DraftEpic {
+			t.Errorf("child %q is drafted as an epic, want a slice under the epic", d.Title)
 		}
 		if !slices.Equal(d.Labels, []string{"ready-for-agent"}) {
 			t.Errorf("child %q labels = %v, want the default ready label", d.Title, d.Labels)

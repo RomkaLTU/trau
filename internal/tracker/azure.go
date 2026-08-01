@@ -113,10 +113,7 @@ func (a *AzureDevOps) Pick(ctx context.Context, scope Scope) (string, error) {
 	if len(candidates) == 0 {
 		return "", nil
 	}
-	levels, err := a.levels(ctx, project)
-	if err != nil {
-		return "", err
-	}
+	levels := a.levels(ctx, project)
 	for _, c := range candidates {
 		if leaves != nil && !leaves[c.ID] {
 			continue
@@ -129,21 +126,36 @@ func (a *AzureDevOps) Pick(ctx context.Context, scope Scope) (string, error) {
 }
 
 // levels reads the backlog level every work-item type in the project sits on.
-// Where a Bug lands is a team setting, so the read is team-scoped.
-func (a *AzureDevOps) levels(ctx context.Context, project string) (azureapi.Levels, error) {
-	return a.api().BacklogLevels(ctx, project, levelTeam(a.Teams))
+func (a *AzureDevOps) levels(ctx context.Context, project string) azureapi.Levels {
+	return readBacklogLevels(ctx, a.api(), project, a.Teams)
+}
+
+// readBacklogLevels reads the level model the project stacks its work-item types
+// on, team-scoped because where a Bug lands is a team setting. The model is an
+// enrichment on every path that reads it, so a configuration the PAT or the named
+// team cannot see costs the level and nothing else: the pick, the pull and the
+// prompt all carry on without one, as they did before trau read levels at all. A
+// create is the exception — it cannot file a type it cannot place, so the writer
+// keeps its own failing read.
+func readBacklogLevels(ctx context.Context, client *azureapi.Client, project string, teams []string) azureapi.Levels {
+	team := levelTeam(teams)
+	if len(teams) > 1 {
+		logger.Debugf("azure: repo names %d teams; backlog levels read from %q", len(teams), team)
+	}
+	levels, err := client.BacklogLevels(ctx, project, team)
+	if err != nil {
+		logger.Debugf("azure: read backlog levels for %s: %v", project, err)
+	}
+	return levels
 }
 
 // levelTeam names the team whose backlog configuration decides the board's level
 // model: the first team the repo lists, or "" for the project's default team. A
 // repo mirroring two boards that disagree about where a Bug sits is not a case
-// worth modelling, so the first name wins and the choice is logged.
+// worth modelling, so the first name wins.
 func levelTeam(teams []string) string {
 	if len(teams) == 0 {
 		return ""
-	}
-	if len(teams) > 1 {
-		logger.Debugf("azure: repo names %d teams; backlog levels read from %q", len(teams), teams[0])
 	}
 	return strings.TrimSpace(teams[0])
 }
@@ -335,11 +347,7 @@ func (a *AzureDevOps) IssueDetail(ctx context.Context, id string) (IssueDetail, 
 		return IssueDetail{}, err
 	}
 	detail := IssueDetail{Title: item.Title, Description: item.Description, Labels: item.Tags, Type: item.Type}
-	if levels, err := a.levels(ctx, a.Project); err != nil {
-		logger.Debugf("azure: read backlog levels for %s: %v", id, err)
-	} else {
-		detail.Level = string(levels.Of(item.Type))
-	}
+	detail.Level = string(a.levels(ctx, a.Project).Of(item.Type))
 	// The discussion is an enrichment on top of an enrichment: losing it must not
 	// cost the prompt the description that already loaded.
 	comments, err := a.api().Comments(ctx, a.Project, n)

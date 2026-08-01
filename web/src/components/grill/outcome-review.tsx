@@ -168,10 +168,15 @@ export function OutcomeReview({
   });
 
   // Azure DevOps files a create at requirement level under a Feature the board
-  // already has, so the choice is only offered where one exists to make.
+  // already has, so the choice is only offered where one exists to make. The
+  // create-options answer is cached per repo and shared with every session the
+  // panel opens, so the picker rides the query's own gate rather than its success
+  // alone — the hub reads the hierarchy on a create and nowhere else.
+  const placesInHierarchy =
+    isCreate && destination === "tracker" && tracker === "azure";
   const hierarchy = useQuery({
     ...azureCreateOptionsQueryOptions(repo),
-    enabled: isCreate && destination === "tracker" && tracker === "azure",
+    enabled: placesInHierarchy,
   });
 
   // The session's new state rides onSession (and the hub's SSE state frame), so the
@@ -328,7 +333,7 @@ export function OutcomeReview({
 
       {anchorInternal && <InternalAnchorNote anchor={issueId} />}
 
-      {hierarchy.isSuccess && (
+      {placesInHierarchy && hierarchy.isSuccess && (
         <HierarchyPicker
           options={hierarchy.data}
           workItemType={workItemType}

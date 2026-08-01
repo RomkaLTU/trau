@@ -117,6 +117,11 @@ through the same seam as Linear and Jira and no caller learns a new provider.
    `ErrUnsupported`. The loop's own writes (state, tags, comments, bug filing) keep
    going through `AzureDevOps`; only the hub's read path is new.
 
+   **Reversed by [ADR 0031](0031-azure-devops-work-item-hierarchy.md) (TRAU-24).**
+   `NewWriter` now builds an `azureWriter` from the same org URL and PAT the reader
+   holds, so every grill disposition works on an Azure repo. Assignment is the one
+   surface still on `ErrUnsupported`, for the reason ADR 0031 records.
+
 ## Consequences
 
 - A repo with `TRACKER_PROVIDER=azure`, `LINEAR_TEAM`, `AZURE_ORG_URL` and

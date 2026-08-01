@@ -236,7 +236,7 @@ func TestLinearWriterApplyWiresRelationsWithoutLookups(t *testing.T) {
 	w, reqs := fakeApplyLinear(t, 0)
 	ctx := context.Background()
 
-	epic, err := w.CreateIssue(ctx, IssueDraft{Title: "epic", Epic: true})
+	epic, err := w.CreateIssue(ctx, IssueDraft{Title: "epic", Shape: DraftEpic})
 	if err != nil {
 		t.Fatalf("create epic: %v", err)
 	}
@@ -521,7 +521,7 @@ func TestJiraWriterCreateUnderParent(t *testing.T) {
 func TestJiraWriterCreateEpicAndChildren(t *testing.T) {
 	w, rec := fakeJiraWriter(t)
 
-	epic, err := w.CreateIssue(context.Background(), IssueDraft{Title: "Checkout redesign", Epic: true})
+	epic, err := w.CreateIssue(context.Background(), IssueDraft{Title: "Checkout redesign", Shape: DraftEpic})
 	if err != nil {
 		t.Fatalf("CreateIssue(epic) error: %v", err)
 	}
@@ -555,7 +555,7 @@ func TestJiraWriterCreateEpicAndChildren(t *testing.T) {
 func TestJiraWriterEpicTypeOverride(t *testing.T) {
 	w, rec := fakeJiraWriterEpicType(t, "Bug")
 
-	if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "Odd epic", Epic: true}); err != nil {
+	if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "Odd epic", Shape: DraftEpic}); err != nil {
 		t.Fatalf("CreateIssue(epic) error: %v", err)
 	}
 	if rec.creates[0].Fields.IssueType.ID != "10004" {
@@ -644,6 +644,9 @@ func TestNewWriterRequiresCredentials(t *testing.T) {
 	if _, err := NewWriter("jira", Config{BaseURL: "https://x.atlassian.net", Email: "e@x.com"}); !errors.Is(err, ErrWriterUnavailable) {
 		t.Errorf("jira without a full credential set: err = %v, want ErrWriterUnavailable", err)
 	}
+	if _, err := NewWriter("azure", Config{BaseURL: "https://dev.azure.com/acme"}); !errors.Is(err, ErrWriterUnavailable) {
+		t.Errorf("azure without a pat: err = %v, want ErrWriterUnavailable", err)
+	}
 	if _, err := NewWriter("github", Config{}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("github writer: err = %v, want ErrUnsupported", err)
 	}
@@ -683,5 +686,21 @@ func TestNewWriterBuildsDirectClients(t *testing.T) {
 	}
 	if j.project != "PROJ" {
 		t.Errorf("jira writer project = %q, want the configured project key", j.project)
+	}
+	aw, err := NewWriter("azure", Config{
+		BaseURL:    "https://dev.azure.com/acme",
+		APIKey:     "pat",
+		Team:       "Contoso",
+		BoardTeams: []string{"Contoso Platform", "Contoso Web"},
+	})
+	if err != nil {
+		t.Fatalf("azure writer: %v", err)
+	}
+	a, ok := aw.(*azureWriter)
+	if !ok {
+		t.Fatalf("azure writer type = %T, want *azureWriter", aw)
+	}
+	if a.project != "Contoso" || a.team != "Contoso Platform" {
+		t.Errorf("azure writer binding = project %q team %q, want the configured project and the first named team", a.project, a.team)
 	}
 }

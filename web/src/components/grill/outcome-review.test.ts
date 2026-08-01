@@ -10,6 +10,7 @@ import { Toaster } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CreatedBannerProvider } from "@/components/trau/created-banner";
+import type { AzureCreateOptions } from "@/lib/azure";
 import type {
   GrillApplyResponse,
   GrillListResponse,
@@ -71,9 +72,16 @@ function issue(source: string): Issue {
 let root: Root | undefined;
 let host: HTMLElement | undefined;
 
+const azureOptions: AzureCreateOptions = {
+  types: ["User Story", "Bug"],
+  features: [{ id: "70", title: "Checkout" }],
+};
+
 // renderReview mounts the review on seeded caches, so the only fetch a test sees
-// is the apply it drives itself. The toaster rides along because a landed apply
-// raises its caveats there rather than in the review the host retires.
+// is the apply it drives itself. The create-options entry is seeded warm the way
+// any create session in the panel leaves it — it is keyed by repo, not by session.
+// The toaster rides along because a landed apply raises its caveats there rather
+// than in the review the host retires.
 function renderReview(
   outcome: OutcomePayload,
   tracker: string,
@@ -90,6 +98,10 @@ function renderReview(
   });
   client.setQueryData<Issue>(["issue", "loop", "COD-42"], issue(anchorSource));
   client.setQueryData(["assignable-users", "loop", ""], []);
+  client.setQueryData<AzureCreateOptions>(
+    ["azure-create-options", "loop"],
+    azureOptions,
+  );
   host = document.createElement("div");
   document.body.appendChild(host);
   const mounted = createRoot(host);
@@ -196,6 +208,22 @@ describe("OutcomeReview destination", () => {
     );
 
     expect(el.textContent).not.toContain("Destination");
+  });
+});
+
+describe("OutcomeReview Azure hierarchy", () => {
+  it("offers the work-item type and the Feature on a create", () => {
+    const el = renderReview(createEpic, "azure", "azure");
+
+    expect(el.textContent).toContain("Work item type");
+    expect(el.textContent).toContain("No Feature");
+  });
+
+  it("withholds both from a rewrite, whose choice the hub would discard", () => {
+    const el = renderReview(rewrite, "azure", "azure");
+
+    expect(el.textContent).not.toContain("Work item type");
+    expect(el.textContent).not.toContain("No Feature");
   });
 });
 
