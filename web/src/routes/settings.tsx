@@ -16,6 +16,10 @@ import {
   RepoPromptsSection,
 } from '@/components/trau/prompts-panel'
 import { MCPConnectSection } from '@/components/trau/mcp-connect'
+import {
+  ProjectDefaultsSection,
+  useProjectDefaultsNav,
+} from '@/components/trau/project-defaults-panel'
 import { PushNotificationsSection } from '@/components/trau/push-notifications-section'
 import { TeamSyncSection } from '@/components/trau/team-sync-panel'
 import {
@@ -35,6 +39,7 @@ import {
   promptsQueryOptions,
   repoPromptsQueryOptions,
 } from '@/lib/prompts'
+import { matchesProjectDefaults } from '@/lib/projects'
 import { matchesTeamSync } from '@/lib/teamsync'
 import {
   ROUTING_SECTION,
@@ -141,13 +146,16 @@ function ConfigView({ repo }: { repo: string }) {
     () => (searching ? keys.filter((k) => matchesQuery(k, query)).length : 0),
     [keys, query, searching],
   )
+  const projectDefaultsNav = useProjectDefaultsNav(repo)
   const panelMatches =
     !searching ||
     [...globalPrompts, ...repoPrompts].some((p) => matchesPrompt(p, query)) ||
+    (projectDefaultsNav !== null && matchesProjectDefaults(query)) ||
     matchesTeamSync(query)
 
   const navSections = useMemo(
     () => [
+      ...(projectDefaultsNav ? [projectDefaultsNav] : []),
       ...sections.map((s) => ({
         id: s.id,
         title: s.group,
@@ -173,7 +181,7 @@ function ConfigView({ repo }: { repo: string }) {
         modified: false,
       },
     ],
-    [sections, globalPrompts, repoPrompts],
+    [projectDefaultsNav, sections, globalPrompts, repoPrompts],
   )
 
   if (isPending && !error) return <ConfigSkeleton />
@@ -369,6 +377,7 @@ function ConfigView({ repo }: { repo: string }) {
         <SectionNav sections={navSections} variant="desktop" />
 
         <div className="flex min-w-0 flex-1 flex-col gap-4">
+          <ProjectDefaultsSection repo={repo} query={query} />
           {visibleSections.length === 0 && !panelMatches && (
             <TerminalCard
               title="search"

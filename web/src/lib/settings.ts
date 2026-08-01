@@ -126,6 +126,15 @@ export function matchesQuery(item: ConfigKey, query: string): boolean {
   )
 }
 
+// matchesTerms keeps a panel that owns no config keys in the search results: the
+// panel lists the words it answers to, and a query narrower than one of them
+// keeps it visible.
+export function matchesTerms(query: string, terms: readonly string[]): boolean {
+  if (query === '') return true
+  const q = query.toLowerCase()
+  return terms.some((term) => term.includes(q))
+}
+
 export interface SettingsSearch {
   q?: string
 }
