@@ -258,6 +258,7 @@ const SUB_GLYPH: Record<
 > = {
   done: { glyph: "✓", className: "text-done", label: "done" },
   epic: { glyph: "◆", className: "text-info", label: "epic" },
+  quarantined: { glyph: "✕", className: "text-fail", label: "quarantined" },
   todo: { glyph: "○", className: "text-faint", label: "todo" },
 };
 

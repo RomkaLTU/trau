@@ -117,8 +117,10 @@ func (d *drainer) run(ctx context.Context, root string) {
 // pending self-reload is waiting for its idle gap, or while an Epic's release
 // holds the repo — only that Epic's own finalize starts then — or finishes the
 // drain once the queue has nothing left to run so a completed — or armed but
-// empty — queue reads stopped instead of idling armed. It is the whole drain
-// policy, pure enough to table-test.
+// empty — queue reads stopped instead of idling armed. A tick that finds a
+// running epic first advances its sub-issue rows onto what their checkpoints
+// already say, so the queue's count moves as children settle. It is the whole
+// drain policy, pure enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
@@ -126,6 +128,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		return drainWait, err
 	}
 	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
+		d.advanceSubIssues(root, running)
 		if d.alive(running.PID) || d.srv.isRemoving(root, running.ID) {
 			return drainWait, nil
 		}
@@ -242,6 +245,48 @@ func (d *drainer) reconcileOutcome(root string, it queue.Item) (class, reason st
 // epic id (checkpointEpicMerged).
 func (d *drainer) cleanFinish(root string, it queue.Item) bool {
 	return d.srv.stores.Checkpoints().Phase(root, it.ID) == state.Merged
+}
+
+// advanceSubIssues moves a running epic's sub-issue rows onto the states their
+// own checkpoints have already reached, so the queue's count follows the drain
+// instead of jumping when the epic settles. A row already recorded done stays
+// done — an enqueue-time snapshot of a child the tracker files closed is fresher
+// than whatever checkpoint an older run left behind — and the epic's settle
+// remains the authoritative closer.
+func (d *drainer) advanceSubIssues(root string, it queue.Item) {
+	if it.Kind != queue.KindEpic {
+		return
+	}
+	states := map[string]string{}
+	for _, sub := range it.SubIssues {
+		if sub.State == subIssueDone {
+			continue
+		}
+		next := subIssueState(d.srv.stores.Checkpoints().Phase(root, sub.ID))
+		if next != "" && next != sub.State {
+			states[sub.ID] = next
+		}
+	}
+	if len(states) == 0 {
+		return
+	}
+	if err := d.srv.stores.Queue(root).SetSubIssueStates(it.ID, states); err != nil {
+		logger.Verbosef("advance sub-issues of %s: %v", it.ID, err)
+	}
+}
+
+// subIssueState maps a child's checkpoint phase onto the sub-issue state the
+// queue records, or "" while the child has reached no terminal phase. A merged
+// child is done; a quarantined one is settled but not shipped, and says so
+// rather than passing for either done or untouched work.
+func subIssueState(phase string) string {
+	switch phase {
+	case state.Merged:
+		return subIssueDone
+	case state.Quarantined:
+		return subIssueQuarantined
+	}
+	return ""
 }
 
 // The three independent proofs a swept item's work already shipped, in the order

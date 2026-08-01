@@ -231,6 +231,28 @@ describe('buildTimeline', () => {
     expect(tl.finished).toEqual([])
   })
 
+  it('reads a quarantined sub-issue as failed, not as work still to come', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'One', state: 'done' },
+            { id: 'COD-11', title: 'Two', state: 'quarantined' },
+          ],
+        }),
+      ],
+      [],
+    )
+    expect(tl.settled.map((t) => [t.id, t.status])).toEqual([
+      ['COD-10', 'done'],
+      ['COD-11', 'failed'],
+    ])
+    expect(tl.pending).toEqual([])
+  })
+
   it('keeps a paused epic in the run order once every sub-issue is done', () => {
     const tl = buildTimeline(
       [

@@ -216,6 +216,7 @@ function resolve(
       return { ...base, status: 'done' }
     case 'failed':
     case 'faulted':
+    case 'quarantined':
       return { ...base, status: 'failed', reason: leaf.reason }
     case 'skipped':
       return { ...base, status: 'skipped', reason: leaf.reason }
