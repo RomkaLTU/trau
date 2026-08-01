@@ -9,12 +9,20 @@ import (
 
 func testQAAccounts(t *testing.T) *QAAccounts {
 	t.Helper()
+	q, _ := testQAStores(t)
+	return q
+}
+
+// testQAStores returns the QA and app URL stores over one database, so a test
+// can exercise the attachment between them.
+func testQAStores(t *testing.T) (*QAAccounts, *AppURLs) {
+	t.Helper()
 	db, err := hubdb.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewQAAccounts(db.SQL())
+	return NewQAAccounts(db.SQL()), NewAppURLs(db.SQL())
 }
 
 func TestQAAccountCRUD(t *testing.T) {
@@ -146,6 +154,65 @@ func TestQAAccountSource(t *testing.T) {
 	}
 	if len(list) != 2 || list[0].Source != QASourceManual || list[1].Source != QASourceAgent {
 		t.Errorf("list sources = %+v", list)
+	}
+}
+
+// TestQAAccountAppURLAttachment pins the link to the app a login opens: an
+// attachment survives a round trip, an update re-points or clears it, and
+// deleting the app URL entry detaches its accounts rather than deleting them.
+func TestQAAccountAppURLAttachment(t *testing.T) {
+	q, a := testQAStores(t)
+	const repo = "/repos/acme"
+
+	storefront, err := a.Create(repo, AppURLInput{URL: "http://localhost:3000"})
+	if err != nil {
+		t.Fatalf("create storefront: %v", err)
+	}
+	admin, err := a.Create(repo, AppURLInput{URL: "http://localhost:3001", Workspace: "admin"})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	created, err := q.Create(repo, QAAccountInput{Label: "shopper", AppURLID: storefront.ID})
+	if err != nil {
+		t.Fatalf("create attached: %v", err)
+	}
+	if created.AppURLID != storefront.ID {
+		t.Fatalf("create returned app url %d, want %d", created.AppURLID, storefront.ID)
+	}
+	if got, _, _ := q.Get(repo, created.ID); got.AppURLID != storefront.ID {
+		t.Errorf("get returned app url %d, want %d", got.AppURLID, storefront.ID)
+	}
+
+	moved, err := q.Update(repo, created.ID, QAAccountInput{Label: "shopper", AppURLID: admin.ID})
+	if err != nil {
+		t.Fatalf("re-point: %v", err)
+	}
+	if moved.AppURLID != admin.ID {
+		t.Errorf("re-pointed app url = %d, want %d", moved.AppURLID, admin.ID)
+	}
+
+	unattached, err := q.Create(repo, QAAccountInput{Label: "any"})
+	if err != nil {
+		t.Fatalf("create unattached: %v", err)
+	}
+	if unattached.AppURLID != 0 {
+		t.Errorf("unattached app url = %d, want 0", unattached.AppURLID)
+	}
+
+	deleted, err := a.Delete(repo, admin.ID)
+	if err != nil || !deleted {
+		t.Fatalf("delete app url: deleted=%v err=%v", deleted, err)
+	}
+	detached, found, err := q.Get(repo, created.ID)
+	if err != nil {
+		t.Fatalf("get after app url delete: %v", err)
+	}
+	if !found {
+		t.Fatal("deleting an app URL took its QA account with it")
+	}
+	if detached.AppURLID != 0 {
+		t.Errorf("app url after delete = %d, want 0 (detached)", detached.AppURLID)
 	}
 }
 

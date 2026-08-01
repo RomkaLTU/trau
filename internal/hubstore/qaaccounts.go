@@ -21,7 +21,9 @@ const (
 // auth-walled app: a human label, the username and secret, and a description of
 // the cases or flows the account covers. Secret is the full value — the store is
 // the source of truth; the settings API masks it on read while the loop reads it
-// whole. Source records where the account came from, manual or agent.
+// whole. Source records where the account came from, manual or agent. AppURLID
+// is the app URL entry the login opens, zero when the account is unattached and
+// so applies to every URL.
 type QAAccount struct {
 	ID          int64
 	Label       string
@@ -29,6 +31,7 @@ type QAAccount struct {
 	Secret      string
 	Description string
 	Source      string
+	AppURLID    int64
 	CreatedAt   string
 	UpdatedAt   string
 }
@@ -42,6 +45,7 @@ type QAAccountInput struct {
 	Secret      string
 	Description string
 	Source      string
+	AppURLID    int64
 }
 
 // QAAccounts is the hub's per-repo store of QA credentials and the free-text QA
@@ -56,7 +60,7 @@ func NewQAAccounts(db *sql.DB) *QAAccounts {
 	return &QAAccounts{db: db, now: time.Now}
 }
 
-const qaAccountSelect = `SELECT id, label, username, secret, description, source, created_at, updated_at FROM qa_accounts`
+const qaAccountSelect = `SELECT id, label, username, secret, description, source, app_url_id, created_at, updated_at FROM qa_accounts`
 
 // Create files a new QA account for the repo, stamping its provenance and its
 // created and updated times, and returns it with its allocated id.
@@ -67,9 +71,9 @@ func (q *QAAccounts) Create(repo string, in QAAccountInput) (QAAccount, error) {
 		source = QASourceManual
 	}
 	res, err := q.db.Exec(
-		`INSERT INTO qa_accounts(repo, label, username, secret, description, source, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		repo, in.Label, in.Username, in.Secret, in.Description, source, now, now,
+		`INSERT INTO qa_accounts(repo, label, username, secret, description, source, app_url_id, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, in.Label, in.Username, in.Secret, in.Description, source, nullableID(in.AppURLID), now, now,
 	)
 	if err != nil {
 		return QAAccount{}, err
@@ -116,9 +120,9 @@ func (q *QAAccounts) ByLabel(repo, label string) (QAAccount, bool, error) {
 // is not in the repo.
 func (q *QAAccounts) Update(repo string, id int64, in QAAccountInput) (QAAccount, error) {
 	res, err := q.db.Exec(
-		`UPDATE qa_accounts SET label = ?, username = ?, secret = ?, description = ?, updated_at = ?
+		`UPDATE qa_accounts SET label = ?, username = ?, secret = ?, description = ?, app_url_id = ?, updated_at = ?
 		 WHERE repo = ? AND id = ?`,
-		in.Label, in.Username, in.Secret, in.Description, q.stamp(), repo, id,
+		in.Label, in.Username, in.Secret, in.Description, nullableID(in.AppURLID), q.stamp(), repo, id,
 	)
 	if err != nil {
 		return QAAccount{}, err
@@ -174,10 +178,14 @@ func (q *QAAccounts) get(repo string, id int64) (QAAccount, error) {
 }
 
 func (q *QAAccounts) one(query string, args ...any) (QAAccount, error) {
-	var a QAAccount
-	err := q.db.QueryRow(query, args...).Scan(
-		&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.Source, &a.CreatedAt, &a.UpdatedAt,
+	var (
+		a      QAAccount
+		appURL sql.NullInt64
 	)
+	err := q.db.QueryRow(query, args...).Scan(
+		&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.Source, &appURL, &a.CreatedAt, &a.UpdatedAt,
+	)
+	a.AppURLID = appURL.Int64
 	return a, err
 }
 
@@ -189,15 +197,26 @@ func (q *QAAccounts) scan(query string, args ...any) (out []QAAccount, err error
 	defer func() { err = errors.Join(err, rows.Close()) }()
 	out = []QAAccount{}
 	for rows.Next() {
-		var a QAAccount
+		var (
+			a      QAAccount
+			appURL sql.NullInt64
+		)
 		if err := rows.Scan(
-			&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.Source, &a.CreatedAt, &a.UpdatedAt,
+			&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.Source, &appURL, &a.CreatedAt, &a.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
+		a.AppURLID = appURL.Int64
 		out = append(out, a)
 	}
 	return out, rows.Err()
 }
 
 func (q *QAAccounts) stamp() string { return q.now().UTC().Format(time.RFC3339) }
+
+// nullableID stores an optional foreign key: an unset attachment is SQL NULL,
+// which is what ON DELETE SET NULL leaves behind and what the FK constraint
+// requires of a row pointing at no entry.
+func nullableID(id int64) sql.NullInt64 {
+	return sql.NullInt64{Int64: id, Valid: id != 0}
+}

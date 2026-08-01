@@ -91,6 +91,7 @@ func (p *Pipeline) ingestQACapture(ctx context.Context, id string) {
 			Secret:      c.Secret,
 			Description: c.Description,
 			Source:      hubclient.QASourceAgent,
+			AppURLID:    p.qaAppURLID,
 		}
 		if err := p.SaveQAAccount(ctx, in); err != nil {
 			p.logf("  ⚠ QA account not captured: %v", err)
@@ -103,6 +104,7 @@ func (p *Pipeline) ingestQACapture(ctx context.Context, id string) {
 			Username:    c.Username,
 			Secret:      c.Secret,
 			Description: c.Description,
+			AppURLID:    p.qaAppURLID,
 		})
 		p.qaCaptured++
 		p.logf("  ✓ QA account captured: %s", label)

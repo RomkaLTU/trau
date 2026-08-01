@@ -278,6 +278,40 @@ func TestQAVerifyNoteResetsCaptureBudget(t *testing.T) {
 	}
 }
 
+// TestIngestQACaptureAttachesToDrivenAppURL files a discovered credential
+// against the app it was discovered signing into, so the next run offers it only
+// to a slice driving that same entry.
+func TestIngestQACaptureAttachesToDrivenAppURL(t *testing.T) {
+	const id = "COD-91090"
+	hub := &captureHub{}
+	p, _, _ := newCapturePipeline(t, hub)
+	p.RepoRoot = appURLMonorepo(t)
+	entries := []hubclient.AppURL{
+		{ID: 1, URL: "http://hub:3000"},
+		{ID: 2, URL: "http://hub:3001", Workspace: "web"},
+	}
+	p.FetchAppURLs = func(context.Context) ([]hubclient.AppURL, error) { return entries, nil }
+	p.loadAppURLs(context.Background())
+	p.Git = filesGit{files: []string{"apps/web/src/page.tsx"}}
+	p.FetchQAAccounts = func(context.Context) (hubclient.QARoster, error) {
+		return hubclient.QARoster{AppURLs: entries}, nil
+	}
+	p.qaVerifyNote(context.Background(), id, "drive the app")
+
+	writeQACapture(t, id, qaCaptureAccount{Label: "seeded owner", Username: "owner@example.test", Secret: "hunter2"})
+	p.ingestQACapture(context.Background(), id)
+
+	if len(hub.saved) != 1 {
+		t.Fatalf("saved %d accounts, want 1: %+v", len(hub.saved), hub.saved)
+	}
+	if hub.saved[0].AppURLID != 2 {
+		t.Errorf("captured account attached to app url %d, want the web entry (2)", hub.saved[0].AppURLID)
+	}
+	if len(p.qaRoster) != 1 || p.qaRoster[0].AppURLID != 2 {
+		t.Errorf("roster after capture = %+v, want the captured account on the web entry", p.qaRoster)
+	}
+}
+
 // TestIngestQACaptureToleratesFailure covers every way capture can go wrong —
 // malformed file, unreachable hub, no file at all. Each one warns at most and
 // leaves nothing behind; none may fail the run.

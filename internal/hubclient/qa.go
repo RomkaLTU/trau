@@ -7,17 +7,22 @@ import (
 
 // QAAccount is one QA login the loop injects into the verify prompt: the label,
 // username, secret, and coverage description as the hub's roster reports them.
+// AppURLID names the app URL entry the login opens, zero when the account is
+// unattached and so applies to every URL.
 type QAAccount struct {
 	Label       string `json:"label"`
 	Username    string `json:"username"`
 	Secret      string `json:"secret"`
 	Description string `json:"description"`
+	AppURLID    int64  `json:"app_url_id,omitempty"`
 }
 
 // QARoster is a repo's QA credentials as the loop fetches them at verify time:
-// the accounts with full secret values and the free-text QA notes.
+// the accounts with full secret values, the repo's app URL entries so a slice
+// can tell which accounts open the app it drives, and the free-text QA notes.
 type QARoster struct {
 	Accounts []QAAccount `json:"accounts"`
+	AppURLs  []AppURL    `json:"app_urls"`
 	Notes    string      `json:"notes"`
 }
 
@@ -26,13 +31,15 @@ type QARoster struct {
 // settings.
 const QASourceAgent = "agent"
 
-// QAAccountInput is a QA account the loop asks the hub to store.
+// QAAccountInput is a QA account the loop asks the hub to store. A zero AppURLID
+// files it unattached, applying to every app URL.
 type QAAccountInput struct {
 	Label       string `json:"label"`
 	Username    string `json:"username"`
 	Secret      string `json:"secret"`
 	Description string `json:"description"`
 	Source      string `json:"source,omitempty"`
+	AppURLID    int64  `json:"app_url_id,omitempty"`
 }
 
 // QARoster reads the repo's QA accounts and notes from the hub with full secret

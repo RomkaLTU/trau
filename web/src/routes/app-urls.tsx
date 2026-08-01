@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 
 import { Eyebrow, ProjectScopeGate, useActiveRepo } from '@/components/trau'
 import { AppURLsSection } from '@/components/trau/app-urls-panel'
+import { QAAccountsSection } from '@/components/trau/qa-accounts-panel'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions } from '@/lib/runs'
 
@@ -26,13 +27,17 @@ function AppURLsPage() {
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
           Where this repo&apos;s app runs locally, so the verify phase can drive
-          it in a real browser. Entries stored here replace the ini APP_URL and
-          APP_URLS keys for every run.
+          it in a real browser, and the QA logins that sign into each one.
+          Entries stored here replace the ini APP_URL and APP_URLS keys for every
+          run.
         </p>
       </header>
 
       <ProjectScopeGate action="edit app URLs">
-        <AppURLsSection repo={repo ?? ''} />
+        <div className="flex flex-col gap-6">
+          <AppURLsSection repo={repo ?? ''} />
+          <QAAccountsSection repo={repo ?? ''} />
+        </div>
       </ProjectScopeGate>
     </div>
   )

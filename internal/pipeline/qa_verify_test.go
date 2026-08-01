@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -120,6 +122,75 @@ func TestQAVerifyNoteInjectsOnlyForBrowserUISlice(t *testing.T) {
 			got := p.qaVerifyNote(context.Background(), "COD-1", tc.note)
 			if hit := got != ""; hit != tc.wantHit {
 				t.Fatalf("qaVerifyNote hit=%v (%q), want %v", hit, got, tc.wantHit)
+			}
+		})
+	}
+}
+
+// TestQAVerifyNoteFiltersRosterByResolvedAppURL is the per-app roster rule: the
+// verifier is handed the accounts attached to the entry its slice actually
+// drives plus the unattached ones, and a repo whose targets still come from the
+// ini — no stored entries to attach to — keeps its whole roster.
+func TestQAVerifyNoteFiltersRosterByResolvedAppURL(t *testing.T) {
+	entries := []hubclient.AppURL{
+		{ID: 1, URL: "http://hub:3000"},
+		{ID: 2, URL: "http://hub:3001", Workspace: "web"},
+	}
+	accounts := []hubclient.QAAccount{
+		{Label: "default-only", Username: "d", Secret: "p", AppURLID: 1},
+		{Label: "web-only", Username: "w", Secret: "p", AppURLID: 2},
+		{Label: "any-url", Username: "a", Secret: "p"},
+	}
+
+	cases := []struct {
+		name       string
+		files      []string
+		stored     []hubclient.AppURL
+		wantLabels []string
+		wantAppURL int64
+	}{
+		{
+			name:       "web slice takes the web entry's accounts",
+			files:      []string{"apps/web/src/page.tsx"},
+			stored:     entries,
+			wantLabels: []string{"web-only", "any-url"},
+			wantAppURL: 2,
+		},
+		{
+			name:       "unmatched slice falls back to the default entry",
+			files:      []string{"apps/api/src/page.tsx"},
+			stored:     entries,
+			wantLabels: []string{"default-only", "any-url"},
+			wantAppURL: 1,
+		},
+		{
+			name:       "no stored entries leaves the roster whole",
+			files:      []string{"apps/web/src/page.tsx"},
+			wantLabels: []string{"default-only", "web-only", "any-url"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+			p.RepoRoot = appURLMonorepo(t)
+			p.AppURL = "http://ini:3000"
+			p.FetchAppURLs = func(context.Context) ([]hubclient.AppURL, error) { return tc.stored, nil }
+			p.loadAppURLs(context.Background())
+			p.Git = filesGit{files: tc.files}
+			p.FetchQAAccounts = func(context.Context) (hubclient.QARoster, error) {
+				return hubclient.QARoster{Accounts: accounts, AppURLs: tc.stored}, nil
+			}
+
+			note := p.qaVerifyNote(context.Background(), "COD-1", "drive the app")
+
+			for _, a := range accounts {
+				want := slices.Contains(tc.wantLabels, a.Label)
+				if got := strings.Contains(note, strconv.Quote(a.Label)); got != want {
+					t.Errorf("account %q offered=%v, want %v: %s", a.Label, got, want, note)
+				}
+			}
+			if p.qaAppURLID != tc.wantAppURL {
+				t.Errorf("driven app url = %d, want %d", p.qaAppURLID, tc.wantAppURL)
 			}
 		})
 	}
