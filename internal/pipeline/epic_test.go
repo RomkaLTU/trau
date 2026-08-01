@@ -38,7 +38,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
-		Git:         fakeGit{},
+		Git:         baseCurrentGit{},
 		GitHub:      gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),
@@ -83,7 +83,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOff,
 		MergeMethod: "squash",
-		Git:         fakeGit{},
+		Git:         baseCurrentGit{},
 		GitHub:      gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),
@@ -130,7 +130,7 @@ func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
-		Git:         fakeGit{},
+		Git:         baseCurrentGit{},
 		GitHub:      gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),
@@ -157,7 +157,7 @@ func TestEnsureEpicPRNoCommitsWithoutMergedPRStillFails(t *testing.T) {
 	gh := &epicGitHub{
 		createErr: errors.New("gh pr create: exit status 1: GraphQL: No commits between main and epic/COD-1 (createPullRequest)"),
 	}
-	p := &Pipeline{Base: "main", EpicID: "COD-1", GitHub: gh, Tracker: &epicTracker{title: "x"}}
+	p := &Pipeline{Base: "main", EpicID: "COD-1", Git: baseCurrentGit{}, GitHub: gh, Tracker: &epicTracker{title: "x"}}
 	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x", false); err == nil {
 		t.Fatal("expected create error to surface when no merged PR exists")
 	}
@@ -334,7 +334,7 @@ func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
 		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
-		Git:         fakeGit{},
+		Git:         baseCurrentGit{},
 		GitHub:      gh,
 		Tracker:     tr,
 		State:       state.NewStore(dir),
@@ -355,7 +355,7 @@ func shippableEpicPipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipelin
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
-		Git:         fakeGit{},
+		Git:         baseCurrentGit{},
 		GitHub:      gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),

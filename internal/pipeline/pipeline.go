@@ -1365,6 +1365,7 @@ func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	}
 	if !detached && !p.localDelivery(ctx) {
 		_ = p.Git.Pull(ctx, p.Remote, p.Base)
+		p.healBaseDrift(ctx)
 	}
 	return nil
 }
@@ -2545,6 +2546,8 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 			if err := p.assertEpicBaseCurrent(ctx, id, prBase); err != nil {
 				return fmt.Errorf("commit %s: %w", id, err)
 			}
+		} else if err := p.assertPRBaseCurrent(ctx, p.Git, prBase, p.prBasePin(id)); err != nil {
+			return fmt.Errorf("commit %s: %w", id, err)
 		}
 		body := p.prBody(ctx, id, p.proofsSection(ctx, id))
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
