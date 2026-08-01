@@ -119,8 +119,9 @@ func (s *Server) notifyGrillAwaiting(sess hubstore.GrillSession, body string) {
 	s.publishNotification(notif)
 }
 
-// notifyRunEvent records a needs-attention notification for a run that paused,
-// faulted, or was quarantined, keyed off the same state_change fields the web recap
+// notifyRunEvent records a notification for a run that paused, faulted, was
+// quarantined, left a PR for a human, or delivered an epic to the base — keyed
+// off the same state_change fields the web recap
 // derives (web/src/lib/recap.ts). Every other event kind and state produces nothing.
 func (s *Server) notifyRunEvent(repo registry.Repo, row hubstore.EventRow) {
 	if row.Kind != stateChangeKind {
@@ -223,6 +224,8 @@ func runNotificationKind(state string) string {
 		return hubstore.NotificationRunQuarantined
 	case "awaiting_merge":
 		return hubstore.NotificationRunAwaitingMerge
+	case "epic_delivered":
+		return hubstore.NotificationEpicDelivered
 	}
 	return ""
 }
@@ -237,6 +240,8 @@ func runNotificationTitle(state, repo string) string {
 		return "Run quarantined — " + repo
 	case "awaiting_merge":
 		return "PR awaiting merge — " + repo
+	case "epic_delivered":
+		return "Epic delivered — " + repo
 	}
 	return "Run needs attention — " + repo
 }

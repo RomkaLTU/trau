@@ -13,6 +13,7 @@ import {
   queueLive,
   queueQueryOptions,
   queueRunnable,
+  releaseGateLabel,
   runNext,
   runOnly,
   skipResumeApplies,
@@ -475,11 +476,14 @@ describe('queueCoveredIds', () => {
 })
 
 describe('queueActiveIds', () => {
-  it.each(['done', 'failed', 'skipped'])('drops a %s ticket row', (status) => {
-    expect(
-      queueActiveIds([item({ id: 'COD-1' }), item({ id: 'COD-2', status })]),
-    ).toEqual(new Set(['COD-1']))
-  })
+  it.each(['done', 'failed', 'skipped', 'awaiting-merge'])(
+    'drops a %s ticket row',
+    (status) => {
+      expect(
+        queueActiveIds([item({ id: 'COD-1' }), item({ id: 'COD-2', status })]),
+      ).toEqual(new Set(['COD-1']))
+    },
+  )
 
   it('drops a settled epic along with its sub-issues', () => {
     expect(
@@ -662,5 +666,23 @@ describe('skipResumeApplies', () => {
         [run({ ticket: 'COD-99', terminal: false })],
       ),
     ).toBe(false)
+  })
+})
+
+describe('releaseGateLabel', () => {
+  it('names the epic whose release holds the queue', () => {
+    expect(
+      releaseGateLabel(
+        queueResponse({ draining: true, releasing_epic: 'COD-1442' }),
+      ),
+    ).toBe('waiting for COD-1442 to finish releasing')
+  })
+
+  it('is empty while nothing gates the queue', () => {
+    expect(releaseGateLabel(queueResponse({ draining: true }))).toBe('')
+  })
+
+  it('is empty without a queue at all', () => {
+    expect(releaseGateLabel()).toBe('')
   })
 })

@@ -126,6 +126,35 @@ describe('headerPill', () => {
       label: 'failed to start',
     })
   })
+
+  it('leads a releasing epic with its own phase and sub-state, not with the Step', () => {
+    expect(headerPill('live', 'releasing')).toEqual({ state: 'active', label: 'releasing' })
+    expect(headerPill('live', 'releasing', undefined, 'ci-wait')).toEqual({
+      state: 'active',
+      label: 'waiting on CI',
+    })
+    expect(headerPill('live', 'releasing', undefined, 'merge', 'epic-sync1/2')).toEqual({
+      state: 'active',
+      label: 'resolving conflicts (attempt 1/2)',
+    })
+    expect(
+      headerPill('live', 'releasing', undefined, 'ci-wait', undefined, 'awaiting-human'),
+    ).toEqual({
+      state: 'warn',
+      label: 'awaiting human merge',
+    })
+  })
+
+  it('leads a halted release with the halt, not with the release', () => {
+    expect(headerPill('paused', 'releasing', 'paused', 'ci-wait')).toEqual({
+      state: 'warn',
+      label: 'paused',
+    })
+    expect(headerPill('stopped', 'releasing', 'stopped')).toEqual({
+      state: 'info',
+      label: 'stopped',
+    })
+  })
 })
 
 describe('phaseLabel', () => {
@@ -133,6 +162,7 @@ describe('phaseLabel', () => {
     expect(phaseLabel('merged')).toBe('merge')
     expect(phaseLabel('pr_open')).toBe('pr')
     expect(phaseLabel('handed_off')).toBe('handoff')
+    expect(phaseLabel('releasing')).toBe('releasing')
     expect(phaseLabel('')).toBe('queued')
   })
 })

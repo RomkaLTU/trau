@@ -429,6 +429,40 @@ func (q *Queue) Pause(id, reason string) error {
 	return queue.ErrNotQueued
 }
 
+// SetSubIssueStates advances the recorded states of an item's sub-issues,
+// leaving every id states does not name alone and writing nothing when none of
+// them moves. It is how the drain reports a child that settled while the item
+// carrying it is still running, ahead of the wholesale stamp its own settle
+// makes.
+func (q *Queue) SetSubIssueStates(id string, states map[string]string) error {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return err
+	}
+	for i := range st.items {
+		if st.items[i].ID != id {
+			continue
+		}
+		changed := false
+		for j := range st.items[i].SubIssues {
+			sub := &st.items[i].SubIssues[j]
+			next, ok := states[sub.ID]
+			if !ok || next == sub.State {
+				continue
+			}
+			sub.State = next
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
+		return q.persist(st)
+	}
+	return queue.ErrNotQueued
+}
+
 // Move shifts the item with id one slot toward the front (dir -1) or back
 // (dir +1), returning the resulting queue. A running item cannot move and the
 // running item cannot be jumped over, so a reorder never disturbs the run in

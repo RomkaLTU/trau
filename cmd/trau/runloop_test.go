@@ -40,6 +40,7 @@ type loopEngine struct {
 
 func (l *loopEngine) ResumeTarget() (string, string)                  { return "", "" }
 func (l *loopEngine) InferredResume(context.Context) (string, string) { return "", "" }
+func (l *loopEngine) ResumableRelease() bool                          { return false }
 func (l *loopEngine) EnsureCleanBase(context.Context) error           { return nil }
 func (l *loopEngine) ExitCleanup(context.Context)                     {}
 func (l *loopEngine) Pick(context.Context) (string, error)            { return "", nil }
@@ -346,6 +347,150 @@ func TestRunLoopSurfacesUnfinalizedEpicOnlyWhenNothingLeft(t *testing.T) {
 			}
 			if got := pipeline.IsEpicUnfinalized(err); got != tt.wantErr {
 				t.Fatalf("runLoop err = %v, want an *EpicUnfinalizedError: %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// releasingEngine is the relaunch of a repo whose epic sits at a release a dead
+// finalize left behind. Its pick queue still has work on offer, which the loop must
+// leave alone while the release is unfinished.
+type releasingEngine struct {
+	loopEngine
+	cleaned int
+	picked  int
+}
+
+func (e *releasingEngine) ResumableRelease() bool                { return true }
+func (e *releasingEngine) EnsureCleanBase(context.Context) error { e.cleaned++; return nil }
+func (e *releasingEngine) Pick(context.Context) (string, error)  { e.picked++; return "COD-2", nil }
+
+// A run relaunched against an epic mid-release re-enters the finalize and nothing
+// else: grazing would reset the working tree the release still owns, and picking a
+// ticket would start a build beside a half-merged epic branch.
+func TestRunLoopResumesReleaseStraightIntoFinalize(t *testing.T) {
+	eng := &releasingEngine{}
+	var recs []stateRec
+	processed, err := runLoop(context.Background(), eng, loopParams{Max: 5, EpicID: "COD-1", Report: recorder(&recs)}, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+		t.Fatalf("no ticket may run while the release is unfinished, got %s", id)
+		return console.TicketResult{}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	if !eng.finalized {
+		t.Fatal("expected the loop to re-enter the epic finalize")
+	}
+	if eng.cleaned != 0 || eng.picked != 0 {
+		t.Fatalf("clean-base runs = %d, picks = %d, want neither before the release lands", eng.cleaned, eng.picked)
+	}
+	if len(processed) != 0 {
+		t.Fatalf("processed = %v, want nothing but the release", processed)
+	}
+	want := []stateRec{{registry.StateWorking, "COD-1", ""}, {registry.StateGrazing, "", ""}}
+	if !reflect.DeepEqual(recs, want) {
+		t.Fatalf("transition sequence = %v, want %v", recs, want)
+	}
+}
+
+// finalizeSpyEngine works its scripted picks and remembers the session state in
+// force at the moment the loop ran the finalize.
+type finalizeSpyEngine struct {
+	loopEngine
+	picks      []string
+	recs       *[]stateRec
+	atFinalize stateRec
+}
+
+func (e *finalizeSpyEngine) Pick(context.Context) (string, error) {
+	if len(e.picks) == 0 {
+		return "", nil
+	}
+	id := e.picks[0]
+	e.picks = e.picks[1:]
+	return id, nil
+}
+
+func (e *finalizeSpyEngine) Finalize(context.Context) error {
+	e.finalized = true
+	if n := len(*e.recs); n > 0 {
+		e.atFinalize = (*e.recs)[n-1]
+	}
+	return nil
+}
+
+// However the ticket loop ended, the heartbeat names the epic while its finalize
+// runs and drops off it afterwards; a run with no epic reports nothing extra.
+func TestRunLoopPinsFinalizeToTheEpic(t *testing.T) {
+	tests := []struct {
+		name    string
+		params  loopParams
+		during  stateRec
+		wantSeq []stateRec
+	}{
+		{
+			name:   "drained pick",
+			params: loopParams{Max: 5, EpicID: "COD-1"},
+			during: stateRec{registry.StateWorking, "COD-1", ""},
+			wantSeq: []stateRec{
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-1", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+		{
+			name:   "--once child spawned by the drain",
+			params: loopParams{Max: 5, Once: true, ForcedID: "COD-2", EpicID: "COD-1"},
+			during: stateRec{registry.StateWorking, "COD-1", ""},
+			wantSeq: []stateRec{
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateWorking, "COD-1", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+		{
+			name:   "iteration cap",
+			params: loopParams{Max: 1, EpicID: "COD-1"},
+			during: stateRec{registry.StateWorking, "COD-1", ""},
+			wantSeq: []stateRec{
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateWorking, "COD-1", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+		{
+			name:   "standalone run",
+			params: loopParams{Max: 5},
+			during: stateRec{registry.StateGrazing, "", ""},
+			wantSeq: []stateRec{
+				{registry.StateGrazing, "", ""},
+				{registry.StateWorking, "COD-2", ""},
+				{registry.StateGrazing, "", ""},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var recs []stateRec
+			eng := &finalizeSpyEngine{picks: []string{"COD-2"}, recs: &recs}
+			params := tt.params
+			params.Report = recorder(&recs)
+			if _, err := runLoop(context.Background(), eng, params, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+				return console.TicketResult{ID: id}
+			}); err != nil {
+				t.Fatalf("runLoop returned error: %v", err)
+			}
+			if !eng.finalized {
+				t.Fatal("expected the loop to attempt the epic finalize")
+			}
+			if eng.atFinalize != tt.during {
+				t.Errorf("state during finalize = %v, want %v", eng.atFinalize, tt.during)
+			}
+			if !reflect.DeepEqual(recs, tt.wantSeq) {
+				t.Errorf("transition sequence = %v, want %v", recs, tt.wantSeq)
 			}
 		})
 	}

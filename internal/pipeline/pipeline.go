@@ -172,6 +172,10 @@ type Git interface {
 	// MergeAbort aborts an in-progress conflicted merge (git merge --abort).
 	MergeAbort(ctx context.Context) error
 
+	// MergeInProgress reports whether the tree sits mid-merge — MERGE_HEAD written
+	// and the merge commit not made — however far a resolution got.
+	MergeInProgress(ctx context.Context) (bool, error)
+
 	// Unmerged returns the still-conflicted paths after a merge, empty when none
 	// remain (git diff --name-only --diff-filter=U).
 	Unmerged(ctx context.Context) (string, error)
@@ -442,6 +446,32 @@ func (e *EpicUnfinalizedError) Error() string {
 // IsEpicUnfinalized reports whether err is (or wraps) an *EpicUnfinalizedError.
 func IsEpicUnfinalized(err error) bool {
 	var e *EpicUnfinalizedError
+	return errors.As(err, &e)
+}
+
+// EpicHandOffError signals FinalizeEpic ran out of moves and left the release to
+// a human: drift conflicts no repair attempt cleared, a gate that never went
+// green, or a merge the operator reserved for themselves. Nothing is blamed and
+// nothing is retried, but the epic did NOT ship — a caller must park it awaiting
+// a human rather than record a delivery over a branch still sitting unmerged.
+// PRURL names the PR to land, empty on a local delivery that has none.
+type EpicHandOffError struct {
+	EpicID string
+	PRURL  string
+	Reason string
+}
+
+func (e *EpicHandOffError) Error() string {
+	msg := fmt.Sprintf("epic %s awaits a human — %s", e.EpicID, e.Reason)
+	if e.PRURL == "" {
+		return msg
+	}
+	return msg + ": " + e.PRURL
+}
+
+// IsEpicHandOff reports whether err is (or wraps) an *EpicHandOffError.
+func IsEpicHandOff(err error) bool {
+	var e *EpicHandOffError
 	return errors.As(err, &e)
 }
 
@@ -3891,8 +3921,11 @@ func providerOf(err error) string {
 // writer, two displays: the TUI stepper and the web read the same signal. detail
 // carries the raw call label (e.g. repair2), empty when there is none; a bounded
 // loop whose display names the attempt counter appends its bound to that label
-// (epic-sync1/2), leaving the call label recoverable as the prefix. Checkpoint
-// phases are untouched; Activity is its own signal.
+// (epic-sync1/2), leaving the call label recoverable as the prefix. The epic's CI
+// repair loop rides on Merge (epic-repair1/2) rather than on Repair: it is part of
+// the ship gate, and Repair maps to Verify, which would walk the stepper backwards
+// mid-ship. Checkpoint phases are untouched; Activity is its own
+// signal.
 func (p *Pipeline) setActivity(id string, act activity.Activity, detail string) {
 	if p.Renderer != nil {
 		p.Renderer.Activity(act, detail)
@@ -5678,6 +5711,22 @@ func (g ExecGit) MergeRemote(ctx context.Context, remote, base string) (bool, er
 // MergeAbort aborts an in-progress conflicted merge (git merge --abort).
 func (g ExecGit) MergeAbort(ctx context.Context) error { return g.run(ctx, "merge", "--abort") }
 
+// MergeInProgress reports whether MERGE_HEAD is present — a merge started and
+// neither committed nor aborted. rev-parse exits 1 for a ref that resolves to
+// nothing, which is the expected "no merge here".
+func (g ExecGit) MergeInProgress(ctx context.Context) (bool, error) {
+	err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"rev-parse", "-q", "--verify", "MERGE_HEAD").Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git rev-parse --verify MERGE_HEAD: %w", err)
+}
+
 // Unmerged lists the still-conflicted paths after a merge (empty when none).
 func (g ExecGit) Unmerged(ctx context.Context) (string, error) {
 	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
@@ -5692,8 +5741,7 @@ func (g ExecGit) Unmerged(ctx context.Context) (string, error) {
 // a no-op when MERGE_HEAD is absent, so a resolving agent that already committed
 // the merge does not cause a spurious empty-commit failure.
 func (g ExecGit) ContinueMerge(ctx context.Context) error {
-	if exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
-		"rev-parse", "-q", "--verify", "MERGE_HEAD").Run() != nil {
+	if mid, err := g.MergeInProgress(ctx); err != nil || !mid {
 		return nil
 	}
 	if err := g.run(ctx, "add", "-A"); err != nil {

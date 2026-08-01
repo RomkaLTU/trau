@@ -204,7 +204,8 @@ func notificationURL(notif hubstore.Notification, repo string) (string, bool) {
 	case hubstore.NotificationRunPaused,
 		hubstore.NotificationRunFaulted,
 		hubstore.NotificationRunQuarantined,
-		hubstore.NotificationRunAwaitingMerge:
+		hubstore.NotificationRunAwaitingMerge,
+		hubstore.NotificationEpicDelivered:
 		return "/runs/" + url.PathEscape(repo) + "/" + url.PathEscape(notif.Ref), true
 	}
 	return "", false

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -573,6 +574,73 @@ func TestExitCleanupRestoresResumedTicketBranch(t *testing.T) {
 	}
 	if branches := gitOut(t, work, "branch", "--format=%(refname:short)"); strings.Contains(branches, "epic/") {
 		t.Errorf("branches = %q, want the empty epic branch dropped", branches)
+	}
+}
+
+// A signal landing while the conflict-resolution agent works leaves the epic branch
+// mid-merge with conflict markers in the tree. Exit hygiene must abort that merge, not
+// preserve it: committing it would land the markers on the branch the release resumes
+// from. The checkpoint stays releasing so the next run re-enters the finalize.
+func TestExitCleanupAbortsMergeInsteadOfCommittingConflictMarkers(t *testing.T) {
+	const (
+		id   = "COD-9100"
+		epic = "epic/COD-9100-thing"
+	)
+	work := t.TempDir()
+	gitRun(t, work, "init")
+	gitRun(t, work, "config", "user.name", "t")
+	gitRun(t, work, "config", "user.email", "t@t")
+	writeRepoFile(t, work, "a.txt", "base\n")
+	gitRun(t, work, "add", "-A")
+	gitRun(t, work, "commit", "-m", "init")
+	gitRun(t, work, "branch", "-M", "main")
+
+	gitRun(t, work, "checkout", "-b", epic)
+	writeRepoFile(t, work, "a.txt", "epic work\n")
+	gitRun(t, work, "add", "-A")
+	gitRun(t, work, "commit", "-m", "epic work")
+	gitRun(t, work, "checkout", "main")
+	writeRepoFile(t, work, "a.txt", "base drift\n")
+	gitRun(t, work, "add", "-A")
+	gitRun(t, work, "commit", "-m", "base drift")
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.Git = ExecGit{Repo: work}
+	p.Remote = "origin"
+	p.EpicID = id
+	if err := p.State.Set(id, "PHASE", state.Releasing); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.State.Set(id, "RELEASE", state.ReleaseActive); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	p.armExitCleanup(ctx)
+	gitRun(t, work, "checkout", epic)
+	p.exit.epicBranch = epic
+	if err := exec.Command("git", "-C", work, "merge", "--no-edit", "main").Run(); err == nil {
+		t.Fatal("merge main into the epic branch succeeded, want the conflict the agent is resolving")
+	}
+	if !strings.Contains(readRepoFile(t, work, "a.txt"), "<<<<<<<") {
+		t.Fatal("a.txt carries no conflict markers, want the tree the killed agent leaves behind")
+	}
+	epicTip := gitOut(t, work, "rev-parse", epic)
+	cancel()
+
+	p.ExitCleanup(ctx)
+
+	if err := exec.Command("git", "-C", work, "rev-parse", "-q", "--verify", "MERGE_HEAD").Run(); err == nil {
+		t.Error("MERGE_HEAD is still present, want the half-merge aborted")
+	}
+	if got := gitOut(t, work, "rev-parse", epic); got != epicTip {
+		t.Errorf("%s = %s, want %s — the half-merge must not become a commit", epic, got, epicTip)
+	}
+	if got := gitOut(t, work, "log", "-p", "--all"); strings.Contains(got, "<<<<<<<") {
+		t.Error("a commit carries conflict markers, want the merge aborted instead of preserved")
+	}
+	if got := p.State.Get(id, "PHASE"); got != state.Releasing {
+		t.Errorf("epic PHASE = %q, want %q so the next run re-enters the finalize", got, state.Releasing)
 	}
 }
 

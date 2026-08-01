@@ -326,12 +326,13 @@ func TestReloadHubOntoBaseStaysSilentOnStop(t *testing.T) {
 // open for review shipped nothing and asks for none.
 func TestFinalizeEpicRequestsHubReloadOnlyWhenShipped(t *testing.T) {
 	cases := []struct {
-		name      string
-		checks    []Check
-		wantCalls int
+		name        string
+		checks      []Check
+		wantCalls   int
+		wantHandOff bool
 	}{
 		{name: "epic ships", checks: []Check{{Name: "ci/test", Bucket: "pass"}}, wantCalls: 1},
-		{name: "epic PR left for review", checks: []Check{{Name: "ci/test", Bucket: "fail"}}, wantCalls: 0},
+		{name: "epic PR left for review", checks: []Check{{Name: "ci/test", Bucket: "fail"}}, wantCalls: 0, wantHandOff: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -353,8 +354,9 @@ func TestFinalizeEpicRequestsHubReloadOnlyWhenShipped(t *testing.T) {
 				return hub.request(ctx)
 			}
 
-			if err := p.FinalizeEpic(context.Background()); err != nil {
-				t.Fatalf("FinalizeEpic = %v, want nil", err)
+			err := p.FinalizeEpic(context.Background())
+			if got := IsEpicHandOff(err); got != tc.wantHandOff {
+				t.Fatalf("FinalizeEpic = %v, want a hand-off: %v", err, tc.wantHandOff)
 			}
 			if hub.calls != tc.wantCalls {
 				t.Errorf("reload requests = %d, want %d", hub.calls, tc.wantCalls)

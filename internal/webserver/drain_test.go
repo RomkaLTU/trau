@@ -63,7 +63,7 @@ func seedQueue(t *testing.T, s *Server, root string, draining bool, items ...que
 			if err := st.Pause(it.ID, it.Reason); err != nil {
 				t.Fatalf("seed paused %s: %v", it.ID, err)
 			}
-		case queue.StatusDone, queue.StatusFailed:
+		case queue.StatusDone, queue.StatusFailed, queue.StatusAwaitingMerge:
 			if err := st.Finish(it.ID, it.Status, it.Reason); err != nil {
 				t.Fatalf("seed finish %s: %v", it.ID, err)
 			}
@@ -107,6 +107,22 @@ func reasonOf(t *testing.T, s *Server, root, id string) string {
 	}
 	t.Fatalf("item %s missing from queue", id)
 	return ""
+}
+
+func subStatesOf(t *testing.T, s *Server, root, id string) map[string]string {
+	t.Helper()
+	for _, it := range snapshot(t, s, root) {
+		if it.ID != id {
+			continue
+		}
+		states := map[string]string{}
+		for _, sub := range it.SubIssues {
+			states[sub.ID] = sub.State
+		}
+		return states
+	}
+	t.Fatalf("item %s missing from queue", id)
+	return nil
 }
 
 func drainingOf(t *testing.T, s *Server, root string) bool {
@@ -215,6 +231,18 @@ func TestDrainTickDecisions(t *testing.T) {
 			wantSpawns:    0,
 			wantStatus:    map[string]string{"COD-1": queue.StatusFailed},
 			wantReason:    map[string]string{"COD-1": "verify never went green"},
+			wantDraining:  boolPtr(true),
+		},
+		{
+			name:          "a handed-off epic release settles awaiting-merge and keeps draining",
+			items:         []queue.Item{{ID: "COD-1", Kind: queue.KindEpic, Status: queue.StatusRunning, PID: 7}, {ID: "COD-2"}},
+			draining:      true,
+			outcomeClass:  state.FailAwaitingMerge,
+			outcomeReason: "epic COD-1 awaits a human — CI never went green: https://gh/pr/7",
+			wantAction:    drainReconcile,
+			wantSpawns:    0,
+			wantStatus:    map[string]string{"COD-1": queue.StatusAwaitingMerge, "COD-2": queue.StatusPending},
+			wantReason:    map[string]string{"COD-1": "epic COD-1 awaits a human — CI never went green: https://gh/pr/7"},
 			wantDraining:  boolPtr(true),
 		},
 		{
@@ -352,8 +380,9 @@ func TestDrainTickDecisions(t *testing.T) {
 func boolPtr(b bool) *bool { return &b }
 
 // TestClassifyDrainOutcome table-drives the outcome-class → queue-action mapping
-// for every class the loop records: a clean finish and a give-up drain on (done /
-// failed), while a fault and a provider pause park the item and stop the drain.
+// for every class the loop records: a clean finish, a give-up and a handed-off
+// epic release drain on (done / failed / awaiting-merge), while a fault and a
+// provider pause park the item and stop the drain.
 func TestClassifyDrainOutcome(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -365,6 +394,7 @@ func TestClassifyDrainOutcome(t *testing.T) {
 		{name: "clean finish settles done", class: "", wantStatus: queue.StatusDone, wantPause: false},
 		{name: "unknown outcome parks regardless of on-fault", class: classUnknown, onFault: queue.OnFaultSkip, wantStatus: queue.StatusPaused, wantPause: true},
 		{name: "give-up settles failed and drains on", class: state.FailGaveUp, wantStatus: queue.StatusFailed, wantPause: false},
+		{name: "handed-off epic settles awaiting-merge and drains on", class: state.FailAwaitingMerge, onFault: queue.OnFaultHalt, wantStatus: queue.StatusAwaitingMerge, wantPause: false},
 		{name: "fault pauses the queue by default", class: state.FailFaulted, onFault: queue.OnFaultHalt, wantStatus: queue.StatusPaused, wantPause: true},
 		{name: "fault skips on on-fault=skip", class: state.FailFaulted, onFault: queue.OnFaultSkip, wantStatus: queue.StatusFailed, wantPause: false},
 		{name: "provider pause parks regardless of on-fault", class: state.FailPaused, onFault: queue.OnFaultSkip, wantStatus: queue.StatusPaused, wantPause: true},
@@ -638,6 +668,37 @@ func TestDrainSpawnsWithProviderOverride(t *testing.T) {
 	assertArgs(t, fake.spawns[1].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-2", "--provider", "kimi", "--drain-report", "COD-2"})
 }
 
+// An epic release handed to a human parks that item visibly and nothing else: the
+// queue is not the operator's inbox, so the item behind it launches on the very
+// next tick instead of waiting on a merge only a person can make.
+func TestDrainStartsTheNextItemAfterAHandedOffEpic(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.outcome = func(string, queue.Item) (string, string) {
+		return state.FailAwaitingMerge, "epic COD-1 awaits a human — CI never went green: https://gh/pr/7"
+	}
+	seedQueue(t, s, root, true,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-9"},
+	)
+
+	if act, err := s.drain.tick(root); err != nil || act != drainReconcile {
+		t.Fatalf("settling tick = %q, %v, want reconcile", act, err)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusAwaitingMerge {
+		t.Fatalf("COD-1 = %q, want %q", got, queue.StatusAwaitingMerge)
+	}
+	if !drainingOf(t, s, root) {
+		t.Fatal("a hand-off must not stop the drain — the rest of the queue is unaffected")
+	}
+	if act, err := s.drain.tick(root); err != nil || act != drainSpawn {
+		t.Fatalf("next tick = %q, %v, want the item behind the epic to spawn", act, err)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-9", "--once", "--drain-report", "COD-9"})
+}
+
 // TestDrainSkipsDuplicateTicket proves a standalone ticket an earlier queued
 // epic already covers is skipped, not run — first occurrence wins.
 func TestDrainSkipsDuplicateTicket(t *testing.T) {
@@ -809,6 +870,70 @@ func TestDrainNoReportPausesEpicWithoutFanout(t *testing.T) {
 			if sub.State != "backlog" {
 				t.Errorf("sub %s state = %q, want its enqueue-time backlog — a park must not fan out", sub.ID, sub.State)
 			}
+		}
+	}
+}
+
+// An epic's sub-issue rows used to be an enqueue-time snapshot only the parent's
+// settle ever wrote, so a board watched an epic drain at 0/N for hours. Every
+// tick over the live epic now records what its children's own checkpoints
+// already say — merged reads done, quarantined reads quarantined rather than
+// passing for done or for untouched work — while the epic itself keeps running,
+// and its settle still stamps every row at the end.
+func TestDrainAdvancesEpicSubIssuesWhileRunning(t *testing.T) {
+	s, _, root := drainServer(t, "acme")
+	s.drain.alive = func(int) bool { return true }
+	seedQueue(t, s, root, true, queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-1",
+		Status:    queue.StatusRunning,
+		PID:       7,
+		SubIssues: []queue.SubIssue{{ID: "COD-2", State: "todo"}, {ID: "COD-3", State: "todo"}},
+	})
+
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("act = %q, want wait while the epic's child runs", act)
+	}
+	if got := subStatesOf(t, s, root, "COD-1"); got["COD-2"] != "todo" || got["COD-3"] != "todo" {
+		t.Fatalf("sub states = %v, want both todo — no child has reached a terminal phase", got)
+	}
+
+	if err := s.stores.Checkpoints().Upsert(root, "COD-2", map[string]string{"PHASE": state.Merged}); err != nil {
+		t.Fatalf("seed merged child checkpoint: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("act = %q, want wait", act)
+	}
+	if got := subStatesOf(t, s, root, "COD-1"); got["COD-2"] != subIssueDone || got["COD-3"] != "todo" {
+		t.Fatalf("sub states = %v, want COD-2 done mid-drain and COD-3 untouched", got)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusRunning {
+		t.Fatalf("COD-1 = %q, want it still running — the count moves before the parent settles", got)
+	}
+
+	if err := s.stores.Checkpoints().Upsert(root, "COD-3", map[string]string{"PHASE": state.Quarantined}); err != nil {
+		t.Fatalf("seed quarantined child checkpoint: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("act = %q, want wait", act)
+	}
+	if got := subStatesOf(t, s, root, "COD-1"); got["COD-3"] != subIssueQuarantined {
+		t.Fatalf("sub states = %v, want COD-3 quarantined — a parked child is neither done nor todo", got)
+	}
+
+	s.drain.alive = func(int) bool { return false }
+	if err := s.stores.Checkpoints().Upsert(root, "COD-1", map[string]string{"PHASE": state.Merged}); err != nil {
+		t.Fatalf("seed merged epic checkpoint: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("act = %q, want reconcile", act)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusDone {
+		t.Fatalf("COD-1 = %q, want done", got)
+	}
+	for id, st := range subStatesOf(t, s, root, "COD-1") {
+		if st != subIssueDone {
+			t.Errorf("sub %s state = %q after the settle, want done — the settle still stamps every row", id, st)
 		}
 	}
 }
@@ -1354,6 +1479,34 @@ func TestReconcileQueueSweep(t *testing.T) {
 			wantSubState: "done",
 		},
 		{
+			name: "awaiting-merge epic whose PR the human merged settles done",
+			item: queue.Item{
+				Kind:      queue.KindEpic,
+				ID:        "COD-1",
+				Status:    queue.StatusAwaitingMerge,
+				Reason:    "epic COD-1 awaits a human — CI never went green: https://gh/pr/42",
+				SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}},
+			},
+			checkpoint:   map[string]string{"PHASE": state.Releasing, "PR": "42", "RELEASE": state.ReleaseAwaitingHuman},
+			prState:      "MERGED",
+			wantStatus:   queue.StatusDone,
+			wantReason:   reconciledReason(evidencePR),
+			wantSubState: "done",
+		},
+		{
+			name: "awaiting-merge epic whose PR nobody merged keeps waiting",
+			item: queue.Item{
+				Kind:   queue.KindEpic,
+				ID:     "COD-1",
+				Status: queue.StatusAwaitingMerge,
+				Reason: "epic COD-1 awaits a human — CI never went green: https://gh/pr/42",
+			},
+			checkpoint: map[string]string{"PHASE": state.Releasing, "PR": "42", "RELEASE": state.ReleaseAwaitingHuman},
+			prState:    "OPEN",
+			wantStatus: queue.StatusAwaitingMerge,
+			wantReason: "epic COD-1 awaits a human — CI never went green: https://gh/pr/42",
+		},
+		{
 			name:       "paused item whose PR is still open stays parked",
 			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"},
 			checkpoint: map[string]string{"PHASE": state.PROpen, "PR": "42"},
@@ -1523,5 +1676,94 @@ func TestServerStartSettlesParkedMergedEpic(t *testing.T) {
 	}
 	if !strings.Contains(msg, "COD-1151") || !strings.Contains(msg, "checkpoint merged") {
 		t.Errorf("event msg = %q, want it to name the item and cite the checkpoint evidence", msg)
+	}
+}
+
+// seedReleasing writes the Epic checkpoint the release gate reads: the releasing
+// phase, with the hand-off marker beside it when the case sets one.
+func seedReleasing(t *testing.T, s *Server, root, epic, release string) {
+	t.Helper()
+	data := map[string]string{"PHASE": state.Releasing}
+	if release != "" {
+		data["RELEASE"] = release
+	}
+	if err := s.stores.Checkpoints().Upsert(root, epic, data); err != nil {
+		t.Fatalf("seed releasing checkpoint: %v", err)
+	}
+}
+
+// TestDrainHoldsForReleasingEpic proves the gate is finalize-aware rather than
+// liveness-aware: with an epic mid-release and no live instance at all — a hub
+// restart, or a heartbeat PUT that never landed — the drain refuses to spawn the
+// next item, and only the hand-off marker lets the queue move on.
+func TestDrainHoldsForReleasingEpic(t *testing.T) {
+	tests := []struct {
+		name    string
+		release string
+		want    drainAction
+	}{
+		{name: "trau owns the release", release: state.ReleaseActive, want: drainWait},
+		{name: "older checkpoint without a marker", release: "", want: drainWait},
+		{name: "handed off to a human", release: state.ReleaseAwaitingHuman, want: drainSpawn},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, root := drainServer(t, "acme")
+			seedReleasing(t, s, root, "COD-1", tc.release)
+			seedQueue(t, s, root, true, queue.Item{ID: "COD-2"})
+
+			act, err := s.drain.tick(root)
+			if err != nil {
+				t.Fatalf("tick: %v", err)
+			}
+			if act != tc.want {
+				t.Fatalf("tick = %q, want %q", act, tc.want)
+			}
+			wantSpawns, wantStatus := 0, queue.StatusPending
+			if tc.want == drainSpawn {
+				wantSpawns, wantStatus = 1, queue.StatusRunning
+			}
+			if len(fake.spawns) != wantSpawns {
+				t.Errorf("spawns = %d, want %d", len(fake.spawns), wantSpawns)
+			}
+			if got := statusOf(t, s, root, "COD-2"); got != wantStatus {
+				t.Errorf("COD-2 = %q, want %q", got, wantStatus)
+			}
+			if !drainingOf(t, s, root) {
+				t.Error("queue disarmed, want the gate to leave it armed so it picks up once the release ends")
+			}
+		})
+	}
+}
+
+// TestDrainStartsTheReleasingEpicItself proves the gate's one exception: the epic
+// whose release holds the repo is exactly the run that must be able to start, so
+// a crashed finalize resumes — wherever the epic sits in run order, since a row
+// ahead of it only waits on the release it has to finish.
+func TestDrainStartsTheReleasingEpicItself(t *testing.T) {
+	epic := queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"}
+	ticket := queue.Item{ID: "COD-2"}
+	tests := []struct {
+		name  string
+		items []queue.Item
+	}{
+		{name: "epic first in run order", items: []queue.Item{epic, ticket}},
+		{name: "epic behind another runnable row", items: []queue.Item{ticket, epic}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, root := drainServer(t, "acme")
+			seedReleasing(t, s, root, "COD-1", state.ReleaseActive)
+			seedQueue(t, s, root, true, tc.items...)
+
+			if act, _ := s.drain.tick(root); act != drainSpawn {
+				t.Fatalf("tick = %q, want the releasing epic's own finalize spawned", act)
+			}
+			running, ok := runningItem(t, s, root)
+			if !ok || running.ID != "COD-1" {
+				t.Fatalf("spawned %+v, want COD-1", running)
+			}
+			assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--drain-report", "COD-1"})
+		})
 	}
 }

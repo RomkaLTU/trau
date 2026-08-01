@@ -6,11 +6,13 @@ import type { Run } from './runs'
 import {
   buildTimeline,
   builderView,
+  finalizePill,
   finishedReducer,
   finishedView,
   ticketPill,
   FINISHED_INITIAL,
   FINISHED_PAGE_SIZE,
+  type FinalizeEntry,
   type TimelineTicket,
 } from './timeline'
 
@@ -227,6 +229,28 @@ describe('buildTimeline', () => {
       tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.status : '')),
     ).toEqual(['failed'])
     expect(tl.finished).toEqual([])
+  })
+
+  it('reads a quarantined sub-issue as failed, not as work still to come', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'One', state: 'done' },
+            { id: 'COD-11', title: 'Two', state: 'quarantined' },
+          ],
+        }),
+      ],
+      [],
+    )
+    expect(tl.settled.map((t) => [t.id, t.status])).toEqual([
+      ['COD-10', 'done'],
+      ['COD-11', 'failed'],
+    ])
+    expect(tl.pending).toEqual([])
   })
 
   it('keeps a paused epic in the run order once every sub-issue is done', () => {
@@ -572,8 +596,8 @@ describe('buildTimeline', () => {
     expect(tl.pending[0]).toMatchObject({ kind: 'epic', active: true })
   })
 
-  it('reads a ticket-less active instance as the running epic finalize', () => {
-    const tl = buildTimeline(
+  const releasingEpic = (over: Partial<Run> = {}) =>
+    buildTimeline(
       [
         item({
           id: 'COD-9',
@@ -589,18 +613,66 @@ describe('buildTimeline', () => {
       [
         run({ ticket: 'COD-10', terminal: true, phase: 'merged' }),
         run({ ticket: 'COD-11', terminal: true, phase: 'merged' }),
+        run({ ticket: 'COD-9', phase: 'releasing', phase_rank: 6, ...over }),
       ],
-      instance({ activity: 'merge', detail: 'epic-sync' }),
+      instance({ ticket: 'COD-9', activity: 'merge', detail: 'epic-sync1/2' }),
     )
+
+  it('reads the epic checkpoint as the running epic release', () => {
+    const tl = releasingEpic()
     expect(tl.running).toBeUndefined()
     expect(tl.pending).toEqual([])
     expect(tl.finalize?.epicId).toBe('COD-9')
     expect(tl.finalize?.title).toBe('Epic')
+    expect(tl.finalize?.phase).toBe('releasing')
     expect(tl.finalize?.activity).toBe('merge')
-    expect(tl.finalize?.detail).toBe('epic-sync')
+    expect(tl.finalize?.detail).toBe('epic-sync1/2')
   })
 
-  it('leaves the finalize out while the running epic still has leaves', () => {
+  it('keeps the release row out of the leaf tally the epic id is not part of', () => {
+    const tl = releasingEpic()
+    expect(tl.total).toBe(2)
+    expect(tl.done).toBe(2)
+    expect(tl.settled.map((t) => t.id)).toEqual(['COD-10', 'COD-11'])
+  })
+
+  it('carries the hand-off marker through to the row', () => {
+    const tl = releasingEpic({ release: 'awaiting-human' })
+    expect(tl.finalize?.release).toBe('awaiting-human')
+  })
+
+  it('carries the halt the checkpoint stopped the release at', () => {
+    const tl = releasingEpic({
+      failure_class: 'paused',
+      failure_reason: 'claude usage limit reached',
+    })
+    expect(tl.finalize).toMatchObject({
+      failureClass: 'paused',
+      reason: 'claude usage limit reached',
+    })
+  })
+
+  it('holds the release row after the loop that wrote it is gone', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          title: 'Epic',
+          status: 'running',
+          sub_issues: [{ id: 'COD-10', title: 'a', state: 'done' }],
+        }),
+      ],
+      [
+        run({ ticket: 'COD-10', terminal: true, phase: 'merged' }),
+        run({ ticket: 'COD-9', phase: 'releasing', phase_rank: 6 }),
+      ],
+    )
+    expect(tl.finalize?.epicId).toBe('COD-9')
+    expect(tl.finalize?.activity).toBeUndefined()
+  })
+
+  it('leaves the release out until the epic checkpoint says so', () => {
     const tl = buildTimeline(
       [
         item({
@@ -620,19 +692,8 @@ describe('buildTimeline', () => {
     expect(tl.pending).toHaveLength(1)
   })
 
-  it('leaves the finalize out for an instance that is no longer live', () => {
-    const tl = buildTimeline(
-      [
-        item({
-          id: 'COD-9',
-          kind: 'epic',
-          status: 'running',
-          sub_issues: [{ id: 'COD-10', title: 'a', state: 'done' }],
-        }),
-      ],
-      [run({ ticket: 'COD-10', terminal: true, phase: 'merged' })],
-      instance({ session_state: 'idle' }),
-    )
+  it('leaves the release out once the epic merged', () => {
+    const tl = releasingEpic({ phase: 'merged', phase_rank: 7, terminal: true })
     expect(tl.finalize).toBeUndefined()
   })
 })
@@ -822,6 +883,7 @@ describe('builderView', () => {
         item({ id: 'COD-2', status: 'done' }),
         item({ id: 'COD-3', status: 'skipped' }),
         item({ id: 'COD-4', status: 'failed' }),
+        item({ id: 'COD-5', status: 'awaiting-merge' }),
       ],
       [run({ ticket: 'COD-1', terminal: true, phase: 'merged' })],
     )
@@ -831,7 +893,51 @@ describe('builderView', () => {
       { label: 'done', count: 1 },
       { label: 'failed', count: 1 },
       { label: 'skipped', count: 1 },
+      { label: 'awaiting merge', count: 1 },
     ])
+  })
+
+  // A release handed to a human is settled without ever reading done: the row
+  // leaves the run order carrying the reason that names the PR to land.
+  it('collapses an awaiting-merge item into Finished with its reason', () => {
+    const view = builderView(
+      [
+        item({
+          id: 'COD-9',
+          status: 'awaiting-merge',
+          reason: 'epic COD-9 awaits a human — CI never went green: https://gh/pr/7',
+        }),
+      ],
+      [],
+    )
+    expect(view.queue).toEqual([])
+    expect(view.settled.map((t) => [t.id, t.status, t.reason])).toEqual([
+      [
+        'COD-9',
+        'awaiting-merge',
+        'epic COD-9 awaits a human — CI never went green: https://gh/pr/7',
+      ],
+    ])
+  })
+})
+
+describe('finalizePill', () => {
+  const releasing: FinalizeEntry = {
+    epicId: 'COD-9',
+    title: 'Epic',
+    phase: 'releasing',
+    activity: 'ci-wait',
+  }
+
+  it('leads with the live sub-state, and with the halt once one is stored', () => {
+    expect(finalizePill(releasing)).toEqual({
+      state: 'active',
+      label: 'waiting on CI',
+    })
+    expect(finalizePill({ ...releasing, failureClass: 'paused' })).toEqual({
+      state: 'warn',
+      label: 'paused',
+    })
   })
 })
 
@@ -903,6 +1009,11 @@ describe('ticketPill', () => {
         ticket({ id: 'a', title: '', status: 'skipped', hasRun: false }),
       ),
     ).toEqual({ state: 'info', label: 'skipped' })
+    expect(
+      ticketPill(
+        ticket({ id: 'a', title: '', status: 'awaiting-merge', hasRun: true }),
+      ),
+    ).toEqual({ state: 'warn', label: 'awaiting human merge' })
     expect(
       ticketPill(
         ticket({ id: 'a', title: '', status: 'pending', hasRun: false }),

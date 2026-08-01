@@ -1,12 +1,19 @@
 import type { RunState } from '@/components/trau/status-pill'
 import type { Instance } from './instances'
-import { isActiveState, toSessionState } from './overview'
+import { attentionPill, isActiveState, toSessionState } from './overview'
 import { queueStatusRunnable, queueTerminal, type QueueItem } from './queue'
-import type { FailureClass, PRStatus, Run } from './runs'
-import { stepPill } from './steps'
+import type { FailureClass, PRStatus, ReleaseMarker, Run } from './runs'
+import { RELEASING, releasePill, stepPill } from './steps'
 
 export type TicketStatus =
-  'done' | 'running' | 'paused' | 'stopped' | 'failed' | 'skipped' | 'pending'
+  | 'done'
+  | 'running'
+  | 'paused'
+  | 'stopped'
+  | 'failed'
+  | 'skipped'
+  | 'awaiting-merge'
+  | 'pending'
 
 export interface TimelineTicket {
   id: string
@@ -43,12 +50,17 @@ export type PendingEntry =
     }
 
 // FinalizeEntry is the drain's epic-level work: syncing the epic branch, opening
-// its PR, waiting on CI, merging. It belongs to no ticket, so the heartbeat
-// carries no ticket id and only the running epic queue item names it.
+// its PR, waiting on CI, merging. It belongs to the epic itself, and the epic's own
+// checkpoint is what says it is happening.
 export interface FinalizeEntry {
   epicId: string
   title: string
   source?: string
+  phase: string
+  release?: ReleaseMarker
+  prUrl?: string
+  failureClass?: FailureClass
+  reason?: string
   activity?: string
   detail?: string
 }
@@ -204,9 +216,12 @@ function resolve(
       return { ...base, status: 'done' }
     case 'failed':
     case 'faulted':
+    case 'quarantined':
       return { ...base, status: 'failed', reason: leaf.reason }
     case 'skipped':
       return { ...base, status: 'skipped', reason: leaf.reason }
+    case 'awaiting-merge':
+      return { ...base, status: 'awaiting-merge', reason: leaf.reason }
     case 'paused':
       return { ...base, status: 'paused', reason: leaf.reason }
     case 'running':
@@ -221,6 +236,7 @@ function isSettled(status: TicketStatus): boolean {
     status === 'done' ||
     status === 'failed' ||
     status === 'skipped' ||
+    status === 'awaiting-merge' ||
     status === 'paused' ||
     status === 'stopped'
   )
@@ -246,31 +262,34 @@ function runOrder(
   return ids
 }
 
-// epicFinalize reads a ticket-less active instance as the epic finalize. It only
-// stands in for a running row once every leaf under that epic has settled — an
-// instance grazing between picks still has leaves to show.
+// epicFinalize reads the epic's own checkpoint as the drain's epic-level work. It
+// outlives the loop that wrote it, so a release parked for a human still holds the
+// row; the heartbeat only adds the sub-state, and only while pinned to that epic.
+// A release that halted keeps the row too, wearing the halt the checkpoint carries.
 function epicFinalize(
   items: QueueItem[],
-  byId: Map<string, TimelineTicket>,
+  byTicket: Map<string, Run>,
   instance?: Instance,
 ): FinalizeEntry | undefined {
-  if (instance?.ticket) return undefined
-  if (!isActiveState(toSessionState(instance?.session_state ?? ''))) {
-    return undefined
+  for (const item of items) {
+    if (item.kind !== 'epic') continue
+    const run = byTicket.get(item.id)
+    if (run?.phase !== RELEASING) continue
+    const live = instance?.ticket === item.id
+    return {
+      epicId: item.id,
+      title: item.title || run.title || '',
+      source: item.source,
+      phase: run.phase,
+      release: run.release,
+      prUrl: run.pr_url,
+      failureClass: run.failure_class,
+      reason: run.failure_reason,
+      activity: live ? instance?.activity : undefined,
+      detail: live ? instance?.detail : undefined,
+    }
   }
-  const epic = items.find((it) => it.kind === 'epic' && it.status === 'running')
-  if (!epic) return undefined
-  const open = (epic.sub_issues ?? []).some(
-    (s) => !isSettled(byId.get(s.id)?.status ?? 'pending'),
-  )
-  if (open) return undefined
-  return {
-    epicId: epic.id,
-    title: epic.title ?? '',
-    source: epic.source,
-    activity: instance?.activity,
-    detail: instance?.detail,
-  }
+  return undefined
 }
 
 export function buildTimeline(
@@ -280,13 +299,16 @@ export function buildTimeline(
   drainingSince?: string,
 ): Timeline {
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
+  const finalize = epicFinalize(items, byTicket, instance)
   const leaves = flatten(items)
   // A run can outlive its queue entry or never have one (a CLI start): an
   // instance ticket missing from the snapshot still joins as a leaf, whether the
-  // instance is working it or parked on the halt it stopped at.
+  // instance is working it or parked on the halt it stopped at. An epic mid-release
+  // is the exception — the loop reports under the epic id, which has its own row.
   const session = toSessionState(instance?.session_state ?? '')
   if (
     instance?.ticket &&
+    instance.ticket !== finalize?.epicId &&
     (isActiveState(session) || session === 'parked') &&
     !leaves.some((l) => l.id === instance.ticket)
   ) {
@@ -363,7 +385,7 @@ export function buildTimeline(
     settled,
     finished,
     running,
-    finalize: epicFinalize(items, byId, instance),
+    finalize,
     pending,
     elapsedAnchor: drainingSince ?? instance?.started_at,
   }
@@ -425,7 +447,13 @@ export function finishedReducer(
 }
 
 export type SettleLabel =
-  'merged' | 'done' | 'failed' | 'skipped' | 'paused' | 'stopped'
+  | 'merged'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'awaiting merge'
+  | 'paused'
+  | 'stopped'
 
 export interface SettleTally {
   label: SettleLabel
@@ -466,6 +494,10 @@ export function finishedView(
       count: settled.filter((t) => t.status === 'skipped').length,
     },
     {
+      label: 'awaiting merge',
+      count: settled.filter((t) => t.status === 'awaiting-merge').length,
+    },
+    {
       label: 'paused',
       count: settled.filter((t) => t.status === 'paused').length,
     },
@@ -482,6 +514,18 @@ export function finishedView(
     rows: rows.slice(0, visible),
     older: Math.max(0, settled.length - visible),
   }
+}
+
+// finalizePill leads with the halt the epic's own checkpoint carries, matching the
+// pill the board shows for the same run; only a release still in flight wears its
+// live sub-state.
+export function finalizePill(f: FinalizeEntry): {
+  state: RunState
+  label: string
+} {
+  return f.failureClass
+    ? attentionPill(f.failureClass)
+    : releasePill(f.release, f.activity, f.detail)
 }
 
 export function ticketPill(t: TimelineTicket): {
@@ -503,6 +547,8 @@ export function ticketPill(t: TimelineTicket): {
         : { state: 'fail', label: 'fault' }
     case 'skipped':
       return { state: 'info', label: 'skipped' }
+    case 'awaiting-merge':
+      return { state: 'warn', label: 'awaiting human merge' }
     case 'pending':
       return { state: 'todo', label: 'pending' }
   }
