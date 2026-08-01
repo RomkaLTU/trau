@@ -55,3 +55,46 @@ func TestEnsureRepoConfigInclude(t *testing.T) {
 		t.Fatalf("user.email = %q, want pinned@example.com (repo-pinned file not respected)", got)
 	}
 }
+
+// TestEnsureChildConfigIncludeFallsBackToTheFolderRoot is the Folder repo identity
+// grain: a child with its own .gitconfig.repo commits under that, and a child
+// without one resolves the folder root's — the file the folder root has no git
+// config of its own to wire in.
+func TestEnsureChildConfigIncludeFallsBackToTheFolderRoot(t *testing.T) {
+	root := t.TempDir()
+	pinned := func(dir, email string) {
+		t.Helper()
+		body := "[user]\n\tname = Pinned\n\temail = " + email + "\n"
+		if err := os.WriteFile(filepath.Join(dir, RepoConfigFile), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pinned(root, "folder@example.com")
+
+	own := filepath.Join(root, "api-companies")
+	inherits := filepath.Join(root, "api-billing")
+	for _, child := range []string{own, inherits} {
+		if err := os.MkdirAll(child, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		gitRun(t, child, "init")
+	}
+	pinned(own, "child@example.com")
+
+	for child, want := range map[string]string{own: "child@example.com", inherits: "folder@example.com"} {
+		added, err := EnsureChildConfigInclude(context.Background(), root, child)
+		if err != nil {
+			t.Fatalf("wire %s: %v", child, err)
+		}
+		if !added {
+			t.Fatalf("%s: no include added", child)
+		}
+		out, err := exec.Command("git", "-C", child, "config", "user.email").Output()
+		if err != nil {
+			t.Fatalf("resolve user.email in %s: %v", child, err)
+		}
+		if got := strings.TrimSpace(string(out)); got != want {
+			t.Errorf("%s user.email = %q, want %q", filepath.Base(child), got, want)
+		}
+	}
+}

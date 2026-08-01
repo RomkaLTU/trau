@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -102,7 +101,7 @@ func runSteer(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	}
 	// cfg.RepoRoot already carries TRAU_REPO_ROOT layered env-over-ini, so it is
 	// the middle rung of the ADR 0001 order that --repo has to beat.
-	cfg.RepoRoot, _ = config.ResolveRepoRoot(a.repo, cfg.RepoRoot, config.GitToplevel)
+	cfg.RepoRoot, _ = resolveRepoRoot(a.repo, cfg.RepoRoot)
 	repo := repoName(cfg.RepoRoot)
 	if repo == "" {
 		return usageError{errors.New("steer: no repo resolved — run inside a git repo or pass --repo <path>")}

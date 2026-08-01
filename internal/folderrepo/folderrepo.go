@@ -55,6 +55,59 @@ func Scan(root string) Census {
 // holding at least one directly inside it.
 func Is(root string) bool { return Scan(root).IsFolder }
 
+// Nearest walks up from dir to the first Folder repo, or "" when no ancestor
+// holds git repositories. It is how a working directory outside any git
+// repository still resolves to the folder it is standing in.
+func Nearest(dir string) string {
+	for dir != "" {
+		if Is(dir) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
+	return ""
+}
+
+// Collides reports whether runs in the two roots would share a working tree: one
+// of them is a Folder repo and the other a repository sitting inside it. Paths are
+// compared cleaned — git answers with forward slashes on Windows while --repo is
+// taken verbatim — and one root against itself is the same repo, not a collision.
+func Collides(root, other string) bool {
+	if root == "" || other == "" {
+		return false
+	}
+	root, other = filepath.Clean(root), filepath.Clean(other)
+	if root == other {
+		return false
+	}
+	return (contains(root, other) && Is(root)) || (contains(other, root) && Is(other))
+}
+
+// CollisionReason states what a colliding run is waiting on: the ticket already
+// running in the repo it would share a working tree with, and why sharing one is a
+// refusal. The CLI and the hub both refuse with it, so an operator meets the same
+// sentence wherever the collision surfaces.
+func CollisionReason(ticket, root string) string {
+	running := "a loop"
+	if ticket != "" {
+		running = ticket
+	}
+	return running + " is already running in " + root + " — a folder repo and a repo inside it share a working tree, so one of them has to finish first"
+}
+
+// contains reports whether path sits inside root.
+func contains(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // Children lists the git repositories directly inside root, in name order. Only
 // the top level is read: a Folder repo's children are its immediate
 // subdirectories, and a child is never descended into. truncated reports that

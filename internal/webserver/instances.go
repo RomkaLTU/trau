@@ -210,6 +210,28 @@ func (s *Server) repoIsLive(root string) bool {
 	})
 }
 
+// folderCollisionError refuses work in a repo whose enclosing Folder repo, or one
+// of whose Child repos, already has a loop live in it. It names both the repo and
+// the ticket its loop is on, so the board states the reason before anything spawns.
+type folderCollisionError struct{ entry registry.Entry }
+
+func (e folderCollisionError) Error() string {
+	return folderrepo.CollisionReason(e.entry.Ticket, e.entry.RepoRoot)
+}
+
+// folderCollision names the live loop a run in root would share a working tree
+// with: one in a Child repo when root is a Folder repo, or one in the Folder repo
+// that holds root. Every live entry blocks, a takeover included — a terminal
+// session holds that working tree just as firmly as a loop does.
+func (s *Server) folderCollision(root string) (folderCollisionError, bool) {
+	for _, e := range s.liveInstances() {
+		if folderrepo.Collides(root, e.RepoRoot) {
+			return folderCollisionError{entry: e}, true
+		}
+	}
+	return folderCollisionError{}, false
+}
+
 // hasBusyInstance reports whether a live instance in root is past idle — a run in
 // flight, held WIP, or a takeover terminal owning the working tree (ADR 0018). An
 // idle instance is an open dashboard rather than a run, and a legacy entry with no

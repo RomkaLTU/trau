@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -91,7 +90,7 @@ func forensicsHub(ctx context.Context, f forensicsFlags, stderr io.Writer) (*hub
 		return nil, "", console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
 	}
 	if cfg.RepoRoot == "" {
-		cfg.RepoRoot, _ = config.ResolveRepoRoot(f.repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+		cfg.RepoRoot, _ = resolveRepoRoot(f.repo, os.Getenv("TRAU_REPO_ROOT"))
 	}
 	name := repoName(cfg.RepoRoot)
 	if name == "" {

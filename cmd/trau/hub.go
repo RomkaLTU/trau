@@ -294,6 +294,28 @@ func liveLoops() ([]registry.Entry, error) {
 	return hubstore.NewInstances(db).Live()
 }
 
+// registeredRoots reads the registered set straight from the hub database, the
+// tie-breaker cwd resolution needs between a Child repo and the Folder repo that
+// holds it. A machine whose hub has never run has none.
+func registeredRoots() ([]string, error) {
+	db, err := hubdb.OpenReadOnly(registry.Home())
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = db.Close() }()
+	return hubstore.NewRegistrations(db).Registered()
+}
+
+// resolveRepoRoot is the production binding of the repo resolver: the current
+// directory's git top-level, the Folder repo above it, and the registered set
+// that decides between them.
+func resolveRepoRoot(flagRepo, envRoot string) (string, error) {
+	return config.ResolveRepoRoot(flagRepo, envRoot, config.GitToplevel, registeredRoots)
+}
+
 func describeLoops(live []registry.Entry) string {
 	out := make([]string, 0, len(live))
 	for _, e := range live {

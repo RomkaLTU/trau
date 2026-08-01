@@ -13,18 +13,22 @@ import (
 
 // Requeue makes a quarantined ticket eligible again in one command: it restores
 // the tracker labels and status, drops the saved checkpoint, closes the attempt PR
-// and deletes the attempt branch, local and remote. Every step is skipped when it
-// has nothing left to do, so a second call changes nothing and says so. A ticket
-// whose attempt PR already merged is refused unless force overrides — the same
-// guard --reset applies to a merged checkpoint.
+// and deletes the attempt branch, local and remote. A folder run's attempt is every
+// child it shipped to, so all of its PRs close and all of its branches go. Every
+// step is skipped when it has nothing left to do, so a second call changes nothing
+// and says so. A ticket whose attempt PR already merged is refused unless force
+// overrides — the same guard --reset applies to a merged checkpoint.
 func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
-	pr := p.State.Get(id, "PR")
-	prState := ""
-	if pr != "" {
-		prState, _ = p.GitHub.PRState(ctx, pr)
-		if prState == "MERGED" && !force {
+	attempts := p.attempts(id)
+	states := make([]string, len(attempts))
+	for i, a := range attempts {
+		if a.pr == "" {
+			continue
+		}
+		states[i], _ = a.github.PRState(ctx, a.pr)
+		if states[i] == "MERGED" && !force {
 			return console.Actionable(
-				fmt.Errorf("%s is already shipped (PR %s is merged)", id, pr),
+				fmt.Errorf("%s is already shipped (PR %s is merged%s)", id, a.pr, a.in()),
 				"requeue "+id,
 				"its code is already merged — pass --force to requeue it anyway")
 		}
@@ -41,17 +45,18 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 		changed = append(changed, line)
 	}
 
-	if pr != "" && prState != "CLOSED" && prState != "MERGED" {
-		if err := p.GitHub.ClosePR(ctx, pr); err != nil {
-			errs = append(errs, fmt.Errorf("close PR %s: %w", pr, err))
-		} else {
-			changed = append(changed, "closed the attempt PR "+pr)
+	for i, a := range attempts {
+		if a.pr != "" && states[i] != "CLOSED" && states[i] != "MERGED" {
+			if err := a.github.ClosePR(ctx, a.pr); err != nil {
+				errs = append(errs, fmt.Errorf("close PR %s%s: %w", a.pr, a.in(), err))
+			} else {
+				changed = append(changed, "closed the attempt PR "+a.pr+a.in())
+			}
 		}
+		dropped, dropErrs := p.dropAttemptBranch(ctx, a, branch)
+		changed = append(changed, dropped...)
+		errs = append(errs, dropErrs...)
 	}
-
-	dropped, dropErrs := p.dropAttemptBranch(ctx, branch)
-	changed = append(changed, dropped...)
-	errs = append(errs, dropErrs...)
 
 	if phase := p.State.Get(id, "PHASE"); phase != "" {
 		p.clearLocalState(id)
@@ -76,30 +81,30 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 // dropped and what it could not. A branch that is already gone — locally, on the
 // remote, or both — contributes neither. The base is never a candidate, and a
 // remote-less repo skips the remote half rather than reporting an unreachable one.
-func (p *Pipeline) dropAttemptBranch(ctx context.Context, branch string) (changed []string, errs []error) {
+func (p *Pipeline) dropAttemptBranch(ctx context.Context, a attempt, branch string) (changed []string, errs []error) {
 	if branch == "" || branch == p.Base {
 		return nil, nil
 	}
-	if local, _ := p.Git.BranchExists(ctx, branch); local {
-		if _, err := p.checkoutBase(ctx, true); err != nil {
-			errs = append(errs, fmt.Errorf("check out %s: %w", p.Base, err))
-		} else if err := p.Git.DeleteBranch(ctx, branch); err != nil {
-			errs = append(errs, fmt.Errorf("delete branch %s: %w", branch, err))
+	if local, _ := a.git.BranchExists(ctx, branch); local {
+		if err := p.baseCheckout(ctx, a); err != nil {
+			errs = append(errs, fmt.Errorf("check out %s%s: %w", p.Base, a.in(), err))
+		} else if err := a.git.DeleteBranch(ctx, branch); err != nil {
+			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.in(), err))
 		} else {
-			changed = append(changed, "deleted branch "+branch)
+			changed = append(changed, "deleted branch "+branch+a.in())
 		}
 	}
 	if p.localDelivery(ctx) {
 		return changed, errs
 	}
-	switch pushed, err := p.Git.RemoteBranchExists(ctx, p.Remote, branch); {
+	switch pushed, err := a.git.RemoteBranchExists(ctx, p.Remote, branch); {
 	case err != nil:
-		errs = append(errs, fmt.Errorf("look up %s/%s: %w", p.Remote, branch, err))
+		errs = append(errs, fmt.Errorf("look up %s/%s%s: %w", p.Remote, branch, a.in(), err))
 	case pushed:
-		if err := p.Git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
-			errs = append(errs, fmt.Errorf("delete %s/%s: %w", p.Remote, branch, err))
+		if err := a.git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
+			errs = append(errs, fmt.Errorf("delete %s/%s%s: %w", p.Remote, branch, a.in(), err))
 		} else {
-			changed = append(changed, fmt.Sprintf("deleted %s/%s", p.Remote, branch))
+			changed = append(changed, fmt.Sprintf("deleted %s/%s%s", p.Remote, branch, a.in()))
 		}
 	}
 	return changed, errs

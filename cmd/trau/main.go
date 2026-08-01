@@ -233,7 +233,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	ctx, cancelLoop := context.WithCancel(ctx)
 	defer cancelLoop()
 
-	repoRoot, rrErr := config.ResolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+	repoRoot, rrErr := resolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"))
 	if rrErr != nil {
 		logger.Verbosef("repo root resolution: %v", rrErr)
 	} else {
@@ -435,7 +435,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	if opts.ResetID != "" || opts.ResetLocalID != "" || opts.RequeueID != "" {
 		ensureHubForStore(ctx, cfg, stderr)
-		repoRoot, err := config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
+		repoRoot, err := resolveRepoRoot(opts.Repo, cfg.RepoRoot)
 		if err != nil {
 			return resolveRepoError(ctx, cfg, err)
 		}
@@ -524,12 +524,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// before repo resolution so a failed resolve still leaves a hub to point at.
 	// Idempotent.
 	ensureHubForStore(ctx, cfg, stderr)
-	repoRoot, err = config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
+	repoRoot, err = resolveRepoRoot(opts.Repo, cfg.RepoRoot)
 	if err != nil {
 		return resolveRepoError(ctx, cfg, err)
 	}
 	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
 	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(cfg), cfg.ServeToken), repoRoot); err != nil {
+		return err
+	}
+	if err := folderCollisionRefusal(repoRoot); err != nil {
 		return err
 	}
 	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con, rec, modelFallback)
@@ -694,7 +697,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 	logger.Init(stderr, opts.Verbose, opts.Debug)
 
-	repoRoot, rrErr := config.ResolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+	repoRoot, rrErr := resolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"))
 	if rrErr != nil {
 		logger.Verbosef("repo root resolution failed: %v", rrErr)
 		repoRoot = ""
@@ -1456,10 +1459,15 @@ func (l sessionLedger) SetTicket(id string) {
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer, rec *sessionRecorder, fallbackNotice *agent.ModelFallbackNotice) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
-		return nil, fmt.Errorf("wire %s into the repo's local git config: %w", pipeline.RepoConfigFile, err)
-	} else if added {
-		fmt.Fprintf(os.Stderr, "wired %s into the repo's local git config (include.path)\n", pipeline.RepoConfigFile)
+	// A folder root has no git config of its own to wire into; a folder run pins
+	// its identity per child at commit time instead.
+	folder := folderrepo.Is(repoRoot)
+	if !folder {
+		if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
+			return nil, fmt.Errorf("wire %s into the repo's local git config: %w", pipeline.RepoConfigFile, err)
+		} else if added {
+			fmt.Fprintf(os.Stderr, "wired %s into the repo's local git config (include.path)\n", pipeline.RepoConfigFile)
+		}
 	}
 	var verifyChecks []checks.Check
 	if cfg.VerifyChecks {
@@ -1488,7 +1496,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		LessonLedger:         newLessonStore(cfg, repoRoot),
 		Git:                  pipeline.ExecGit{Repo: repoRoot},
 		GitHub:               pipeline.ExecGitHub{Repo: repoRoot},
-		FolderRepo:           folderrepo.Is(repoRoot),
+		FolderRepo:           folder,
 		GitAt:                func(root string) pipeline.Git { return pipeline.ExecGit{Repo: root} },
 		GitHubAt:             func(root string) pipeline.GitHub { return pipeline.ExecGitHub{Repo: root} },
 		Tracker:              pm,
@@ -2750,7 +2758,7 @@ func (a *appActions) ensure() error {
 		a.buildErr = err
 		return err
 	}
-	repoRoot, err := config.ResolveRepoRoot(a.opts.Repo, a.cfg.RepoRoot, config.GitToplevel)
+	repoRoot, err := resolveRepoRoot(a.opts.Repo, a.cfg.RepoRoot)
 	if err != nil {
 		a.buildErr = err
 		return err

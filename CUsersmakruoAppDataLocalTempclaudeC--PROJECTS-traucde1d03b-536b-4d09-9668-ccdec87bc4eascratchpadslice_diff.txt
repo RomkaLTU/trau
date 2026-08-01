@@ -1,0 +1,1370 @@
+diff --git a/cmd/trau/forensics.go b/cmd/trau/forensics.go
+index e54e7d7..59f2e18 100644
+--- a/cmd/trau/forensics.go
++++ b/cmd/trau/forensics.go
+@@ -13,7 +13,6 @@ import (
+ 	"strings"
+ 	"time"
+ 
+-	"github.com/RomkaLTU/trau/internal/config"
+ 	"github.com/RomkaLTU/trau/internal/console"
+ 	"github.com/RomkaLTU/trau/internal/hubclient"
+ 	"github.com/RomkaLTU/trau/internal/logger"
+@@ -91,7 +90,7 @@ func forensicsHub(ctx context.Context, f forensicsFlags, stderr io.Writer) (*hub
+ 		return nil, "", console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
+ 	}
+ 	if cfg.RepoRoot == "" {
+-		cfg.RepoRoot, _ = config.ResolveRepoRoot(f.repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
++		cfg.RepoRoot, _ = resolveRepoRoot(f.repo, os.Getenv("TRAU_REPO_ROOT"))
+ 	}
+ 	name := repoName(cfg.RepoRoot)
+ 	if name == "" {
+diff --git a/cmd/trau/hub.go b/cmd/trau/hub.go
+index b4c24a0..d3c4fae 100644
+--- a/cmd/trau/hub.go
++++ b/cmd/trau/hub.go
+@@ -294,6 +294,28 @@ func liveLoops() ([]registry.Entry, error) {
+ 	return hubstore.NewInstances(db).Live()
+ }
+ 
++// registeredRoots reads the registered set straight from the hub database, the
++// tie-breaker cwd resolution needs between a Child repo and the Folder repo that
++// holds it. A machine whose hub has never run has none.
++func registeredRoots() ([]string, error) {
++	db, err := hubdb.OpenReadOnly(registry.Home())
++	if errors.Is(err, fs.ErrNotExist) {
++		return nil, nil
++	}
++	if err != nil {
++		return nil, err
++	}
++	defer func() { _ = db.Close() }()
++	return hubstore.NewRegistrations(db).Registered()
++}
++
++// resolveRepoRoot is the production binding of the repo resolver: the current
++// directory's git top-level, the Folder repo above it, and the registered set
++// that decides between them.
++func resolveRepoRoot(flagRepo, envRoot string) (string, error) {
++	return config.ResolveRepoRoot(flagRepo, envRoot, config.GitToplevel, registeredRoots)
++}
++
+ func describeLoops(live []registry.Entry) string {
+ 	out := make([]string, 0, len(live))
+ 	for _, e := range live {
+diff --git a/cmd/trau/main.go b/cmd/trau/main.go
+index 92ec401..1138f06 100644
+--- a/cmd/trau/main.go
++++ b/cmd/trau/main.go
+@@ -233,7 +233,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+ 	ctx, cancelLoop := context.WithCancel(ctx)
+ 	defer cancelLoop()
+ 
+-	repoRoot, rrErr := config.ResolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
++	repoRoot, rrErr := resolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"))
+ 	if rrErr != nil {
+ 		logger.Verbosef("repo root resolution: %v", rrErr)
+ 	} else {
+@@ -435,7 +435,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+ 
+ 	if opts.ResetID != "" || opts.ResetLocalID != "" || opts.RequeueID != "" {
+ 		ensureHubForStore(ctx, cfg, stderr)
+-		repoRoot, err := config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
++		repoRoot, err := resolveRepoRoot(opts.Repo, cfg.RepoRoot)
+ 		if err != nil {
+ 			return resolveRepoError(ctx, cfg, err)
+ 		}
+@@ -524,7 +524,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+ 	// before repo resolution so a failed resolve still leaves a hub to point at.
+ 	// Idempotent.
+ 	ensureHubForStore(ctx, cfg, stderr)
+-	repoRoot, err = config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
++	repoRoot, err = resolveRepoRoot(opts.Repo, cfg.RepoRoot)
+ 	if err != nil {
+ 		return resolveRepoError(ctx, cfg, err)
+ 	}
+@@ -532,6 +532,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+ 	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(cfg), cfg.ServeToken), repoRoot); err != nil {
+ 		return err
+ 	}
++	if err := folderCollisionRefusal(repoRoot); err != nil {
++		return err
++	}
+ 	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con, rec, modelFallback)
+ 	if err != nil {
+ 		return err
+@@ -694,7 +697,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
+ 	}
+ 	logger.Init(stderr, opts.Verbose, opts.Debug)
+ 
+-	repoRoot, rrErr := config.ResolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
++	repoRoot, rrErr := resolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"))
+ 	if rrErr != nil {
+ 		logger.Verbosef("repo root resolution failed: %v", rrErr)
+ 		repoRoot = ""
+@@ -1456,10 +1459,15 @@ func (l sessionLedger) SetTicket(id string) {
+ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer, rec *sessionRecorder, fallbackNotice *agent.ModelFallbackNotice) (*pipeline.Pipeline, error) {
+ 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+ 	defer cancel()
+-	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
+-		return nil, fmt.Errorf("wire %s into the repo's local git config: %w", pipeline.RepoConfigFile, err)
+-	} else if added {
+-		fmt.Fprintf(os.Stderr, "wired %s into the repo's local git config (include.path)\n", pipeline.RepoConfigFile)
++	// A folder root has no git config of its own to wire into; a folder run pins
++	// its identity per child at commit time instead.
++	folder := folderrepo.Is(repoRoot)
++	if !folder {
++		if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
++			return nil, fmt.Errorf("wire %s into the repo's local git config: %w", pipeline.RepoConfigFile, err)
++		} else if added {
++			fmt.Fprintf(os.Stderr, "wired %s into the repo's local git config (include.path)\n", pipeline.RepoConfigFile)
++		}
+ 	}
+ 	var verifyChecks []checks.Check
+ 	if cfg.VerifyChecks {
+@@ -1488,7 +1496,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
+ 		LessonLedger:         newLessonStore(cfg, repoRoot),
+ 		Git:                  pipeline.ExecGit{Repo: repoRoot},
+ 		GitHub:               pipeline.ExecGitHub{Repo: repoRoot},
+-		FolderRepo:           folderrepo.Is(repoRoot),
++		FolderRepo:           folder,
+ 		GitAt:                func(root string) pipeline.Git { return pipeline.ExecGit{Repo: root} },
+ 		GitHubAt:             func(root string) pipeline.GitHub { return pipeline.ExecGitHub{Repo: root} },
+ 		Tracker:              pm,
+@@ -2750,7 +2758,7 @@ func (a *appActions) ensure() error {
+ 		a.buildErr = err
+ 		return err
+ 	}
+-	repoRoot, err := config.ResolveRepoRoot(a.opts.Repo, a.cfg.RepoRoot, config.GitToplevel)
++	repoRoot, err := resolveRepoRoot(a.opts.Repo, a.cfg.RepoRoot)
+ 	if err != nil {
+ 		a.buildErr = err
+ 		return err
+diff --git a/cmd/trau/serve.go b/cmd/trau/serve.go
+index dd678a7..4383e73 100644
+--- a/cmd/trau/serve.go
++++ b/cmd/trau/serve.go
+@@ -259,7 +259,7 @@ func grillReachableHost(bind string) string {
+ // serveConfigPaths resolves the three config layers a serve-side command reads,
+ // mirroring the loop's repo/user/local precedence.
+ func serveConfigPaths(repo string) (projectEnv, userEnv, localEnv string) {
+-	repoRoot, _ := config.ResolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
++	repoRoot, _ := resolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"))
+ 	if home, err := os.UserHomeDir(); err == nil {
+ 		userEnv = config.ProjectConfigPath(home)
+ 	}
+diff --git a/cmd/trau/steer.go b/cmd/trau/steer.go
+index 9c728cd..15f7d33 100644
+--- a/cmd/trau/steer.go
++++ b/cmd/trau/steer.go
+@@ -8,7 +8,6 @@ import (
+ 	"os"
+ 	"strings"
+ 
+-	"github.com/RomkaLTU/trau/internal/config"
+ 	"github.com/RomkaLTU/trau/internal/console"
+ 	"github.com/RomkaLTU/trau/internal/hubclient"
+ 	"github.com/RomkaLTU/trau/internal/logger"
+@@ -102,7 +101,7 @@ func runSteer(ctx context.Context, args []string, stdout, stderr io.Writer) erro
+ 	}
+ 	// cfg.RepoRoot already carries TRAU_REPO_ROOT layered env-over-ini, so it is
+ 	// the middle rung of the ADR 0001 order that --repo has to beat.
+-	cfg.RepoRoot, _ = config.ResolveRepoRoot(a.repo, cfg.RepoRoot, config.GitToplevel)
++	cfg.RepoRoot, _ = resolveRepoRoot(a.repo, cfg.RepoRoot)
+ 	repo := repoName(cfg.RepoRoot)
+ 	if repo == "" {
+ 		return usageError{errors.New("steer: no repo resolved — run inside a git repo or pass --repo <path>")}
+diff --git a/cmd/trau/takeover.go b/cmd/trau/takeover.go
+index 3ddc0b0..d852ac9 100644
+--- a/cmd/trau/takeover.go
++++ b/cmd/trau/takeover.go
+@@ -67,7 +67,7 @@ func runTakeover(ctx context.Context, args []string, stdout, stderr io.Writer) e
+ 	}
+ 	logger.Init(stderr, verbose, debug)
+ 
+-	repoRoot, err := config.ResolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
++	repoRoot, err := resolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"))
+ 	if err != nil {
+ 		return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
+ 	}
+diff --git a/docs/adr/0030-folder-repos.md b/docs/adr/0030-folder-repos.md
+index a139b84..f49e53b 100644
+--- a/docs/adr/0030-folder-repos.md
++++ b/docs/adr/0030-folder-repos.md
+@@ -100,3 +100,44 @@ nothing about the single-repo path changes.
+ - Out of scope and unchanged: nested Folder repos, children deeper than the
+   folder's immediate subdirectories, and migrating an existing 44-member Project
+   into a Folder repo — register the folder and forget the members by hand.
++
++## Amendment (2026-08-01): a Folder repo outside the hub's drain
++
++TRAU-20 made a Folder repo runnable through the hub, which execs
++`trau --repo <root>`. Reaching it any other way — from the working directory, from
++`trau doctor`, from a reset — still assumed the root was a git repository. Four
++decisions close that:
++
++- **Resolution from the working directory.** A folder root, and any non-git
++  directory under it, resolves to the nearest ancestor Folder repo. Standing
++  inside a Child repo is the ambiguous case, and registration breaks the tie: the
++  child when it is registered in its own right, otherwise the Folder repo that
++  holds it. Registration is only ever the tie-breaker — a registered set that is
++  empty or unreadable leaves the git top-level, so it never stands between an
++  operator and an unregistered folder they are standing in.
++- **`.gitconfig.repo` is wired per ship-target child.** A folder root has no git
++  config to hold an `include.path`, so the identity is pinned inside each child
++  the ticket reached, at commit time: the child's own `.gitconfig.repo` when it
++  has one, the folder root's otherwise — the same child-overrides-folder grain as
++  `.trau/checks` and `LINT_FIX_CMD`.
++- **Reset acts on the recorded children.** Every `SHIP_TARGETS` entry loses its
++  branch locally and on the remote. Branches are cut lazily, so a run reset while
++  parked in build has none — it has loose work instead, and that is discarded in
++  exactly the children that changed since `START_DIRT`. The start-of-run census is
++  what tells this run's work from the operator's, so a child holding unrelated WIP
++  is left as it was found. `PurgeLocal` drops the same branches and no loose work;
++  `Requeue` closes every PR in `PR_URLS`, not only the first; `Clear` still
++  touches nothing.
++- **A Folder repo and a repo inside it never run at once.** They share a working
++  tree, so a Folder repo run is refused while any live entry sits in one of its
++  children, and a child's run while one sits in the folder. Every live entry
++  blocks, `StateTakeover` included — a terminal takeover holds that tree just as
++  firmly as a loop. The hub answers 409 at queue start so the board states the
++  reason before spawning; the CLI refuses again just before the run starts, which
++  is the guard nothing bypasses.
++
++The web diff pane runs the existing per-root diff machinery once per changed child
++and merges the results into one flat `files[]`, each path rooted under the child's
++name and each entry carrying `repo`. `head_sha` and `base_sha` are empty for a
++folder run — N repositories have N of each — while `base` and `branch` stay as
++they are, one of each shared by every child.
+diff --git a/internal/config/config.go b/internal/config/config.go
+index 19426f4..29d54e6 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -29,6 +29,7 @@ import (
+ 	"strings"
+ 
+ 	"github.com/RomkaLTU/trau/internal/agent"
++	"github.com/RomkaLTU/trau/internal/folderrepo"
+ 	"github.com/RomkaLTU/trau/internal/prompts"
+ )
+ 
+@@ -1398,18 +1399,66 @@ func exploreAllowed(disallowed string) bool {
+ }
+ 
+ // ResolveRepoRoot locates the target app repo, per ADR 0001 §2: the --repo flag
+-// wins, else TRAU_REPO_ROOT (env/trau.ini, passed
+-// as envRoot), else the current directory's git top-level via gitTop. gitTop is
+-// injected so the fallback is testable without a real repo; production callers pass
+-// GitToplevel. All git/gh operations act on the resolved root, never the trau tree.
+-func ResolveRepoRoot(flagRepo, envRoot string, gitTop func() (string, error)) (string, error) {
++// wins, else TRAU_REPO_ROOT (env/trau.ini, passed as envRoot), else the current
++// directory. gitTop and registered are injected so the fallback is testable
++// without a real repo or a hub; production callers pass GitToplevel and a reader
++// of the hub's registered set. All git/gh operations act on the resolved root,
++// never the trau tree.
++func ResolveRepoRoot(flagRepo, envRoot string, gitTop func() (string, error), registered func() ([]string, error)) (string, error) {
+ 	if flagRepo != "" {
+ 		return flagRepo, nil
+ 	}
+ 	if envRoot != "" {
+ 		return envRoot, nil
+ 	}
+-	return gitTop()
++	return resolveFromCwd(gitTop, registered)
++}
++
++// resolveFromCwd resolves the working directory to a repo: its git top-level, or
++// the nearest Folder repo above it when there is none — a folder root and any
++// non-git directory under it both land on the folder. Standing inside a Child
++// repo is the ambiguous case, and registration breaks the tie: the child when it
++// is registered in its own right, the folder holding it otherwise. A registered
++// set that is empty or unreadable leaves the git top-level, so registration is
++// never what stands between an operator and the folder they are standing in.
++func resolveFromCwd(gitTop func() (string, error), registered func() ([]string, error)) (string, error) {
++	top, err := gitTop()
++	if err != nil {
++		cwd, cwdErr := os.Getwd()
++		if cwdErr != nil {
++			return "", err
++		}
++		if folder := folderrepo.Nearest(cwd); folder != "" {
++			return folder, nil
++		}
++		return "", err
++	}
++	folder := folderrepo.Nearest(filepath.Dir(top))
++	if folder == "" {
++		return top, nil
++	}
++	roots := registeredRoots(registered)
++	if !roots[filepath.Clean(top)] && roots[filepath.Clean(folder)] {
++		return folder, nil
++	}
++	return top, nil
++}
++
++// registeredRoots reads the hub's registered set into a cleaned lookup. A set
++// that cannot be read is empty, which leaves the structural rule to decide.
++func registeredRoots(registered func() ([]string, error)) map[string]bool {
++	if registered == nil {
++		return nil
++	}
++	roots, err := registered()
++	if err != nil {
++		return nil
++	}
++	set := make(map[string]bool, len(roots))
++	for _, root := range roots {
++		set[filepath.Clean(root)] = true
++	}
++	return set
+ }
+ 
+ // GitToplevel returns the current directory's git top-level (git rev-parse
+diff --git a/internal/doctor/doctor.go b/internal/doctor/doctor.go
+index 3d503d6..baa2c36 100644
+--- a/internal/doctor/doctor.go
++++ b/internal/doctor/doctor.go
+@@ -21,6 +21,7 @@ import (
+ 
+ 	"github.com/RomkaLTU/trau/internal/agent"
+ 	"github.com/RomkaLTU/trau/internal/config"
++	"github.com/RomkaLTU/trau/internal/folderrepo"
+ 	"github.com/RomkaLTU/trau/internal/hubdb"
+ 	"github.com/RomkaLTU/trau/internal/hubstore"
+ 	"github.com/RomkaLTU/trau/internal/launchd"
+@@ -244,11 +245,9 @@ func checkConfig(ctx context.Context, cfg config.Config, provider string, source
+ 		rr.add("repo", fail, fmt.Sprintf("repo root %q does not exist or is not a directory", repoRoot), "check --repo / TRAU_REPO_ROOT")
+ 		return
+ 	}
+-	if err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--git-dir").Run(); err != nil {
+-		rr.add("repo", fail, fmt.Sprintf("%q is not a git repository", repoRoot), "point --repo at a git checkout")
++	if !checkRepoRoot(ctx, cfg, repoRoot, rr) {
+ 		return
+ 	}
+-	rr.add("repo", pass, repoRoot, "")
+ 
+ 	switch provider {
+ 	case "internal":
+@@ -292,6 +291,103 @@ func checkConfig(ctx context.Context, cfg config.Config, provider string, source
+ 	}
+ }
+ 
++// checkRepoRoot passes the repo check for a git checkout and for a Folder repo —
++// a folder of git repositories, which has no git of its own — and reports whether
++// the target is a repo trau can run in at all.
++func checkRepoRoot(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) bool {
++	if census := folderrepo.Scan(repoRoot); census.IsFolder {
++		rr.add("repo", pass, fmt.Sprintf("%s (folder repo, %d child repos)", repoRoot, len(census.Children)), "")
++		checkChildRepos(ctx, cfg, census.Children, rr)
++		return true
++	}
++	if err := exec.CommandContext(ctx, "git", "-C", repoRoot, "rev-parse", "--git-dir").Run(); err != nil {
++		rr.add("repo", fail, fmt.Sprintf("%q is not a git repository", repoRoot), "point --repo at a git checkout")
++		return false
++	}
++	rr.add("repo", pass, repoRoot, "")
++	return true
++}
++
++// childState is one Child repo's readiness for a run: the branch it sits on,
++// whether its tree already carries work, and whether it has a remote to open a
++// pull request against.
++type childState struct {
++	name      string
++	branch    string
++	dirty     bool
++	hasRemote bool
++}
++
++// offLimitsReason names why a run would leave this child alone, or "" when it
++// would ship to it — the same census sweepChildren takes before a run starts.
++func (c childState) offLimitsReason(base string) string {
++	switch {
++	case c.branch == "":
++		return "git state unreadable"
++	case c.dirty:
++		return "uncommitted changes"
++	case c.branch != base:
++		return "on " + c.branch
++	}
++	return ""
++}
++
++// checkChildRepos reports how much of a Folder repo a run could actually ship to:
++// the children that are clean and on the base branch, and the ones the
++// start-of-run sweep would put off limits. None of it is ever a failure — ADR 0030
++// leaves an off-limits child out of the run rather than aborting one — so a dirty
++// child, an off-base child and a child with no remote are all warnings.
++func checkChildRepos(ctx context.Context, cfg config.Config, children []folderrepo.Child, rr *runner) {
++	base := strings.TrimSpace(cfg.BaseBranch)
++	remote := strings.TrimSpace(cfg.Remote)
++	if remote == "" {
++		remote = "origin"
++	}
++	states := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) childState {
++		return childState{
++			name:      c.Name,
++			branch:    gitLine(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD"),
++			dirty:     gitLine(ctx, c.Path, "status", "--porcelain") != "",
++			hasRemote: hasGitRemote(ctx, c.Path, remote),
++		}
++	})
++
++	offLimits, noRemote := []string{}, []string{}
++	for _, c := range states {
++		if reason := c.offLimitsReason(base); reason != "" {
++			offLimits = append(offLimits, c.name+" ("+reason+")")
++		}
++		if !c.hasRemote {
++			noRemote = append(noRemote, c.name)
++		}
++	}
++
++	message := fmt.Sprintf("%d of %d clean and on %s", len(children)-len(offLimits), len(children), base)
++	if len(offLimits) > 0 {
++		message += "\n    off limits to a run: " + strings.Join(offLimits, ", ")
++	}
++	if len(noRemote) > 0 {
++		message += fmt.Sprintf("\n    no %s remote (local delivery only): %s", remote, strings.Join(noRemote, ", "))
++	}
++	switch {
++	case len(offLimits) > 0:
++		rr.add("child repos", warn, message, "commit or stash their work, or put them back on "+base+" — a run ships to the rest and leaves these untouched")
++	case len(noRemote) > 0:
++		rr.add("child repos", warn, message, fmt.Sprintf("add a %s remote to those children to get pull requests and CI from them", remote))
++	default:
++		rr.add("child repos", pass, message, "")
++	}
++}
++
++// gitLine reads a single-line git answer in dir, empty when the command fails.
++func gitLine(ctx context.Context, dir string, args ...string) string {
++	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
++	if err != nil {
++		return ""
++	}
++	return strings.TrimSpace(string(out))
++}
++
+ // checkConfigLayers names the file every config layer resolved to. The
+ // cwd-local trau.ini is called out by name: it outranks both files people think
+ // of as "the config", and is the layer left behind and forgotten.
+@@ -417,9 +513,11 @@ func teamSyncState(repoRoot string) (hubstore.TeamSyncState, error) {
+ 
+ // checkRemote reports whether the configured remote actually exists — a non-empty
+ // REMOTE key says nothing about the repo. A repo without one is a local-only
+-// project, not a broken one, so this always passes and only names the mode.
++// project, not a broken one, so this always passes and only names the mode. A
++// Folder repo has no remote of its own and the child repos row already names
++// which of its children have one.
+ func checkRemote(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) {
+-	if repoRoot == "" {
++	if repoRoot == "" || folderrepo.Is(repoRoot) {
+ 		return
+ 	}
+ 	remote := strings.TrimSpace(cfg.Remote)
+diff --git a/internal/folderrepo/folderrepo.go b/internal/folderrepo/folderrepo.go
+index 375a6b3..bb0ea84 100644
+--- a/internal/folderrepo/folderrepo.go
++++ b/internal/folderrepo/folderrepo.go
+@@ -55,6 +55,47 @@ func Scan(root string) Census {
+ // holding at least one directly inside it.
+ func Is(root string) bool { return Scan(root).IsFolder }
+ 
++// Nearest walks up from dir to the first Folder repo, or "" when no ancestor
++// holds git repositories. It is how a working directory outside any git
++// repository still resolves to the folder it is standing in.
++func Nearest(dir string) string {
++	for dir != "" {
++		if Is(dir) {
++			return dir
++		}
++		parent := filepath.Dir(dir)
++		if parent == dir {
++			return ""
++		}
++		dir = parent
++	}
++	return ""
++}
++
++// Collides reports whether runs in the two roots would share a working tree: one
++// of them is a Folder repo and the other a repository sitting inside it. Paths are
++// compared cleaned — git answers with forward slashes on Windows while --repo is
++// taken verbatim — and one root against itself is the same repo, not a collision.
++func Collides(root, other string) bool {
++	if root == "" || other == "" {
++		return false
++	}
++	root, other = filepath.Clean(root), filepath.Clean(other)
++	if root == other {
++		return false
++	}
++	return (contains(root, other) && Is(root)) || (contains(other, root) && Is(other))
++}
++
++// contains reports whether path sits inside root.
++func contains(root, path string) bool {
++	rel, err := filepath.Rel(root, path)
++	if err != nil {
++		return false
++	}
++	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
++}
++
+ // Children lists the git repositories directly inside root, in name order. Only
+ // the top level is read: a Folder repo's children are its immediate
+ // subdirectories, and a child is never descended into. truncated reports that
+diff --git a/internal/pipeline/folder.go b/internal/pipeline/folder.go
+index 2514abc..9617a6b 100644
+--- a/internal/pipeline/folder.go
++++ b/internal/pipeline/folder.go
+@@ -2,16 +2,10 @@ package pipeline
+ 
+ import (
+ 	"context"
+-	"crypto/sha256"
+-	"encoding/hex"
+ 	"fmt"
+-	"os"
+ 	"path/filepath"
+-	"slices"
+ 	"strings"
+ 
+-	"golang.org/x/sync/errgroup"
+-
+ 	"github.com/RomkaLTU/trau/internal/activity"
+ 	"github.com/RomkaLTU/trau/internal/checks"
+ 	"github.com/RomkaLTU/trau/internal/config"
+@@ -20,11 +14,6 @@ import (
+ 	"github.com/RomkaLTU/trau/internal/tracker"
+ )
+ 
+-// childSweepConcurrency bounds the parallel git calls the child sweeps spend. The
+-// sweeps are two cheap reads per child, but a folder holds around fifty of them
+-// and process spawn — not git — is what a serial sweep would wait on.
+-const childSweepConcurrency = 8
+-
+ // offLimitsKey and startDirtKey carry the start-of-run sweep on the ticket's
+ // checkpoint — which children may not be changed and how dirty each one already
+ // was — so a resumed run judges its children against the census taken before the
+@@ -59,46 +48,67 @@ func (s childState) offLimitsReason(base string) string {
+ // childDirt fingerprints a Child repo's uncommitted work, untracked files
+ // included. Both the start-of-run sweep and the changed-children check read it,
+ // so a stray file an operator left behind cannot read as clean to one and as this
+-// run's work to the other. A clean tree fingerprints as "".
+-//
+-// Each named path's size and mtime go into the fingerprint because the status
+-// line alone does not move when a file that already read as dirty is written
+-// again: without them, a build editing the very file an operator left behind
+-// would slip past the off-limits guard.
++// run's work to the other.
+ func childDirt(ctx context.Context, g Git, dir string) (string, error) {
+ 	status, err := g.WorktreeStatus(ctx)
+-	if err != nil || status == "" {
++	if err != nil {
+ 		return "", err
+ 	}
+-	sum := sha256.New()
+-	for _, line := range strings.Split(status, "\n") {
+-		var size, modified int64
+-		if fi, err := os.Stat(filepath.Join(dir, statusPath(line))); err == nil {
+-			size, modified = fi.Size(), fi.ModTime().UnixNano()
+-		}
+-		fmt.Fprintf(sum, "%s\x00%d\x00%d\x00", line, size, modified)
++	return folderrepo.Fingerprint(dir, status), nil
++}
++
++// shipTarget is a Child repo a run changed, with the PR its branch carries.
++type shipTarget struct {
++	folderrepo.Child
++	PRURL string
++}
++
++// attempt is one repo a run's undo has to act in: the target repo itself on a
++// plain Repo, one per recorded ship target in a Folder repo, each with the PR its
++// branch carries. Reset, PurgeLocal and Requeue all act on the whole set, so a
++// folder run's every branch and every PR is undone rather than only the first.
++type attempt struct {
++	repo   string // Child repo name, empty for the target repo itself
++	git    Git
++	github GitHub
++	pr     string
++}
++
++// in names the Child repo an attempt acted in, for a message that has to say
++// which of several it means.
++func (a attempt) in() string {
++	if a.repo == "" {
++		return ""
+ 	}
+-	return hex.EncodeToString(sum.Sum(nil))[:16], nil
++	return " in " + a.repo
+ }
+ 
+-// statusPath is the working-tree path a porcelain status line names: what follows
+-// the two status columns, or the arrow when the entry is a rename. A path this
+-// misreads simply contributes no size or mtime — both readings misread it alike.
+-func statusPath(line string) string {
+-	path := strings.TrimSpace(line)
+-	if len(line) > 3 {
+-		path = strings.TrimSpace(line[3:])
++func (p *Pipeline) attempts(id string) []attempt {
++	if !p.FolderRepo {
++		return []attempt{{git: p.Git, github: p.GitHub, pr: p.State.Get(id, "PR")}}
+ 	}
+-	if _, renamed, ok := strings.Cut(path, " -> "); ok {
+-		path = renamed
++	targets := p.shipTargets(id)
++	out := make([]attempt, 0, len(targets))
++	for _, t := range targets {
++		out = append(out, attempt{
++			repo:   t.Name,
++			git:    p.childGit(t.Child),
++			github: p.childGitHub(t.Child),
++			pr:     prNumber(t.PRURL),
++		})
+ 	}
+-	return strings.Trim(path, `"`)
++	return out
+ }
+ 
+-// shipTarget is a Child repo a run changed, with the PR its branch carries.
+-type shipTarget struct {
+-	folderrepo.Child
+-	PRURL string
++// baseCheckout puts an attempt's repo back on the base branch before its branch
++// is deleted. Only the target repo's own checkout can collide with another
++// worktree holding the base, so only it goes through checkoutBase.
++func (p *Pipeline) baseCheckout(ctx context.Context, a attempt) error {
++	if a.repo == "" {
++		_, err := p.checkoutBase(ctx, true)
++		return err
++	}
++	return a.git.Checkout(ctx, p.Base, true)
+ }
+ 
+ // RefuseEpic answers ErrFolderRepoEpic when a Folder repo is asked to run the epic
+@@ -162,8 +172,8 @@ func (p *Pipeline) folderChildren() []folderrepo.Child {
+ // them off limits.
+ func (p *Pipeline) startFolderRun(ctx context.Context, id string, resumed bool) {
+ 	if resumed {
+-		p.offLimits = parseCensus(p.State.Get(id, offLimitsKey))
+-		p.startDirt = parseCensus(p.State.Get(id, startDirtKey))
++		p.offLimits = folderrepo.ParseCensus(p.State.Get(id, offLimitsKey))
++		p.startDirt = folderrepo.ParseCensus(p.State.Get(id, startDirtKey))
+ 		return
+ 	}
+ 	p.sweepChildren(ctx)
+@@ -172,31 +182,11 @@ func (p *Pipeline) startFolderRun(ctx context.Context, id string, resumed bool)
+ }
+ 
+ func (p *Pipeline) recordCensus(id, key string, census map[string]string) {
+-	if err := p.State.Set(id, key, formatCensus(census)); err != nil {
++	if err := p.State.Set(id, key, folderrepo.FormatCensus(census)); err != nil {
+ 		p.logf("  ⚠ could not record %s for %s: %v", key, id, err)
+ 	}
+ }
+ 
+-// formatCensus renders a per-child census as name=value entries. The separator is
+-// "; " because a reason naming the branch a child sits on carries a comma of its own.
+-func formatCensus(census map[string]string) string {
+-	entries := make([]string, 0, len(census))
+-	for _, name := range sortedNames(census) {
+-		entries = append(entries, name+"="+census[name])
+-	}
+-	return strings.Join(entries, "; ")
+-}
+-
+-func parseCensus(recorded string) map[string]string {
+-	census := map[string]string{}
+-	for _, entry := range strings.Split(recorded, "; ") {
+-		if name, value, ok := strings.Cut(entry, "="); ok {
+-			census[name] = value
+-		}
+-	}
+-	return census
+-}
+-
+ // sweepChildren takes the census the whole run is judged against: which Child
+ // repos are off limits and why, and what uncommitted work each one already held.
+ // The sweep is two cheap reads per child — `status --porcelain` and `rev-parse
+@@ -208,7 +198,7 @@ func (p *Pipeline) sweepChildren(ctx context.Context) {
+ 		return
+ 	}
+ 	off, dirt := map[string]string{}, map[string]string{}
+-	for _, st := range readChildren(ctx, p.folderChildren(), p.readChildState) {
++	for _, st := range folderrepo.Sweep(ctx, p.folderChildren(), p.readChildState) {
+ 		if reason := st.offLimitsReason(p.Base); reason != "" {
+ 			off[st.Name] = reason
+ 		}
+@@ -232,23 +222,6 @@ func (p *Pipeline) folderStartDirt(ctx context.Context) map[string]string {
+ 	return p.startDirt
+ }
+ 
+-// readChildren reads one value per Child repo, concurrently but bounded, and
+-// returns them in child order. Every sweep here is a couple of cheap git reads, so
+-// a read that fails carries its own zero value rather than cancelling the rest.
+-func readChildren[T any](ctx context.Context, children []folderrepo.Child, read func(context.Context, folderrepo.Child) T) []T {
+-	out := make([]T, len(children))
+-	g, gctx := errgroup.WithContext(ctx)
+-	g.SetLimit(childSweepConcurrency)
+-	for i, c := range children {
+-		g.Go(func() error {
+-			out[i] = read(gctx, c)
+-			return nil
+-		})
+-	}
+-	_ = g.Wait()
+-	return out
+-}
+-
+ func (p *Pipeline) readChildState(ctx context.Context, c folderrepo.Child) childState {
+ 	g := p.childGit(c)
+ 	st := childState{Child: c}
+@@ -275,7 +248,7 @@ func (p *Pipeline) sweepFolder(ctx context.Context) error {
+ 	}
+ 	off := p.folderOffLimits(ctx)
+ 	p.logf("  ⓘ %s: %d child repos, %d ready", p.repoLabel(), len(children), len(children)-len(off))
+-	for _, name := range sortedNames(off) {
++	for _, name := range folderrepo.SortedNames(off) {
+ 		p.logf("      off limits: %s — %s", name, off[name])
+ 	}
+ 	return nil
+@@ -289,7 +262,7 @@ func (p *Pipeline) sweepFolder(ctx context.Context) error {
+ func (p *Pipeline) changedChildren(ctx context.Context) []folderrepo.Child {
+ 	children := p.folderChildren()
+ 	start := p.folderStartDirt(ctx)
+-	dirt := readChildren(ctx, children, func(ctx context.Context, c folderrepo.Child) string {
++	dirt := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) string {
+ 		d, err := childDirt(ctx, p.childGit(c), c.Path)
+ 		if err != nil {
+ 			return start[c.Name]
+@@ -321,7 +294,7 @@ func (p *Pipeline) folderBuildNote(ctx context.Context) string {
+ 		return b.String()
+ 	}
+ 	b.WriteString("\n\nOff limits — leave every file in these untouched, they were not clean when the run started:\n")
+-	for _, name := range sortedNames(off) {
++	for _, name := range folderrepo.SortedNames(off) {
+ 		b.WriteString("- " + name + " (" + off[name] + ")\n")
+ 	}
+ 	return b.String()
+@@ -480,6 +453,9 @@ func (p *Pipeline) folderShip(ctx context.Context, id string) error {
+ // slice on it. The branch is created here and not at build time: a child the
+ // ticket never reached is never left holding an empty branch.
+ func (p *Pipeline) commitChild(ctx context.Context, c folderrepo.Child, branch, message string) error {
++	if _, err := EnsureChildConfigInclude(ctx, p.RepoRoot, c.Path); err != nil {
++		return fmt.Errorf("wire %s: %w", RepoConfigFile, err)
++	}
+ 	g := p.childGit(c)
+ 	if exists, _ := g.BranchExists(ctx, branch); exists {
+ 		if err := g.Checkout(ctx, branch, false); err != nil {
+@@ -653,12 +629,3 @@ func targetURLs(targets []shipTarget) []string {
+ 	}
+ 	return urls
+ }
+-
+-func sortedNames(m map[string]string) []string {
+-	names := make([]string, 0, len(m))
+-	for name := range m {
+-		names = append(names, name)
+-	}
+-	slices.Sort(names)
+-	return names
+-}
+diff --git a/internal/pipeline/pipeline.go b/internal/pipeline/pipeline.go
+index 1f9c9df..d35ee66 100644
+--- a/internal/pipeline/pipeline.go
++++ b/internal/pipeline/pipeline.go
+@@ -1506,11 +1506,14 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
+ 	defer cancel()
+ 
+ 	branch := p.featureBranch(ctx, id)
+-	_, _ = p.checkoutBase(ctx, true)
+-	if branch != "" && branch != p.Base {
+-		_ = p.Git.DeleteBranch(ctx, branch)
+-		_ = p.Git.DeletePushedBranch(ctx, p.Remote, branch)
++	for _, a := range p.attempts(id) {
++		_ = p.baseCheckout(ctx, a)
++		if branch != "" && branch != p.Base {
++			_ = a.git.DeleteBranch(ctx, branch)
++			_ = a.git.DeletePushedBranch(ctx, p.Remote, branch)
++		}
+ 	}
++	p.discardFolderWork(ctx, id)
+ 	p.clearLocalState(id)
+ 	if branch != "" {
+ 		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
+@@ -1519,6 +1522,25 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
+ 	}
+ }
+ 
++// discardFolderWork throws away the loose work a folder run left behind: branches
++// are cut only at ship time, so a run reset while parked in build has nothing to
++// delete but plenty still uncommitted in the children it touched. Only those are
++// cleaned — the start-of-run census is what tells this run's work from the
++// operator's, and a child holding their WIP is left exactly as it was found. A
++// ticket that never reached a phase recorded no census, and nothing in any child
++// is known to be its.
++func (p *Pipeline) discardFolderWork(ctx context.Context, id string) {
++	if !p.FolderRepo || p.State.Get(id, "PHASE") == "" {
++		return
++	}
++	p.startFolderRun(ctx, id, true)
++	for _, c := range p.changedChildren(ctx) {
++		g := p.childGit(c)
++		_ = g.Checkout(ctx, p.Base, true)
++		_ = g.Clean(ctx)
++	}
++}
++
+ // clearLocalState drops everything a ticket's attempt left on this machine: its
+ // checkpoint, the hub-side artifacts and phase logs, and the prompt files and
+ // attachments the phases materialized under /tmp.
+@@ -1545,14 +1567,17 @@ func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
+ 	defer cancel()
+ 
+ 	branch := p.featureBranch(ctx, id)
+-	_, _ = p.checkoutBase(ctx, true)
+ 
+ 	var errs []error
+-	if branch != "" && branch != p.Base {
+-		if err := p.Git.DeleteBranch(ctx, branch); err != nil {
+-			errs = append(errs, fmt.Errorf("delete branch %s: %w", branch, err))
++	for _, a := range p.attempts(id) {
++		_ = p.baseCheckout(ctx, a)
++		if branch == "" || branch == p.Base {
++			continue
++		}
++		if err := a.git.DeleteBranch(ctx, branch); err != nil {
++			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.in(), err))
+ 		}
+-		if err := p.dropPushedBranch(ctx, branch); err != nil {
++		if err := p.dropPushedBranch(ctx, a.git, branch); err != nil {
+ 			errs = append(errs, err)
+ 		}
+ 	}
+@@ -1575,15 +1600,15 @@ func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
+ // dropPushedBranch deletes branch from the remote, when the remote still has it.
+ // A remote that pruned it already is nothing to report; one that cannot be reached
+ // is, since the branch then outlives the ticket unseen.
+-func (p *Pipeline) dropPushedBranch(ctx context.Context, branch string) error {
+-	exists, err := p.Git.RemoteBranchExists(ctx, p.Remote, branch)
++func (p *Pipeline) dropPushedBranch(ctx context.Context, g Git, branch string) error {
++	exists, err := g.RemoteBranchExists(ctx, p.Remote, branch)
+ 	if err != nil {
+ 		return fmt.Errorf("look up %s/%s: %w", p.Remote, branch, err)
+ 	}
+ 	if !exists {
+ 		return nil
+ 	}
+-	if err := p.Git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
++	if err := g.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
+ 		return fmt.Errorf("delete %s/%s: %w", p.Remote, branch, err)
+ 	}
+ 	return nil
+diff --git a/internal/pipeline/repoconfig.go b/internal/pipeline/repoconfig.go
+index 9f28ad8..daa4088 100644
+--- a/internal/pipeline/repoconfig.go
++++ b/internal/pipeline/repoconfig.go
+@@ -22,6 +22,11 @@ const RepoConfigFile = ".gitconfig.repo"
+ // the config file containing the directive (<repo>/.git/config → <repo>/.gitconfig.repo).
+ const repoConfigInclude = "../" + RepoConfigFile
+ 
++// folderConfigInclude reaches a Folder repo root's .gitconfig.repo from one of
++// its children (<child>/.git/config → <root>/.gitconfig.repo), one level further
++// up than a repo's own.
++const folderConfigInclude = "../" + repoConfigInclude
++
+ // EnsureRepoConfigInclude wires <repoRoot>/.gitconfig.repo into the repo's
+ // local git config as an include.path entry. No-op when the file is absent or
+ // the include is already present. Returns whether it added the include. A
+@@ -31,7 +36,24 @@ func EnsureRepoConfigInclude(ctx context.Context, repoRoot string) (bool, error)
+ 	if repoRoot == "" {
+ 		return false, nil
+ 	}
+-	if _, err := os.Stat(filepath.Join(repoRoot, RepoConfigFile)); err != nil {
++	return ensureConfigInclude(ctx, repoRoot, filepath.Join(repoRoot, RepoConfigFile), repoConfigInclude)
++}
++
++// EnsureChildConfigInclude wires the identity a Folder repo's child commits
++// under: the child's own .gitconfig.repo when it has one, the folder root's
++// otherwise — the same child-overrides-folder grain as .trau/checks. The folder
++// root itself has no git config to wire it into, so this is where a folder run's
++// identity is pinned, in the children the ticket actually reached.
++func EnsureChildConfigInclude(ctx context.Context, root, child string) (bool, error) {
++	own := filepath.Join(child, RepoConfigFile)
++	if _, err := os.Stat(own); err == nil {
++		return ensureConfigInclude(ctx, child, own, repoConfigInclude)
++	}
++	return ensureConfigInclude(ctx, child, filepath.Join(root, RepoConfigFile), folderConfigInclude)
++}
++
++func ensureConfigInclude(ctx context.Context, repoRoot, configFile, include string) (bool, error) {
++	if _, err := os.Stat(configFile); err != nil {
+ 		if errors.Is(err, os.ErrNotExist) {
+ 			return false, nil
+ 		}
+@@ -46,11 +68,11 @@ func EnsureRepoConfigInclude(ctx context.Context, repoRoot string) (bool, error)
+ 		}
+ 	}
+ 	for _, line := range strings.Split(string(out), "\n") {
+-		if strings.TrimSpace(line) == repoConfigInclude {
++		if strings.TrimSpace(line) == include {
+ 			return false, nil
+ 		}
+ 	}
+-	if err := (ExecGit{Repo: repoRoot}).run(ctx, "config", "--local", "--add", "include.path", repoConfigInclude); err != nil {
++	if err := (ExecGit{Repo: repoRoot}).run(ctx, "config", "--local", "--add", "include.path", include); err != nil {
+ 		return false, err
+ 	}
+ 	return true, nil
+diff --git a/internal/pipeline/requeue.go b/internal/pipeline/requeue.go
+index f230b8d..f524b52 100644
+--- a/internal/pipeline/requeue.go
++++ b/internal/pipeline/requeue.go
+@@ -13,18 +13,22 @@ import (
+ 
+ // Requeue makes a quarantined ticket eligible again in one command: it restores
+ // the tracker labels and status, drops the saved checkpoint, closes the attempt PR
+-// and deletes the attempt branch, local and remote. Every step is skipped when it
+-// has nothing left to do, so a second call changes nothing and says so. A ticket
+-// whose attempt PR already merged is refused unless force overrides — the same
+-// guard --reset applies to a merged checkpoint.
++// and deletes the attempt branch, local and remote. A folder run's attempt is every
++// child it shipped to, so all of its PRs close and all of its branches go. Every
++// step is skipped when it has nothing left to do, so a second call changes nothing
++// and says so. A ticket whose attempt PR already merged is refused unless force
++// overrides — the same guard --reset applies to a merged checkpoint.
+ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
+-	pr := p.State.Get(id, "PR")
+-	prState := ""
+-	if pr != "" {
+-		prState, _ = p.GitHub.PRState(ctx, pr)
+-		if prState == "MERGED" && !force {
++	attempts := p.attempts(id)
++	states := make([]string, len(attempts))
++	for i, a := range attempts {
++		if a.pr == "" {
++			continue
++		}
++		states[i], _ = a.github.PRState(ctx, a.pr)
++		if states[i] == "MERGED" && !force {
+ 			return console.Actionable(
+-				fmt.Errorf("%s is already shipped (PR %s is merged)", id, pr),
++				fmt.Errorf("%s is already shipped (PR %s is merged%s)", id, a.pr, a.in()),
+ 				"requeue "+id,
+ 				"its code is already merged — pass --force to requeue it anyway")
+ 		}
+@@ -41,18 +45,19 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
+ 		changed = append(changed, line)
+ 	}
+ 
+-	if pr != "" && prState != "CLOSED" && prState != "MERGED" {
+-		if err := p.GitHub.ClosePR(ctx, pr); err != nil {
+-			errs = append(errs, fmt.Errorf("close PR %s: %w", pr, err))
+-		} else {
+-			changed = append(changed, "closed the attempt PR "+pr)
++	for i, a := range attempts {
++		if a.pr != "" && states[i] != "CLOSED" && states[i] != "MERGED" {
++			if err := a.github.ClosePR(ctx, a.pr); err != nil {
++				errs = append(errs, fmt.Errorf("close PR %s%s: %w", a.pr, a.in(), err))
++			} else {
++				changed = append(changed, "closed the attempt PR "+a.pr+a.in())
++			}
+ 		}
++		dropped, dropErrs := p.dropAttemptBranch(ctx, a, branch)
++		changed = append(changed, dropped...)
++		errs = append(errs, dropErrs...)
+ 	}
+ 
+-	dropped, dropErrs := p.dropAttemptBranch(ctx, branch)
+-	changed = append(changed, dropped...)
+-	errs = append(errs, dropErrs...)
+-
+ 	if phase := p.State.Get(id, "PHASE"); phase != "" {
+ 		p.clearLocalState(id)
+ 		changed = append(changed, "cleared the saved checkpoint (was "+phase+")")
+@@ -76,30 +81,30 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
+ // dropped and what it could not. A branch that is already gone — locally, on the
+ // remote, or both — contributes neither. The base is never a candidate, and a
+ // remote-less repo skips the remote half rather than reporting an unreachable one.
+-func (p *Pipeline) dropAttemptBranch(ctx context.Context, branch string) (changed []string, errs []error) {
++func (p *Pipeline) dropAttemptBranch(ctx context.Context, a attempt, branch string) (changed []string, errs []error) {
+ 	if branch == "" || branch == p.Base {
+ 		return nil, nil
+ 	}
+-	if local, _ := p.Git.BranchExists(ctx, branch); local {
+-		if _, err := p.checkoutBase(ctx, true); err != nil {
+-			errs = append(errs, fmt.Errorf("check out %s: %w", p.Base, err))
+-		} else if err := p.Git.DeleteBranch(ctx, branch); err != nil {
+-			errs = append(errs, fmt.Errorf("delete branch %s: %w", branch, err))
++	if local, _ := a.git.BranchExists(ctx, branch); local {
++		if err := p.baseCheckout(ctx, a); err != nil {
++			errs = append(errs, fmt.Errorf("check out %s%s: %w", p.Base, a.in(), err))
++		} else if err := a.git.DeleteBranch(ctx, branch); err != nil {
++			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.in(), err))
+ 		} else {
+-			changed = append(changed, "deleted branch "+branch)
++			changed = append(changed, "deleted branch "+branch+a.in())
+ 		}
+ 	}
+ 	if p.localDelivery(ctx) {
+ 		return changed, errs
+ 	}
+-	switch pushed, err := p.Git.RemoteBranchExists(ctx, p.Remote, branch); {
++	switch pushed, err := a.git.RemoteBranchExists(ctx, p.Remote, branch); {
+ 	case err != nil:
+-		errs = append(errs, fmt.Errorf("look up %s/%s: %w", p.Remote, branch, err))
++		errs = append(errs, fmt.Errorf("look up %s/%s%s: %w", p.Remote, branch, a.in(), err))
+ 	case pushed:
+-		if err := p.Git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
+-			errs = append(errs, fmt.Errorf("delete %s/%s: %w", p.Remote, branch, err))
++		if err := a.git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
++			errs = append(errs, fmt.Errorf("delete %s/%s%s: %w", p.Remote, branch, a.in(), err))
+ 		} else {
+-			changed = append(changed, fmt.Sprintf("deleted %s/%s", p.Remote, branch))
++			changed = append(changed, fmt.Sprintf("deleted %s/%s%s", p.Remote, branch, a.in()))
+ 		}
+ 	}
+ 	return changed, errs
+diff --git a/internal/webserver/diff.go b/internal/webserver/diff.go
+index 61bb610..b4ec4ab 100644
+--- a/internal/webserver/diff.go
++++ b/internal/webserver/diff.go
+@@ -7,11 +7,14 @@ import (
+ 	"net/http"
+ 	"os"
+ 	"os/exec"
++	"slices"
+ 	"strconv"
+ 	"strings"
+ 
+ 	"github.com/RomkaLTU/trau/internal/config"
++	"github.com/RomkaLTU/trau/internal/folderrepo"
+ 	"github.com/RomkaLTU/trau/internal/forkpoint"
++	"github.com/RomkaLTU/trau/internal/hubstore"
+ 	"github.com/RomkaLTU/trau/internal/registry"
+ )
+ 
+@@ -29,8 +32,12 @@ const diffHeader = "diff --git "
+ 
+ // errNoDiffSource is the diff endpoint's 404: the run left neither a worktree on its
+ // branch nor the branch itself, or its base shares no history with it, so there is
+-// nothing to diff.
+-var errNoDiffSource = errors.New("no worktree or branch to diff for this run")
++// nothing to diff. errNoDiffBase is its sibling: nothing the run could be diffed
++// against resolves to a commit.
++var (
++	errNoDiffSource = errors.New("no worktree or branch to diff for this run")
++	errNoDiffBase   = errors.New("no base branch to diff this run against")
++)
+ 
+ // RunDiff is the /api/v1/repos/{repo}/runs/{ticket}/diff resource: everything a run
+ // has changed against the branch it diverged from. Source is "live" while the
+@@ -49,10 +56,13 @@ type RunDiff struct {
+ 
+ // RunDiffFile is one changed file: its post-image path (with OldPath carrying the
+ // pre-image of a rename), its line counts, and its unified patch. Patch is empty for
+-// a binary file and for every file past the response's byte caps.
++// a binary file and for every file past the response's byte caps. Repo names the
++// Child repo the file came from in a Folder repo run, whose paths are prefixed
++// with it, and is absent for a plain Repo.
+ type RunDiffFile struct {
+ 	Path      string `json:"path"`
+ 	OldPath   string `json:"old_path,omitempty"`
++	Repo      string `json:"repo,omitempty"`
+ 	Status    string `json:"status"`
+ 	Additions int    `json:"additions"`
+ 	Deletions int    `json:"deletions"`
+@@ -82,13 +92,8 @@ func (s *Server) handleRunDiff(w http.ResponseWriter, r *http.Request) {
+ 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no branch recorded for this run"})
+ 		return
+ 	}
+-	anchor, ok := s.diffAnchor(r.Context(), repo, row.Data)
+-	if !ok {
+-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no base branch to diff this run against"})
+-		return
+-	}
+-	diff, err := runDiff(r.Context(), repo.Root, anchor, row.Branch)
+-	if errors.Is(err, errNoDiffSource) {
++	diff, err := s.runDiffFor(r.Context(), repo, row)
++	if errors.Is(err, errNoDiffSource) || errors.Is(err, errNoDiffBase) {
+ 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+ 		return
+ 	}
+@@ -99,17 +104,116 @@ func (s *Server) handleRunDiff(w http.ResponseWriter, r *http.Request) {
+ 	writeJSON(w, http.StatusOK, diff)
+ }
+ 
+-// diffAnchor reads the run's anchor off its checkpoint. The base is its BASE for as
++// runDiffFor computes the run's diff in the repo it ran in: the repo itself for a
++// plain Repo, and every Child repo a Folder repo run left work in.
++func (s *Server) runDiffFor(ctx context.Context, repo registry.Repo, row hubstore.CheckpointRow) (RunDiff, error) {
++	if census := folderrepo.Scan(repo.Root); census.IsFolder {
++		return s.folderRunDiff(ctx, repo, census.Children, row)
++	}
++	anchor, ok := s.diffAnchor(ctx, repo, repo.Root, row.Data)
++	if !ok {
++		return RunDiff{}, errNoDiffBase
++	}
++	diff, err := rawRunDiff(ctx, repo.Root, anchor, row.Branch)
++	if err != nil {
++		return RunDiff{}, err
++	}
++	diff.Truncated = capPatches(diff.Files)
++	return diff, nil
++}
++
++// folderRunDiff merges one diff per Child repo the run left work in into a single
++// flat response, each file's path rooted under the child it came from so the
++// pane's tree shows every changed child as a top-level folder. The two SHAs stay
++// empty — N repositories have N of each — while base and branch are the one base
++// and the one branch name every child shares. The byte caps apply to the merged
++// response, not to each child's share of it.
++func (s *Server) folderRunDiff(ctx context.Context, repo registry.Repo, children []folderrepo.Child, row hubstore.CheckpointRow) (RunDiff, error) {
++	merged := RunDiff{Source: "committed", Branch: row.Branch, Files: []RunDiffFile{}}
++	answered := false
++	for _, c := range folderDiffChildren(ctx, children, row) {
++		anchor, ok := s.diffAnchor(ctx, repo, c.Path, row.Data)
++		if !ok {
++			continue
++		}
++		diff, err := rawRunDiff(ctx, c.Path, anchor, row.Branch)
++		if errors.Is(err, errNoDiffSource) {
++			continue
++		}
++		if err != nil {
++			return RunDiff{}, err
++		}
++		answered = true
++		if diff.Source == "live" {
++			merged.Source = "live"
++		}
++		if merged.Base == "" {
++			merged.Base = diff.Base
++		}
++		merged.Files = append(merged.Files, prefixDiffFiles(c.Name, diff.Files)...)
++	}
++	if !answered {
++		return RunDiff{}, errNoDiffSource
++	}
++	merged.Truncated = capPatches(merged.Files)
++	return merged, nil
++}
++
++// folderDiffChildren names the Child repos a folder run's diff covers: the ship
++// set once ship has run, and otherwise every child still carrying the run's work
++// loose — sitting on its branch, or dirty against the census the run started from,
++// which is what tells its work from whatever an operator left there.
++func folderDiffChildren(ctx context.Context, children []folderrepo.Child, row hubstore.CheckpointRow) []folderrepo.Child {
++	if shipped := checkpointField(row.Data, "SHIP_TARGETS"); shipped != "" {
++		named := strings.Split(shipped, ",")
++		return slices.DeleteFunc(slices.Clone(children), func(c folderrepo.Child) bool {
++			return !slices.Contains(named, c.Name)
++		})
++	}
++	start := folderrepo.ParseCensus(checkpointField(row.Data, "START_DIRT"))
++	carrying := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) bool {
++		if gitOutput(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD") == row.Branch {
++			return true
++		}
++		return folderrepo.Fingerprint(c.Path, gitOutput(ctx, c.Path, "status", "--porcelain")) != start[c.Name]
++	})
++	out := make([]folderrepo.Child, 0, len(children))
++	for i, c := range children {
++		if carrying[i] {
++			out = append(out, c)
++		}
++	}
++	return out
++}
++
++// prefixDiffFiles roots one Child repo's files under its own name. Only the path
++// fields move — the patch text keeps the a/… b/… headers git wrote, which are
++// relative to the child.
++func prefixDiffFiles(name string, files []RunDiffFile) []RunDiffFile {
++	out := make([]RunDiffFile, 0, len(files))
++	for _, f := range files {
++		f.Repo = name
++		f.Path = name + "/" + f.Path
++		if f.OldPath != "" {
++			f.OldPath = name + "/" + f.OldPath
++		}
++		out = append(out, f)
++	}
++	return out
++}
++
++// diffAnchor reads the run's anchor off its checkpoint, resolved in root — the
++// repo itself, or one Child repo of a Folder repo. The base is its BASE for as
+ // long as that branch resolves — an epic branch is deleted once its epic merges —
+ // and the repo's configured base branch otherwise.
+-func (s *Server) diffAnchor(ctx context.Context, repo registry.Repo, data string) (forkpoint.Anchor, bool) {
++func (s *Server) diffAnchor(ctx context.Context, repo registry.Repo, root, data string) (forkpoint.Anchor, bool) {
+ 	anchor := forkpoint.Anchor{Pin: checkpointField(data, "BASE_SHA")}
+-	if base := checkpointField(data, "BASE"); resolvesToCommit(ctx, repo.Root, base) {
++	if base := checkpointField(data, "BASE"); resolvesToCommit(ctx, root, base) {
+ 		anchor.Base = base
+ 		return anchor, true
+ 	}
+ 	anchor.Base = s.configuredBase(repo)
+-	return anchor, resolvesToCommit(ctx, repo.Root, anchor.Base)
++	return anchor, resolvesToCommit(ctx, root, anchor.Base)
+ }
+ 
+ // repoGit answers a fork point's git questions by running git in a repo root.
+@@ -153,25 +257,18 @@ func (s *Server) configuredBase(repo registry.Repo) string {
+ 	return cfg.BaseBranch
+ }
+ 
+-// runDiff computes branch's changes against its anchor in root, preferring the
++// rawRunDiff computes branch's changes against its anchor in root, preferring the
+ // working tree and falling back to branch's committed history when the worktree has
+-// moved to another branch.
+-func runDiff(ctx context.Context, root string, anchor forkpoint.Anchor, branch string) (RunDiff, error) {
+-	var diff RunDiff
+-	var err error
++// moved to another branch. Its patches are uncapped: the caps belong to the
++// response, which a Folder repo run assembles from several of these.
++func rawRunDiff(ctx context.Context, root string, anchor forkpoint.Anchor, branch string) (RunDiff, error) {
+ 	switch {
+ 	case gitOutput(ctx, root, "rev-parse", "--abbrev-ref", "HEAD") == branch:
+-		diff, err = worktreeDiff(ctx, root, anchor, branch)
++		return worktreeDiff(ctx, root, anchor, branch)
+ 	case gitOutput(ctx, root, "rev-parse", "--verify", "refs/heads/"+branch) != "":
+-		diff, err = committedDiff(ctx, root, anchor, branch)
+-	default:
+-		return RunDiff{}, errNoDiffSource
++		return committedDiff(ctx, root, anchor, branch)
+ 	}
+-	if err != nil {
+-		return RunDiff{}, err
+-	}
+-	diff.Truncated = capPatches(diff.Files)
+-	return diff, nil
++	return RunDiff{}, errNoDiffSource
+ }
+ 
+ // worktreeDiff diffs from the fork point rather than base's tip: base advances every
+diff --git a/internal/webserver/instances.go b/internal/webserver/instances.go
+index a2d54e7..6c4441d 100644
+--- a/internal/webserver/instances.go
++++ b/internal/webserver/instances.go
+@@ -2,6 +2,7 @@ package webserver
+ 
+ import (
+ 	"encoding/json"
++	"fmt"
+ 	"net/http"
+ 	"path/filepath"
+ 	"slices"
+@@ -210,6 +211,32 @@ func (s *Server) repoIsLive(root string) bool {
+ 	})
+ }
+ 
++// folderCollisionError refuses work in a repo whose enclosing Folder repo, or one
++// of whose Child repos, already has a loop live in it. It names both the repo and
++// the ticket its loop is on, so the board states the reason before anything spawns.
++type folderCollisionError struct{ entry registry.Entry }
++
++func (e folderCollisionError) Error() string {
++	running := "a loop"
++	if e.entry.Ticket != "" {
++		running = e.entry.Ticket
++	}
++	return fmt.Sprintf("%s is already running in %s — a folder repo and a repo inside it share a working tree, so one of them has to finish first", running, e.entry.RepoRoot)
++}
++
++// folderCollision names the live loop a run in root would share a working tree
++// with: one in a Child repo when root is a Folder repo, or one in the Folder repo
++// that holds root. Every live entry blocks, a takeover included — a terminal
++// session holds that working tree just as firmly as a loop does.
++func (s *Server) folderCollision(root string) (folderCollisionError, bool) {
++	for _, e := range s.liveInstances() {
++		if folderrepo.Collides(root, e.RepoRoot) {
++			return folderCollisionError{entry: e}, true
++		}
++	}
++	return folderCollisionError{}, false
++}
++
+ // hasBusyInstance reports whether a live instance in root is past idle — a run in
+ // flight, held WIP, or a takeover terminal owning the working tree (ADR 0018). An
+ // idle instance is an open dashboard rather than a run, and a legacy entry with no
+diff --git a/internal/webserver/queue.go b/internal/webserver/queue.go
+index 2580cc9..eb22b4d 100644
+--- a/internal/webserver/queue.go
++++ b/internal/webserver/queue.go
+@@ -162,7 +162,7 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
+ 			return
+ 		}
+ 	}
+-	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
++	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); queueStartConflict(err) {
+ 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+ 		return
+ 	} else if err != nil {
+@@ -172,6 +172,14 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
+ 	s.writeQueue(w, http.StatusOK, root)
+ }
+ 
++// queueStartConflict reports the refusals a queue start answers 409 to rather
++// than 500: a queue with nothing runnable in it, and a repo whose working tree
++// another loop already holds.
++func queueStartConflict(err error) bool {
++	var collision folderCollisionError
++	return errors.Is(err, queue.ErrNoRunnableItems) || errors.As(err, &collision)
++}
++
+ func normalizeOnFault(raw string) (string, error) {
+ 	onFault := strings.TrimSpace(raw)
+ 	if onFault == "" {
+@@ -187,8 +195,9 @@ func normalizeOnFault(raw string) (string, error) {
+ // route and the MCP start_queue/pause_queue tools. A start is refused with
+ // queue.ErrNoRunnableItems unless the queue holds a pending or paused item, so an
+ // empty or fully settled queue is never left armed waiting for work a later add
+-// would silently pick up. Pausing only clears the flag, so the loop stops after
+-// the current child exits. onFault must already be normalized.
++// would silently pick up, and with a folderCollisionError when a loop already
++// holds a working tree this repo shares. Pausing only clears the flag, so the loop
++// stops after the current child exits. onFault must already be normalized.
+ func (s *Server) setDraining(root string, draining, noResume bool, onFault string) error {
+ 	store := s.stores.Queue(root)
+ 	if !draining {
+@@ -197,6 +206,9 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
+ 		}
+ 		return nil
+ 	}
++	if collision, blocked := s.folderCollision(root); blocked {
++		return collision
++	}
+ 	if err := store.Arm(noResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
+ 		return err
+ 	} else if err != nil {
+@@ -305,6 +317,10 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
+ 		writeJSON(w, http.StatusConflict, map[string]string{"error": "a loop is already running in this repo — wait for it to finish"})
+ 		return
+ 	}
++	if collision, blocked := s.folderCollision(root); blocked {
++		writeJSON(w, http.StatusConflict, map[string]string{"error": collision.Error()})
++		return
++	}
+ 	id := strings.TrimSpace(r.PathValue("id"))
+ 	item, queued := itemByID(items, id)
+ 	if !queued {
+diff --git a/web/src/lib/rundiff.ts b/web/src/lib/rundiff.ts
+index ca15c8e..ff48efd 100644
+--- a/web/src/lib/rundiff.ts
++++ b/web/src/lib/rundiff.ts
+@@ -7,6 +7,9 @@ export type RunDiffStatus = 'added' | 'modified' | 'deleted' | 'renamed'
+ export interface RunDiffFile {
+   path: string
+   old_path?: string
++  // Folder repo runs only: the child repo the file came from, whose name already
++  // roots path.
++  repo?: string
+   status: RunDiffStatus
+   additions: number
+   deletions: number

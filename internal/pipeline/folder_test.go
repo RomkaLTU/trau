@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,13 +14,18 @@ import (
 // the base branch), and records what the ship phase did to it.
 type childGit struct {
 	fakeGit
-	status     string
-	head       string
-	branch     string
-	commits    []string
-	pushed     []string
-	baseBehind bool // this child's remote base is missing the local base tip
-	pushFixes  bool // whether pushing the base brings the remote current
+	status        string
+	head          string
+	branch        string
+	commits       []string
+	pushed        []string
+	deleted       []string
+	deletedRemote []string
+	checkedOut    []string
+	cleaned       int
+	hasBranch     bool // whether the ticket's branch already exists here
+	baseBehind    bool // this child's remote base is missing the local base tip
+	pushFixes     bool // whether pushing the base brings the remote current
 }
 
 func (g *childGit) WorktreeStatus(context.Context) (string, error) { return g.status, nil }
@@ -51,6 +57,31 @@ func (g *childGit) Push(_ context.Context, _, ref string, _ bool) error {
 
 func (g *childGit) RemoteSHA(context.Context, string, string) (string, error) {
 	return prBaseRemoteTip, nil
+}
+
+func (g *childGit) Checkout(_ context.Context, ref string, _ bool) error {
+	g.checkedOut = append(g.checkedOut, ref)
+	return nil
+}
+
+func (g *childGit) Clean(context.Context) error { g.cleaned++; return nil }
+
+func (g *childGit) BranchExists(context.Context, string) (bool, error) {
+	return g.hasBranch, nil
+}
+
+func (g *childGit) RemoteBranchExists(_ context.Context, _, _ string) (bool, error) {
+	return g.hasBranch, nil
+}
+
+func (g *childGit) DeleteBranch(_ context.Context, branch string) error {
+	g.deleted = append(g.deleted, branch)
+	return nil
+}
+
+func (g *childGit) DeletePushedBranch(_ context.Context, _, branch string) error {
+	g.deletedRemote = append(g.deletedRemote, branch)
+	return nil
 }
 
 func (g *childGit) IsAncestor(context.Context, string, string) (bool, error) {
@@ -241,5 +272,114 @@ func TestFolderResumeKeepsTheStartOfRunSweep(t *testing.T) {
 	}
 	if ghs["api-a"].createCalls != 1 {
 		t.Errorf("api-a opened %d PRs, want 1", ghs["api-a"].createCalls)
+	}
+}
+
+// TestFolderResetDropsShipTargetsAndSparesUnrelatedWIP is the Folder repo undo
+// contract: every recorded ship target loses its branch on both sides and its
+// working tree, and a child the run never shipped to is left exactly as it was
+// found — whether its work was already there when the run started or an operator
+// added it while the run was in flight.
+func TestFolderResetDropsShipTargetsAndSparesUnrelatedWIP(t *testing.T) {
+	id := "COD-93014"
+	branch := "feature/COD-93014-cross-repo-slice"
+	root := t.TempDir()
+	gits := map[string]*childGit{
+		"api-companies": {hasBranch: true},
+		"api-billing":   {status: " M billing.go"},
+		"api-users":     {},
+	}
+	for name := range gits {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.FolderRepo = true
+	p.RepoRoot = root
+	p.Remote = "origin"
+	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
+
+	ctx := context.Background()
+	p.startFolderRun(ctx, id, false)
+	gits["api-companies"].status = " M companies.go"
+	gits["api-users"].status = "?? midrun.txt"
+	for key, value := range map[string]string{"BRANCH": branch, "PHASE": "building", "SHIP_TARGETS": "api-companies"} {
+		if err := p.State.Set(id, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p.resetLocal(ctx, id)
+
+	shipped := gits["api-companies"]
+	if !slices.Contains(shipped.deleted, branch) || !slices.Contains(shipped.deletedRemote, branch) {
+		t.Errorf("api-companies deleted %v locally and %v on the remote, want %s in both", shipped.deleted, shipped.deletedRemote, branch)
+	}
+	if !slices.Contains(shipped.checkedOut, p.Base) || shipped.cleaned == 0 {
+		t.Errorf("api-companies checked out %v and cleaned %d times, want it back on %s with its loose work gone", shipped.checkedOut, shipped.cleaned, p.Base)
+	}
+	wip := gits["api-billing"]
+	if len(wip.deleted) > 0 || len(wip.checkedOut) > 0 || wip.cleaned > 0 {
+		t.Errorf("api-billing carried WIP the run never touched but was reset: deleted %v, checked out %v, cleaned %d times", wip.deleted, wip.checkedOut, wip.cleaned)
+	}
+	if midrun := gits["api-users"]; len(midrun.checkedOut) > 0 || midrun.cleaned > 0 {
+		t.Errorf("api-users was dirtied after the run shipped elsewhere but got checkouts %v and %d cleans", midrun.checkedOut, midrun.cleaned)
+	}
+}
+
+// TestFolderRequeueClosesEveryPRTheRunOpened is the Folder repo requeue contract:
+// a run that fanned out over several children closes all of its pull requests and
+// drops all of its branches, not just the first target's.
+func TestFolderRequeueClosesEveryPRTheRunOpened(t *testing.T) {
+	id := "COD-93013"
+	branch := "feature/COD-93013-cross-repo-slice"
+	root := t.TempDir()
+	gits := map[string]*childGit{
+		"api-apigateway": {hasBranch: true},
+		"api-companies":  {hasBranch: true},
+	}
+	ghs := map[string]*epicGitHub{
+		"api-apigateway": {prState: "OPEN"},
+		"api-companies":  {prState: "OPEN"},
+	}
+	for name := range gits {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.FolderRepo = true
+	p.RepoRoot = root
+	p.Remote = "origin"
+	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
+	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	for key, value := range map[string]string{
+		"BRANCH":       branch,
+		"PHASE":        "pr_open",
+		"SHIP_TARGETS": "api-apigateway,api-companies",
+		"PR_URLS":      "api-apigateway=https://github.com/acme/api-apigateway/pull/7,api-companies=https://github.com/acme/api-companies/pull/3",
+	} {
+		if err := p.State.Set(id, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.Requeue(context.Background(), id, false); err != nil {
+		t.Fatalf("Requeue: %v", err)
+	}
+
+	for name, pr := range map[string]string{"api-apigateway": "7", "api-companies": "3"} {
+		if ghs[name].closedPR != pr {
+			t.Errorf("%s closed PR %q, want %q", name, ghs[name].closedPR, pr)
+		}
+		if !slices.Contains(gits[name].deleted, branch) {
+			t.Errorf("%s deleted branches %v, want %s among them", name, gits[name].deleted, branch)
+		}
+		if !slices.Contains(gits[name].deletedRemote, branch) {
+			t.Errorf("%s deleted remote branches %v, want %s among them", name, gits[name].deletedRemote, branch)
+		}
 	}
 }
