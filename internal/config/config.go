@@ -793,6 +793,12 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("SPLIT_LABEL", &c.SplitLabel)
 	str("PROJECT", &c.Project)
 	str("BASE_BRANCH", &c.BaseBranch)
+	// A detected branch keeps reporting as LayerDefault — no config file claimed it.
+	if _, src := get("BASE_BRANCH"); src.name == LayerDefault {
+		if branch := detectDefaultBranch(dirOf(projectPath)); branch != "" {
+			c.BaseBranch = branch
+		}
+	}
 	str("REMOTE", &c.Remote)
 	str("TRAU_REPO_ROOT", &c.RepoRoot)
 	str("PROVIDER", &c.Provider)
@@ -1415,6 +1421,22 @@ func GitToplevel() (string, error) {
 		return "", errors.New("not inside a git repository — pass --repo <path> or set TRAU_REPO_ROOT")
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// detectDefaultBranch reads the repo's default branch off origin/HEAD, the local
+// symbolic ref git records at clone time — a lookup, not a network call. An empty
+// dir inspects the working directory. It is best-effort: a missing ref, a
+// non-git directory, or no git at all yields "" so the caller keeps its default.
+func detectDefaultBranch(dir string) string {
+	args := []string{"symbolic-ref", "--short", "refs/remotes/origin/HEAD"}
+	if dir != "" {
+		args = append([]string{"-C", dir}, args...)
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(strings.TrimSpace(string(out)), "origin/")
 }
 
 func resolveSiblingPath(basePath, p string) string {
