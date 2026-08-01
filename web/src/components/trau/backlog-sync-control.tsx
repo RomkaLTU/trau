@@ -5,6 +5,8 @@ import { RotateCw } from 'lucide-react'
 import { invalidateRepoBoard } from '@/lib/backlog'
 import { syncedAgo, useNow } from '@/lib/elapsed'
 import {
+  externalTracker,
+  pullCounts,
   repoHealthQueryOptions,
   syncRepo,
   type RepoHealthState,
@@ -44,11 +46,6 @@ export function syncStatusLine(status: SyncStatus): SyncStatusLine {
     text: `synced ${syncedAgo(status.lastSyncedAt, status.now)}`,
     failed: false,
   }
-}
-
-function pullCounts(res: SyncResponse): string {
-  const counts = `pulled ${res.issues} issues · ${res.comments} comments`
-  return res.removed > 0 ? `${counts} · removed ${res.removed}` : counts
 }
 
 // The button reflects only the sync this view asked for: a background pull of the
@@ -109,8 +106,7 @@ function RepoSyncControl({ repo }: { repo: string }) {
     wasSyncing.current = syncing
   }, [syncing, queryClient, repo])
 
-  const provider = health.data?.provider
-  if (!provider || provider === 'internal') return null
+  if (!externalTracker(health.data?.provider)) return null
 
   const status: SyncStatus = {
     state: health.data?.state,
