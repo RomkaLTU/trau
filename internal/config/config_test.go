@@ -1082,22 +1082,22 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 	}
 }
 
-// A tracker key nobody recognises would be seeded into repo configs and silently
+// A seeded key nobody recognises would be written into repo configs and silently
 // ignored by every reader, so the set must stay inside the catalog.
-func TestTrackerConfigKeysAreCatalogued(t *testing.T) {
+func TestProjectSeededKeysAreCatalogued(t *testing.T) {
 	known := map[string]bool{}
 	for _, m := range KnownKeys() {
 		known[m.Key] = true
 	}
-	keys := TrackerConfigKeys()
-	for _, want := range []string{"TRACKER_PROVIDER", "AZURE_ORG_URL", "AZURE_PAT"} {
-		if !slices.Contains(keys, want) {
-			t.Fatalf("tracker keys = %v, want %s among them", keys, want)
+	keys := ProjectSeededKeys()
+	for _, key := range append(TrackerConfigKeys(), "READY_LABEL", "EPIC_FLOW") {
+		if !slices.Contains(keys, key) {
+			t.Fatalf("project seeded keys = %v, want %s among them", keys, key)
 		}
 	}
 	for _, key := range keys {
 		if !known[key] {
-			t.Errorf("tracker key %s is not in the config catalog", key)
+			t.Errorf("seeded key %s is not in the config catalog", key)
 		}
 	}
 }
