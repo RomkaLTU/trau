@@ -29,7 +29,7 @@ import {
   type AppURLFallback,
 } from '@/lib/app-urls'
 
-const WORKSPACE_HINT =
+export const WORKSPACE_HINT =
   'Leave blank for the repo default. In a monorepo, name the workspace by its manifest package name, its directory path, or its directory name — the slice whose changed files live there gets this URL.'
 
 export function AppURLsSection({ repo }: { repo: string }) {
@@ -277,7 +277,7 @@ function EntryEditor({
 }: {
   entry: AppURL | null
   entries: AppURL[]
-  write: (draft: AppURLDraft) => Promise<void>
+  write: (draft: AppURLDraft) => Promise<unknown>
   onDone: () => void
   onCancel: () => void
 }) {

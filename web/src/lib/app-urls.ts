@@ -31,7 +31,7 @@ async function fetchAppURLs(repo: string): Promise<AppURL[]> {
   return res.json()
 }
 
-async function send(url: string, init: RequestInit, action: string): Promise<void> {
+async function send(url: string, init: RequestInit, action: string): Promise<Response> {
   const res = await apiFetch(url, init)
   if (!res.ok) {
     const detail = (await res.json().catch(() => null)) as {
@@ -39,6 +39,7 @@ async function send(url: string, init: RequestInit, action: string): Promise<voi
     } | null
     throw new Error(detail?.error ?? `${action} failed: ${res.status}`)
   }
+  return res
 }
 
 function jsonBody(body: unknown): RequestInit {
@@ -48,28 +49,32 @@ function jsonBody(body: unknown): RequestInit {
   }
 }
 
-export function createAppURL(repo: string, draft: AppURLDraft): Promise<void> {
-  return send(
+export async function createAppURL(
+  repo: string,
+  draft: AppURLDraft,
+): Promise<AppURL> {
+  const res = await send(
     `/api/v1/repos/${encodeURIComponent(repo)}/app-urls`,
     { method: 'POST', ...jsonBody(draft) },
     'app url create',
   )
+  return res.json()
 }
 
-export function updateAppURL(
+export async function updateAppURL(
   repo: string,
   id: number,
   draft: AppURLDraft,
 ): Promise<void> {
-  return send(
+  await send(
     `/api/v1/repos/${encodeURIComponent(repo)}/app-urls/${id}`,
     { method: 'PUT', ...jsonBody(draft) },
     'app url update',
   )
 }
 
-export function deleteAppURL(repo: string, id: number): Promise<void> {
-  return send(
+export async function deleteAppURL(repo: string, id: number): Promise<void> {
+  await send(
     `/api/v1/repos/${encodeURIComponent(repo)}/app-urls/${id}`,
     { method: 'DELETE' },
     'app url delete',
