@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
 import { FlaskConical, Loader2 } from "lucide-react";
 
+import { ActivitySwitch } from "@/components/grill/activity";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import {
@@ -256,6 +257,7 @@ function SessionColumn({
             <span className="truncate">{researchTitle(live)}</span>
           </span>
           <div className="flex shrink-0 items-center gap-2">
+            <ActivitySwitch />
             <span className="font-mono text-xs text-muted-foreground">
               {researchDate(live.created_at)}
             </span>
