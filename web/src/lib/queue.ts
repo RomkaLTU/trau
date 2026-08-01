@@ -126,6 +126,22 @@ export async function enqueueFresh(
   }
 }
 
+// enqueueOnce adds an item at the back and reads an id the queue is already
+// going to act on as done rather than as a conflict, so a gesture repeated on an
+// issue it already queued settles instead of failing.
+export async function enqueueOnce(
+  repo: string,
+  req: EnqueueRequest,
+): Promise<QueueResponse> {
+  try {
+    return await enqueueFresh(repo, req)
+  } catch (err) {
+    const queue = await fetchQueue(repo)
+    if (!queueActiveIds(queue.items).has(req.id)) throw err
+    return queue
+  }
+}
+
 export async function moveQueueItem(
   repo: string,
   id: string,

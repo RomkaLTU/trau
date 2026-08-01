@@ -1,12 +1,14 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import {
   Check,
   CheckCircle2,
+  ChevronDown,
   Eye,
   Inbox,
+  ListPlus,
   Loader2,
   MessageCirclePlus,
   Pencil,
@@ -22,6 +24,12 @@ import { AssigneePicker } from "@/components/trau/assignee-picker";
 import { useCreatedBanner } from "@/components/trau/created-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { type Assignee } from "@/lib/assignee";
@@ -47,6 +55,7 @@ import {
   type SubIssueProposal,
 } from "@/lib/grill";
 import { issueQueryOptions } from "@/lib/issues";
+import { enqueueOnce, publishQueue, type EnqueueRequest } from "@/lib/queue";
 import { cn } from "@/lib/utils";
 
 const noReport = "This session recorded no report.";
@@ -179,6 +188,26 @@ export function OutcomeReview({
     enabled: placesInHierarchy,
   });
 
+  // The queue intent belongs to the card once picked — a retry and the internal
+  // fallback carry it too — and rides a ref so the settling apply reads it whether
+  // or not the click's own re-render has landed.
+  const queueAfterCreate = useRef(false);
+
+  // The create is never rolled back, so an add the queue refused is a caveat on an
+  // issue that exists rather than a failed apply — the drawer's Add to queue is the
+  // retry path.
+  const queueCreated = useMutation({
+    mutationFn: (req: EnqueueRequest) => enqueueOnce(repo, req),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
+    onError: (err, req) =>
+      reportApplyCaveats(
+        [],
+        [
+          `${req.id} was created but adding it to the queue failed: ${err.message}`,
+        ],
+      ),
+  });
+
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
   // panel's now-settled active session back to a preview. Only the issue and board
@@ -203,15 +232,23 @@ export function OutcomeReview({
       onSession(res.session);
       const filed = res.session.issue_id ?? "";
       if (isCreate && filed !== "") {
+        const filedTitle = res.session.issue_title || title.trim();
         publish({
           repo,
           id: filed,
-          title: res.session.issue_title || title.trim(),
+          title: filedTitle,
           subCount: isCreateEpic ? subs.length : 0,
           failedSteps: res.steps
             .filter((step) => step.status === "failed")
             .map(stepLabel),
         });
+        if (queueAfterCreate.current) {
+          queueCreated.mutate({
+            id: filed,
+            kind: isCreateEpic ? "epic" : "ticket",
+            title: filedTitle,
+          });
+        }
       }
       if (res.applied) {
         void queryClient.invalidateQueries({
@@ -375,14 +412,42 @@ export function OutcomeReview({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          onClick={() => apply.mutate(destination)}
-          disabled={blockApply}
-        >
-          {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
-          {applyLabel(outcome.disposition, apply.data)}
-        </Button>
+        <div className="flex items-center">
+          <Button
+            size="sm"
+            onClick={() => apply.mutate(destination)}
+            disabled={blockApply}
+            className={cn(isCreate && "rounded-r-none")}
+          >
+            {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
+            {applyLabel(outcome.disposition, apply.data)}
+          </Button>
+          {isCreate && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="icon-sm"
+                  disabled={blockApply}
+                  aria-label="More create actions"
+                  className="rounded-l-none border-l border-primary-foreground/25"
+                >
+                  <ChevronDown />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem
+                  onSelect={() => {
+                    queueAfterCreate.current = true;
+                    apply.mutate(destination);
+                  }}
+                >
+                  <ListPlus />
+                  Create and queue
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
         {(isCreate || detachable) &&
           destination === "tracker" &&
           tracker !== "internal" &&
