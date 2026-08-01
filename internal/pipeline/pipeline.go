@@ -4184,6 +4184,9 @@ func ticketContextNote(id string, detail tracker.IssueDetail, files []attachfile
 		b.WriteString(": " + title)
 	}
 	b.WriteString(" ===\n")
+	if hierarchy := ticketHierarchy(detail); hierarchy != "" {
+		b.WriteString(hierarchy + "\n")
+	}
 	if desc != "" {
 		b.WriteString(desc + "\n")
 	}
@@ -4193,6 +4196,21 @@ func ticketContextNote(id string, detail tracker.IssueDetail, files []attachfile
 	b.WriteString(attachments)
 	b.WriteString("=== end " + id + " ===")
 	return b.String()
+}
+
+// ticketHierarchy names where the ticket sits in a typed backlog hierarchy, so
+// the agent knows whether it holds a slice or a rung above one. A tracker that
+// reports no work-item type says nothing.
+func ticketHierarchy(detail tracker.IssueDetail) string {
+	itemType := strings.TrimSpace(detail.Type)
+	if itemType == "" {
+		return ""
+	}
+	line := "Work item type: " + itemType
+	if level := strings.TrimSpace(detail.Level); level != "" {
+		line += " (" + level + " level)"
+	}
+	return line
 }
 
 // ticketComments renders an issue's comments as a prompt block, each attributed to

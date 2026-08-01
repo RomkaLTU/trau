@@ -60,6 +60,9 @@ func newProbeOrg(t *testing.T) *probeOrg {
 			atomic.AddInt32(&p.batch, 1)
 			_, _ = w.Write([]byte(probeBatch))
 		default:
+			if serveAzureWork(w, r) {
+				return
+			}
 			t.Errorf("unrouted %s %s", r.Method, r.URL.RequestURI())
 		}
 	}))

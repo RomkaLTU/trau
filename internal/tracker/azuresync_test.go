@@ -32,6 +32,9 @@ func azureSyncServer(t *testing.T, routes map[string]string, teams ...string) (R
 			_, _ = w.Write([]byte(body))
 			return
 		}
+		if serveAzureWork(w, r) {
+			return
+		}
 		t.Errorf("unrouted request %s %s", r.Method, r.URL.RequestURI())
 	}))
 	t.Cleanup(srv.Close)
@@ -128,6 +131,9 @@ func TestAzureReaderSync(t *testing.T) {
 		}
 		if iss.Status != "Active" || iss.Group != StatusGroupStarted {
 			t.Errorf("status = %q/%q, want Active/started", iss.Status, iss.Group)
+		}
+		if iss.Type != "User Story" || iss.Level != "requirement" {
+			t.Errorf("type/level = %q/%q, want User Story/requirement", iss.Type, iss.Level)
 		}
 		if iss.Priority != 2 || !slices.Equal(iss.Labels, []string{"ready-for-agent", "platform"}) {
 			t.Errorf("priority/labels = %d/%v", iss.Priority, iss.Labels)

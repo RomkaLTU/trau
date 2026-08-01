@@ -556,6 +556,38 @@ func TestBacklogPageOrdersTodoAndBacklogByCreation(t *testing.T) {
 	}
 }
 
+// What the Azure create's Feature picker reads: the repo's own live work items on
+// one backlog level, so it can never offer a Feature from a board this repo does
+// not mirror.
+func TestIssuesAtLevelListsOneRungOfTheReposBoard(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/levels"
+	if _, _, err := s.Upsert(repo, "azure", []Issue{
+		{Identifier: "10", Title: "Platform", Type: "Epic", Level: "epic"},
+		{Identifier: "24", Title: "Hierarchy", Type: "Feature", Level: "feature"},
+		{Identifier: "7", Title: "Sync", Type: "Feature", Level: "feature"},
+		{Identifier: "31", Title: "Slice", Type: "User Story", Level: "requirement"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := s.Upsert("/repo/other", "azure", []Issue{
+		{Identifier: "99", Title: "Elsewhere", Type: "Feature", Level: "feature"},
+	}); err != nil {
+		t.Fatalf("seed other repo: %v", err)
+	}
+
+	got, err := s.AtLevel(repo, "feature")
+	if err != nil {
+		t.Fatalf("AtLevel: %v", err)
+	}
+	if want := []string{"7", "24"}; !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("ids = %v, want %v — this repo's Features in numeric order", idsOf(got), want)
+	}
+	if got[0].Type != "Feature" {
+		t.Errorf("type = %q, want the board's own name for the type", got[0].Type)
+	}
+}
+
 func TestBacklogPageParentFilterListsEpicChildren(t *testing.T) {
 	s := testIssues(t)
 	repo := "/repo/parent"

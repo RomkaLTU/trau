@@ -27,7 +27,9 @@ import (
 // any of them is still unresolved, so the picker refuses the row and the board
 // can say why. CreatedAt/UpdatedAt are the issue's tracker timestamps as synced,
 // so a client can order rows by recency without a per-issue fetch. ProviderPin is
-// the Provider pinned on the issue, absent when it runs on the repo default.
+// the Provider pinned on the issue, absent when it runs on the repo default. Type
+// and Level are the tracker's own work-item type name and the backlog level it
+// sits on — Azure DevOps only, absent everywhere else.
 type BacklogEntry struct {
 	ID              string        `json:"id"`
 	Title           string        `json:"title"`
@@ -37,6 +39,8 @@ type BacklogEntry struct {
 	Source          string        `json:"source"`
 	Assignee        *AssigneeInfo `json:"assignee"`
 	ProviderPin     string        `json:"provider_pin,omitempty"`
+	Type            string        `json:"type,omitempty"`
+	Level           string        `json:"level,omitempty"`
 	Parent          string        `json:"parent,omitempty"`
 	HasChildren     bool          `json:"has_children"`
 	ChildrenSettled *int          `json:"children_settled,omitempty"`
@@ -511,6 +515,8 @@ func toBacklogEntries(issues []hubstore.Issue, readyLabel, meID string) []Backlo
 			Source:      iss.Source,
 			Assignee:    assigneeInfo(iss, meID),
 			ProviderPin: iss.Provider,
+			Type:        iss.Type,
+			Level:       iss.Level,
 			Parent:      iss.Parent,
 			HasChildren: iss.HasChildren,
 			Ready:       hasLabel(iss.Labels, readyLabel),

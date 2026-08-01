@@ -78,6 +78,16 @@ func TestTicketContextNote(t *testing.T) {
 		t.Errorf("empty detail should inject nothing, got %q", empty)
 	}
 
+	// A tracker with a typed hierarchy states where the ticket sits, right under the
+	// ticket header; one without says nothing at all.
+	mustNotContain(t, "ticketContextNote", got, "Work item type")
+	typed := ticketContextNote("TMS-1121", tracker.IssueDetail{
+		Title: "Model gateway",
+		Type:  "User Story",
+		Level: "requirement",
+	}, nil)
+	mustContain(t, "ticketContextNote hierarchy", typed, "=== TMS-1121: Model gateway ===\nWork item type: User Story (requirement level)")
+
 	// Comments read from the store are injected alongside the description.
 	withComments := ticketContextNote("TMS-1121", tracker.IssueDetail{
 		Title:    "Model gateway",
