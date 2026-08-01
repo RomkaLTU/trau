@@ -19,15 +19,18 @@ import {
   grillStreamURL,
   lastAnswer,
   latestOutcome,
+  NO_ACTIVITY,
   NO_REPLY,
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  type GrillActivity,
   type GrillAppliedOutcome,
   type GrillDelta,
   type GrillMessage,
   type GrillSession,
 } from "@/lib/grill";
+import { useActivityShown } from "@/lib/grill-activity";
 import { streamSSE } from "@/lib/sse";
 
 export type StreamStatus = "connecting" | "live" | "error";
@@ -55,6 +58,7 @@ export function GrillConversation({
   repo,
   initial,
   outcome = "review",
+  activity = true,
   onStatus,
   onApplied,
   onDiscarded,
@@ -63,6 +67,9 @@ export function GrillConversation({
   repo: string;
   initial: GrillSession;
   outcome?: GrillOutcomeVariant;
+  // A host with no room for the feed — the dock's 520px panel — turns it off outright;
+  // everywhere else it follows the reader's own preference.
+  activity?: boolean;
   onStatus?: (status: GrillStatus) => void;
   onApplied?: (applied: GrillAppliedOutcome) => void;
   onDiscarded?: () => void;
@@ -78,7 +85,9 @@ export function GrillConversation({
     messages: [],
     pending: [],
     streaming: NO_REPLY,
+    activity: NO_ACTIVITY,
   }));
+  const [activityShown] = useActivityShown();
   const [status, setStatus] = useState<StreamStatus>("connecting");
   const [followUp, setFollowUp] = useState(false);
   const nextSend = useRef(0);
@@ -105,6 +114,8 @@ export function GrillConversation({
           dispatch({ type: "message", message: parsed as GrillMessage });
         else if (event === "delta")
           dispatch({ type: "delta", delta: parsed as GrillDelta });
+        else if (event === "activity")
+          dispatch({ type: "activity", activity: parsed as GrillActivity });
       },
     });
     return () => close();
@@ -181,6 +192,9 @@ export function GrillConversation({
         hydrated={hydrated}
         pending={pending}
         streaming={streaming}
+        activity={
+          activity && activityShown ? state.activity.items : NO_ACTIVITY.items
+        }
         stalled={stalled}
         onRetry={retry}
         onDiscard={(id) => dispatch({ type: "send-discard", id })}

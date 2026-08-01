@@ -2,6 +2,7 @@ import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
 import { removeBlocked, type RepoView } from './instances'
+import { matchesTerms } from './settings'
 
 // ProjectView is one logical project: a group of registered repos under a display
 // name. Members are repo roots, joined against the repos list by the caller.
@@ -225,6 +226,86 @@ export interface ProjectTracker {
   project: string
   repos: string[]
   keys: ProjectTrackerKey[]
+}
+
+async function fetchProjectTracker(id: string): Promise<ProjectTracker> {
+  const res = await apiFetch(
+    `/api/v1/projects/${encodeURIComponent(id)}/tracker`,
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'project tracker request failed'))
+  }
+  return res.json()
+}
+
+export function projectTrackerQueryOptions(id: string) {
+  return queryOptions({
+    queryKey: ['project-tracker', id],
+    queryFn: () => fetchProjectTracker(id),
+    enabled: id !== '',
+  })
+}
+
+export const PROJECT_DEFAULT_KEYS = ['READY_LABEL', 'EPIC_FLOW']
+
+export interface ProjectDefaults {
+  readyLabel: string
+  epicFlow: boolean
+}
+
+// A project holding no EPIC_FLOW reads as on, matching what its members resolve
+// today from the shipped default — a fallback of off would show a state no repo
+// is in and cost a round trip to actually turn the flow off.
+export function projectDefaults(
+  tracker: ProjectTracker | undefined,
+): ProjectDefaults {
+  const value = (key: string) =>
+    tracker?.keys.find((k) => k.key === key)?.value ?? ''
+  return {
+    readyLabel: value('READY_LABEL'),
+    epicFlow: value('EPIC_FLOW') !== '0',
+  }
+}
+
+// projectDefaultsModified is the nav's dot: whether the project answers either
+// field itself rather than leaving both to the defaults.
+export function projectDefaultsModified(
+  tracker: ProjectTracker | undefined,
+): boolean {
+  const keys = tracker?.keys ?? []
+  return keys.some(
+    (k) => PROJECT_DEFAULT_KEYS.includes(k.key) && (k.value ?? '') !== '',
+  )
+}
+
+// Only the fields the user edited are written: a key left out of the request
+// keeps whatever the project already stores, so saving one field never restates
+// the other. A blank ready label is an edit like any other — it drops the
+// project's answer and takes the key back off the members holding it on the
+// project's behalf.
+export function projectDefaultKeys(
+  edited: Partial<ProjectDefaults>,
+): Record<string, string> {
+  const keys: Record<string, string> = {}
+  if (edited.readyLabel !== undefined) {
+    keys.READY_LABEL = edited.readyLabel.trim()
+  }
+  if (edited.epicFlow !== undefined) {
+    keys.EPIC_FLOW = edited.epicFlow ? '1' : '0'
+  }
+  return keys
+}
+
+const PROJECT_DEFAULT_TERMS = [
+  'project defaults',
+  'ready label',
+  'ready_label',
+  'epic flow',
+  'epic_flow',
+]
+
+export function matchesProjectDefaults(query: string): boolean {
+  return matchesTerms(query, PROJECT_DEFAULT_TERMS)
 }
 
 // writeProjectTracker configures the tracker once for the whole project; the hub

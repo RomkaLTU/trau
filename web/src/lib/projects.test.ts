@@ -4,12 +4,18 @@ import type { RepoView } from '@/lib/instances'
 import {
   filterRepoRows,
   groupRepos,
+  matchesProjectDefaults,
   projectAnchor,
+  projectDefaultKeys,
+  projectDefaults,
+  projectDefaultsModified,
   projectMembers,
   removalPlan,
   removalSummary,
   renameProject,
+  writeProjectTracker,
   type ProjectRemoval,
+  type ProjectTracker,
   type ProjectView,
 } from '@/lib/projects'
 
@@ -258,5 +264,129 @@ describe('renameProject', () => {
     )
 
     await expect(renameProject('p1', '')).rejects.toThrow('project name is empty')
+  })
+})
+
+describe('projectDefaults', () => {
+  function tracker(keys: ProjectTracker['keys']): ProjectTracker {
+    return { project: 'p1', repos: ['/repos/api'], keys }
+  }
+
+  it('reads the stored label and the epic flow the project holds', () => {
+    expect(
+      projectDefaults(
+        tracker([
+          { key: 'TRACKER_PROVIDER', value: 'linear' },
+          { key: 'READY_LABEL', value: 'ship-it' },
+          { key: 'EPIC_FLOW', value: '1' },
+        ]),
+      ),
+    ).toEqual({ readyLabel: 'ship-it', epicFlow: true })
+  })
+
+  it('falls back to a blank label and the shipped flow default of on', () => {
+    expect(projectDefaults(tracker([]))).toEqual({
+      readyLabel: '',
+      epicFlow: true,
+    })
+    expect(projectDefaults(undefined)).toEqual({
+      readyLabel: '',
+      epicFlow: true,
+    })
+  })
+
+  it('reads a stored 0 as the flow being off', () => {
+    expect(
+      projectDefaults(tracker([{ key: 'EPIC_FLOW', value: '0' }])).epicFlow,
+    ).toBe(false)
+  })
+})
+
+describe('projectDefaultKeys', () => {
+  it('writes the trimmed label and the flow as 1 or 0', () => {
+    expect(
+      projectDefaultKeys({ readyLabel: '  ship-it  ', epicFlow: true }),
+    ).toEqual({ READY_LABEL: 'ship-it', EPIC_FLOW: '1' })
+    expect(
+      projectDefaultKeys({ readyLabel: 'ready-for-agent', epicFlow: false }),
+    ).toEqual({ READY_LABEL: 'ready-for-agent', EPIC_FLOW: '0' })
+  })
+
+  it('leaves out the field the user did not edit', () => {
+    expect(projectDefaultKeys({ readyLabel: 'ship-it' })).toEqual({
+      READY_LABEL: 'ship-it',
+    })
+    expect(projectDefaultKeys({ epicFlow: false })).toEqual({ EPIC_FLOW: '0' })
+    expect(projectDefaultKeys({})).toEqual({})
+  })
+
+  it('sends a blank label so a cleared field clears the project answer', () => {
+    expect(projectDefaultKeys({ readyLabel: '   ' })).toEqual({
+      READY_LABEL: '',
+    })
+  })
+})
+
+describe('projectDefaultsModified', () => {
+  it('marks a project that answers either field itself', () => {
+    const keys = [{ key: 'TRACKER_PROVIDER', value: 'linear' }]
+    expect(projectDefaultsModified({ project: 'p1', repos: [], keys })).toBe(
+      false,
+    )
+    expect(
+      projectDefaultsModified({
+        project: 'p1',
+        repos: [],
+        keys: [...keys, { key: 'EPIC_FLOW', value: '0' }],
+      }),
+    ).toBe(true)
+  })
+})
+
+describe('matchesProjectDefaults', () => {
+  it('keeps the section on a blank query', () => {
+    expect(matchesProjectDefaults('')).toBe(true)
+  })
+
+  it('matches the keys and the words the fields are labelled with', () => {
+    expect(matchesProjectDefaults('ready')).toBe(true)
+    expect(matchesProjectDefaults('epic_flow')).toBe(true)
+    expect(matchesProjectDefaults('epic flow')).toBe(true)
+  })
+
+  it('drops the section on an unrelated query', () => {
+    expect(matchesProjectDefaults('budget')).toBe(false)
+  })
+})
+
+describe('writeProjectTracker', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('puts only the edited keys to the project tracker', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        project: 'p1',
+        repos: ['/repos/api', '/repos/web'],
+        keys: [{ key: 'READY_LABEL', value: 'ship-it' }],
+      }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const saved = await writeProjectTracker(
+      'p1',
+      projectDefaultKeys({ readyLabel: 'ship-it', epicFlow: true }),
+    )
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/v1/projects/p1/tracker')
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(String(init.body))).toEqual({
+      keys: { READY_LABEL: 'ship-it', EPIC_FLOW: '1' },
+    })
+    expect(saved.repos).toHaveLength(2)
   })
 })

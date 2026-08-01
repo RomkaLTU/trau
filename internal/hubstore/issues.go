@@ -76,11 +76,15 @@ type Comment struct {
 }
 
 // SyncBinding is a repo's resolved tracker target — the stable ids a sync pull
-// filters on — cached so later syncs skip the team/project lookup.
+// filters on — cached so later syncs skip the team/project lookup. Target is the
+// config fingerprint (provider + team/project keys) the ids were resolved from,
+// so a sync can tell a still-current cache from one a .trau.ini edit retargeted;
+// empty on rows stamped before targets were recorded.
 type SyncBinding struct {
 	TeamID    string
 	ProjectID string
 	Project   string
+	Target    string
 }
 
 // SyncIdentity is the repo binding's resolved Me — the tracker user behind its
@@ -838,12 +842,12 @@ func prefixColumns(alias string) string {
 func (s *Issues) SyncState(repo string) (SyncState, error) {
 	var st SyncState
 	err := s.db.QueryRow(
-		`SELECT team_id, project_id, project, cursor, last_synced_at, last_issues, last_comments, last_error,
+		`SELECT team_id, project_id, project, bound_target, cursor, last_synced_at, last_issues, last_comments, last_error,
 			last_error_kind, me_id, me_name, me_resolved_at
 		 FROM issue_sync WHERE repo = ?`,
 		repo,
 	).Scan(
-		&st.Binding.TeamID, &st.Binding.ProjectID, &st.Binding.Project, &st.Cursor,
+		&st.Binding.TeamID, &st.Binding.ProjectID, &st.Binding.Project, &st.Binding.Target, &st.Cursor,
 		&st.LastSyncedAt, &st.LastIssues, &st.LastComments, &st.LastError, &st.LastErrorKind,
 		&st.Me.ID, &st.Me.Name, &st.Me.ResolvedAt,
 	)
@@ -909,10 +913,11 @@ func (s *Issues) ArchivedCount(repo string) (int, error) {
 // instead of re-resolving through a team list round-trip.
 func (s *Issues) SaveBinding(repo string, b SyncBinding) error {
 	_, err := s.db.Exec(
-		`INSERT INTO issue_sync(repo, team_id, project_id, project) VALUES(?, ?, ?, ?)
+		`INSERT INTO issue_sync(repo, team_id, project_id, project, bound_target) VALUES(?, ?, ?, ?, ?)
 		 ON CONFLICT(repo) DO UPDATE SET
-			team_id = excluded.team_id, project_id = excluded.project_id, project = excluded.project`,
-		repo, b.TeamID, b.ProjectID, b.Project,
+			team_id = excluded.team_id, project_id = excluded.project_id, project = excluded.project,
+			bound_target = excluded.bound_target`,
+		repo, b.TeamID, b.ProjectID, b.Project, b.Target,
 	)
 	return err
 }

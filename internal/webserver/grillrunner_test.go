@@ -2,10 +2,12 @@ package webserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -103,6 +105,80 @@ func TestGrillDeltaText(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := grillDeltaText([]byte(tt.line)); got != tt.want {
 				t.Errorf("grillDeltaText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// activityJSON renders an extractor's verdict as the frame the stream would carry,
+// which is the contract under test — down to the fields it leaves out. An empty
+// string is a line that yields no activity at all.
+func activityJSON(t *testing.T, act *GrillActivityView) string {
+	t.Helper()
+	if act == nil {
+		return ""
+	}
+	b, err := json.Marshal(act)
+	if err != nil {
+		t.Fatalf("marshal activity: %v", err)
+	}
+	return string(b)
+}
+
+func TestGrillActivityEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "tool use start",
+			line: `{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"WebSearch","input":{}}}}`,
+			want: `{"seq":0,"kind":"tool","name":"WebSearch"}`,
+		},
+		{
+			name: "thinking start",
+			line: `{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}`,
+			want: `{"seq":0,"kind":"thinking"}`,
+		},
+		{
+			name: "tool result",
+			line: `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"3 results"}]}}`,
+			want: `{"seq":0,"kind":"result","ok":true}`,
+		},
+		{
+			name: "failed tool result",
+			line: `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"no such file","is_error":true}]}}`,
+			want: `{"seq":0,"kind":"result","ok":false}`,
+		},
+		{
+			name: "text block start",
+			line: `{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}`,
+		},
+		{
+			name: "text delta",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}}`,
+		},
+		{
+			name: "tool input delta",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"query\":\"secret\""}}}`,
+		},
+		{
+			name: "whole assistant message",
+			line: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"WebSearch","input":{"query":"secret"}}]}}`,
+		},
+		{
+			name: "user text is not a tool result",
+			line: `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"carry on"}]}}`,
+		},
+		{name: "result", line: `{"type":"result","subtype":"success","is_error":false}`},
+		{name: "not json", line: `warning: ignore me`},
+		{name: "blank"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := activityJSON(t, grillActivityEvent([]byte(tt.line))); got != tt.want {
+				t.Errorf("grillActivityEvent() = %s, want %s", got, tt.want)
 			}
 		})
 	}
@@ -438,6 +514,52 @@ func TestGrillRunnerStreamsDeltas(t *testing.T) {
 	}
 }
 
+// TestGrillRunnerStreamsActivity drives the same tool-heavy stub for what the panel
+// has to show while no reply text is arriving: the thinking and the tool the agent
+// opened, and that tool coming back. Activity counts apart from the deltas it is
+// interleaved with, so the reply above still reads as unbroken.
+func TestGrillRunnerStreamsActivity(t *testing.T) {
+	r, store, repo, _ := newGrillRunnerTest(t, grillStubStream)
+	sess, err := store.Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: "COD-3"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	sub, ch := r.srv.grillEvents.subscribe()
+	defer r.srv.grillEvents.unsubscribe(sub)
+
+	r.runTurn(context.Background(), sess)
+
+	activity := []string{}
+	settled := false
+	for draining := true; draining; {
+		select {
+		case ev := <-ch:
+			switch ev.Event {
+			case "activity":
+				if settled {
+					t.Errorf("activity %+v arrived after the turn settled", ev.Payload)
+				}
+				act := ev.Payload.(GrillActivityView)
+				activity = append(activity, activityJSON(t, &act))
+			case "state", "message":
+				settled = true
+			}
+		default:
+			draining = false
+		}
+	}
+
+	want := []string{
+		`{"seq":1,"kind":"thinking"}`,
+		`{"seq":2,"kind":"tool","name":"WebSearch"}`,
+		`{"seq":3,"kind":"result","ok":true}`,
+	}
+	if !slices.Equal(activity, want) {
+		t.Errorf("activity = %v, want %v", activity, want)
+	}
+}
+
 // newGrillRunnerTest builds a runner over a real store and a repo whose CLAUDE_BIN
 // is a stub claude at script. HOME and CLAUDE_CONFIG_DIR are isolated to temp dirs
 // so config resolution and the --resume transcript check never touch the real ones.
@@ -558,15 +680,20 @@ printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
 printf '{"type":"result","subtype":"success","session_id":"%s","is_error":false,"result":"ok"}\n' "$sid"
 `
 
-// grillStubStream writes one reply as partial-message events, salted with the deltas
-// that are not the reply — a thinking delta, a tool-input delta — and closed by the
-// whole assistant event that repeats the text the deltas already carried.
+// grillStubStream writes one tool-heavy reply as partial-message events, salted with
+// the deltas that are not the reply — a thinking delta, a tool-input delta — and
+// closed by the whole assistant event that repeats the text the deltas already
+// carried.
 const grillStubStream = `#!/bin/sh
 printf '{"type":"system","subtype":"init","session_id":"sid-stream"}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}\n'
 printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}}\n'
-printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me "}}}\n'
-printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"push back."}}}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"WebSearch","input":{}}}}\n'
 printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}}\n'
+printf '{"type":"user","session_id":"sid-stream","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"3 results"}]}}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Let me "}}}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"push back."}}}\n'
 printf '{"type":"assistant","session_id":"sid-stream","message":{"content":[{"type":"text","text":"Let me push back."}]}}\n'
 printf '{"type":"result","subtype":"success","session_id":"sid-stream","is_error":false}\n'
 `

@@ -95,9 +95,8 @@ export function StepDetect({
       {members.length > 1 && (
         <Hint>
           The tracker step configures the whole project — every member inherits the same
-          keys. The essentials step configures{' '}
-          <span className="font-mono">{members[0].repo}</span> only; set the others from
-          their own settings.
+          keys. The essentials step gives every member its own base branch; the ready label
+          and epic flow are project-wide, so every member inherits those too.
         </Hint>
       )}
 

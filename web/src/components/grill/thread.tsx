@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AlertTriangle, Play, RotateCw } from "lucide-react";
 
+import { ActivityFeed } from "@/components/grill/activity";
 import { AnswerBody } from "@/components/grill/answer-body";
 import { AutoAcceptBadge } from "@/components/grill/auto-accept";
 import { BannerRow } from "@/components/grill/banners";
@@ -24,6 +25,7 @@ import {
   isAutoAnswer,
   outcomePayload,
   questionPayload,
+  type GrillActivity,
   type GrillBanner,
   type GrillMessage,
   type GrillSession,
@@ -43,6 +45,7 @@ export function GrillThread({
   hydrated,
   pending,
   streaming,
+  activity,
   stalled,
   onRetry,
   onDiscard,
@@ -53,6 +56,7 @@ export function GrillThread({
   hydrated: boolean;
   pending: PendingAnswer[];
   streaming: StreamingReply;
+  activity: GrillActivity[];
   stalled: GrillBanner | null;
   onRetry: (id: string) => void;
   onDiscard: (id: string) => void;
@@ -83,6 +87,11 @@ export function GrillThread({
             {hydrated && session.state === "running" && (
               <MessageScrollerItem messageId="thinking">
                 <ThinkingRow text={streaming.holed ? "" : streaming.text} />
+              </MessageScrollerItem>
+            )}
+            {hydrated && session.state === "running" && activity.length > 0 && (
+              <MessageScrollerItem messageId="activity">
+                <ActivityFeed items={activity} />
               </MessageScrollerItem>
             )}
             {hydrated && stalled && (

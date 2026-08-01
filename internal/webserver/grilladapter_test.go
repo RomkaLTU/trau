@@ -102,6 +102,57 @@ func TestCodexGrillDeltaText(t *testing.T) {
 	}
 }
 
+func TestCodexGrillActivity(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "command started",
+			line: `{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"rg  -n  grill\n  internal","status":"in_progress"}}`,
+			want: `{"seq":0,"kind":"tool","name":"shell","detail":"rg -n grill internal"}`,
+		},
+		{
+			name: "command completed",
+			line: `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"rg -n grill","exit_code":0,"status":"completed"}}`,
+			want: `{"seq":0,"kind":"result","ok":true}`,
+		},
+		{
+			name: "command failed",
+			line: `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"rg -n grill","exit_code":2,"status":"failed"}}`,
+			want: `{"seq":0,"kind":"result","ok":false}`,
+		},
+		{
+			name: "web search started",
+			line: `{"type":"item.started","item":{"id":"item_2","type":"web_search","query":"sse frame contracts"}}`,
+			want: `{"seq":0,"kind":"tool","name":"web_search","detail":"sse frame contracts"}`,
+		},
+		{name: "agent message", line: `{"type":"item.completed","item":{"type":"agent_message","text":"push back"}}`},
+		{name: "reasoning", line: `{"type":"item.started","item":{"id":"item_3","type":"reasoning"}}`},
+		{name: "turn completed", line: `{"type":"turn.completed","usage":{"input_tokens":1}}`},
+		{name: "not json", line: `warning: ignore me`},
+		{name: "blank"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := activityJSON(t, codexGrillActivity([]byte(tt.line))); got != tt.want {
+				t.Errorf("codexGrillActivity() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGrillActivityDetail(t *testing.T) {
+	if got := grillActivityDetail("  go   test\n  ./...  "); got != "go test ./..." {
+		t.Errorf("grillActivityDetail() = %q, want the command on one line", got)
+	}
+	got := grillActivityDetail(strings.Repeat("x", grillActivityDetailMax+20))
+	if len([]rune(got)) != grillActivityDetailMax+1 || !strings.HasSuffix(got, "…") {
+		t.Errorf("grillActivityDetail(long) = %q, want it cut at %d runes", got, grillActivityDetailMax)
+	}
+}
+
 func TestParseCodexGrillStream(t *testing.T) {
 	stream := `{"type":"thread.started","thread_id":"codex-sid-1"}` + "\n" +
 		`{"type":"turn.completed","usage":{"input_tokens":1}}`
@@ -241,6 +292,32 @@ func TestKimiGrillDeltaText(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := kimiGrillDeltaText([]byte(tt.line)); got != tt.want {
 				t.Errorf("kimiGrillDeltaText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKimiGrillActivity(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "tool line",
+			line: `{"role":"tool","name":"read_file","content":"package webserver"}`,
+			want: `{"seq":0,"kind":"tool","name":"read_file"}`,
+		},
+		{name: "unnamed tool", line: `{"role":"tool","content":"package webserver"}`},
+		{name: "assistant message", line: `{"role":"assistant","content":"push back"}`},
+		{name: "meta resume hint", line: `{"role":"meta","type":"session.resume_hint","session_id":"s1"}`},
+		{name: "not json", line: `warning: ignore me`},
+		{name: "blank"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := activityJSON(t, kimiGrillActivity([]byte(tt.line))); got != tt.want {
+				t.Errorf("kimiGrillActivity() = %s, want %s", got, tt.want)
 			}
 		})
 	}

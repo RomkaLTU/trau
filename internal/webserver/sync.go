@@ -143,7 +143,7 @@ func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncRespo
 		return SyncResponse{}, err
 	}
 	store := s.stores.Issues()
-	if _, err := s.refreshBinding(ctx, store, repo.Root, res.reader); err != nil {
+	if _, err := s.refreshBinding(ctx, store, repo.Root, res); err != nil {
 		err = res.actionableErr(err)
 		recordSyncErr(store, repo.Root, err)
 		return SyncResponse{}, err
@@ -174,7 +174,7 @@ func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res.reader)
+	binding, _, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res)
 	if err != nil {
 		err = res.actionableErr(err)
 		recordSyncErr(store, repo.Root, err)
@@ -245,11 +245,23 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 		return SyncResponse{}, err
 	}
 
-	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res.reader)
+	binding, rebound, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res)
 	if err != nil {
 		err = res.actionableErr(err)
 		recordSyncErr(store, repo.Root, err)
 		return SyncResponse{}, err
+	}
+	if rebound {
+		// The config no longer names the target the store mirrors — the rows and
+		// cursor belong to the old team/project, and an incremental pull against
+		// the new one would keep them and skip everything the cursor predates. So
+		// the retarget is a force-resync folded into the ordinary sync: drop the
+		// synced rows and pull the new target from an empty cursor.
+		logger.Printf("sync %s: tracker target changed — dropping the previous target's mirror and re-pulling clean", repo.Root)
+		if err := store.DropSynced(repo.Root); err != nil {
+			return SyncResponse{}, err
+		}
+		state.Cursor = ""
 	}
 	s.warnTeamOverlap(repo.Root, binding)
 
@@ -361,25 +373,44 @@ func (s *Server) registerAttachments(root, identifier string, found []tracker.At
 	}
 }
 
-func (s *Server) resolveBinding(ctx context.Context, store *hubstore.Issues, root string, cached hubstore.SyncBinding, reader tracker.Reader) (tracker.ProjectBinding, error) {
-	binding := tracker.ProjectBinding{
+// resolveBinding returns the repo's tracker binding: the cached ids when the
+// cache was stamped with the same config target the repo resolves to now, a
+// fresh resolve otherwise. A cache whose stamp differs is the retarget case — a
+// .trau.ini whose team/project changed after the ids were cached — which an
+// id-only cache would shadow forever, syncing the old target no matter what the
+// config says. rebound reports a material retarget: the cache held a different
+// target's ids, so the caller must drop the synced rows and pull clean
+// (forceResync semantics). A re-resolve that lands on the same ids — a row
+// stamped before targets were recorded, or a key renamed tracker-side — only
+// restamps the cache, keeping the rows and the incremental cursor.
+func (s *Server) resolveBinding(ctx context.Context, store *hubstore.Issues, root string, cached hubstore.SyncBinding, res trackerResolution) (binding tracker.ProjectBinding, rebound bool, err error) {
+	binding = tracker.ProjectBinding{
 		TeamID:    cached.TeamID,
 		ProjectID: cached.ProjectID,
 		Project:   cached.Project,
 	}
-	if binding.Resolved() {
-		return binding, nil
+	// A config that names no target cannot retarget the cache — a stored binding
+	// stays usable when the team key is dropped — so only a differing named
+	// target forces the re-resolve.
+	if binding.Resolved() && (res.target == "" || cached.Target == res.target) {
+		return binding, false, nil
 	}
-	return s.refreshBinding(ctx, store, root, reader)
+	fresh, err := s.refreshBinding(ctx, store, root, res)
+	if err != nil {
+		return tracker.ProjectBinding{}, false, err
+	}
+	rebound = binding.Resolved() && (fresh.TeamID != binding.TeamID || fresh.ProjectID != binding.ProjectID)
+	return fresh, rebound, nil
 }
 
-// refreshBinding resolves the repo's tracker binding from current config and caches
-// it, overwriting whatever was stored. The incremental path reaches it only for an
-// unresolved cache, so ordinary syncs still skip the team/project lookup; a forced
-// resync calls it directly to re-resolve a binding the cache should no longer be
-// trusted for.
-func (s *Server) refreshBinding(ctx context.Context, store *hubstore.Issues, root string, reader tracker.Reader) (tracker.ProjectBinding, error) {
-	binding, err := reader.ResolveBinding(ctx)
+// refreshBinding resolves the repo's tracker binding from current config and
+// caches it stamped with the config target it resolved from, overwriting
+// whatever was stored. The incremental path reaches it only for an unresolved or
+// retargeted cache, so ordinary syncs still skip the team/project lookup; a
+// forced resync calls it directly to re-resolve a binding the cache should no
+// longer be trusted for.
+func (s *Server) refreshBinding(ctx context.Context, store *hubstore.Issues, root string, res trackerResolution) (tracker.ProjectBinding, error) {
+	binding, err := res.reader.ResolveBinding(ctx)
 	if err != nil {
 		return tracker.ProjectBinding{}, err
 	}
@@ -387,6 +418,7 @@ func (s *Server) refreshBinding(ctx context.Context, store *hubstore.Issues, roo
 		TeamID:    binding.TeamID,
 		ProjectID: binding.ProjectID,
 		Project:   binding.Project,
+		Target:    res.target,
 	}); err != nil {
 		return tracker.ProjectBinding{}, err
 	}

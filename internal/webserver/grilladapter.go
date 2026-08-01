@@ -20,7 +20,31 @@ type grillAdapter interface {
 	resumable(chain string) bool
 	turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error)
 	deltaText(line []byte) string
+	activityEvent(line []byte) *GrillActivityView
 	parseResult(stream []byte) (chainID string, resultErr bool)
+}
+
+const (
+	grillActivityTool     = "tool"
+	grillActivityThinking = "thinking"
+	grillActivityResult   = "result"
+)
+
+// grillActivityDetailMax bounds a detail summary. Detail is a hint about a call — a
+// command, a query — not the call itself, and the stream is readable by any
+// hub-token holder, so it is cut short rather than carried whole.
+const grillActivityDetailMax = 80
+
+func grillToolResult(ok bool) *GrillActivityView {
+	return &GrillActivityView{Kind: grillActivityResult, OK: &ok}
+}
+
+func grillActivityDetail(s string) string {
+	out := strings.Join(strings.Fields(s), " ")
+	if r := []rune(out); len(r) > grillActivityDetailMax {
+		return string(r[:grillActivityDetailMax]) + "…"
+	}
+	return out
 }
 
 func grillAdapterFor(r *grillRunner, provider string) (grillAdapter, bool) {
@@ -81,6 +105,10 @@ func (a claudeGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.C
 
 func (a claudeGrillAdapter) deltaText(line []byte) string { return grillDeltaText(line) }
 
+func (a claudeGrillAdapter) activityEvent(line []byte) *GrillActivityView {
+	return grillActivityEvent(line)
+}
+
 func (a claudeGrillAdapter) parseResult(stream []byte) (string, bool) {
 	return parseGrillStream(stream)
 }
@@ -108,6 +136,10 @@ func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Co
 }
 
 func (a codexGrillAdapter) deltaText(line []byte) string { return codexGrillDeltaText(line) }
+
+func (a codexGrillAdapter) activityEvent(line []byte) *GrillActivityView {
+	return codexGrillActivity(line)
+}
 
 func (a codexGrillAdapter) parseResult(stream []byte) (string, bool) {
 	return parseCodexGrillStream(stream)
@@ -176,6 +208,41 @@ func codexGrillDeltaText(line []byte) string {
 		return ""
 	}
 	return ev.Item.Text
+}
+
+// codexGrillActivity maps codex's item lifecycle onto activity: a started item is a
+// tool the agent reached for, and the matching completed item is that tool coming
+// back. Codex reports reasoning and the reply itself as items too; those are not
+// tool traffic and the reply already streams as deltas.
+func codexGrillActivity(line []byte) *GrillActivityView {
+	var ev struct {
+		Type string `json:"type"`
+		Item struct {
+			Type     string `json:"type"`
+			Command  string `json:"command"`
+			Query    string `json:"query"`
+			ExitCode int    `json:"exit_code"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(line, &ev) != nil {
+		return nil
+	}
+	name, detail := "", ""
+	switch ev.Item.Type {
+	case "command_execution":
+		name, detail = "shell", grillActivityDetail(ev.Item.Command)
+	case "web_search":
+		name, detail = "web_search", grillActivityDetail(ev.Item.Query)
+	default:
+		return nil
+	}
+	switch ev.Type {
+	case "item.started":
+		return &GrillActivityView{Kind: grillActivityTool, Name: name, Detail: detail}
+	case "item.completed":
+		return grillToolResult(ev.Item.ExitCode == 0)
+	}
+	return nil
 }
 
 func parseCodexGrillStream(stream []byte) (sessionID string, resultErr bool) {
@@ -256,6 +323,10 @@ func kimiChildEnv(home string) []string {
 
 func (a kimiGrillAdapter) deltaText(line []byte) string { return kimiGrillDeltaText(line) }
 
+func (a kimiGrillAdapter) activityEvent(line []byte) *GrillActivityView {
+	return kimiGrillActivity(line)
+}
+
 func (a kimiGrillAdapter) parseResult(stream []byte) (string, bool) {
 	return parseKimiGrillStream(stream)
 }
@@ -281,6 +352,20 @@ func kimiGrillDeltaText(line []byte) string {
 		return ""
 	}
 	return ev.Content
+}
+
+// kimiGrillActivity reads kimi's tool lines, the only work its stream-json names on
+// the wire: one line per tool the agent ran, carrying the tool's own output, which
+// stays in the child.
+func kimiGrillActivity(line []byte) *GrillActivityView {
+	var ev struct {
+		Role string `json:"role"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(line, &ev) != nil || ev.Role != "tool" || ev.Name == "" {
+		return nil
+	}
+	return &GrillActivityView{Kind: grillActivityTool, Name: ev.Name}
 }
 
 func parseKimiGrillStream(stream []byte) (sessionID string, resultErr bool) {

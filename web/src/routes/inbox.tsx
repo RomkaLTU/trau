@@ -16,6 +16,7 @@ import {
 
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
+import { ActivitySwitch } from "@/components/grill/activity";
 import {
   AutoAcceptSwitch,
   AutoAcceptToggle,
@@ -1041,6 +1042,7 @@ function SessionBar({
                 session={session}
                 onError={setAutoAcceptError}
               />
+              <ActivitySwitch />
             </>
           )}
           {reconnecting && (

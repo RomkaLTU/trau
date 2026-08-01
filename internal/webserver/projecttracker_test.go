@@ -201,6 +201,55 @@ func TestProjectTrackerAdoptsALoneRepoConfig(t *testing.T) {
 	wantINI(t, web, want)
 }
 
+// Onboarding a single repo configures its project's tracker but writes the
+// project-wide answers straight into the repo, so adoption has to pick up the
+// keys the project is still missing for a second member to inherit them.
+func TestProjectTrackerAdoptsTheKeysALoneRepoStillHolds(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	lone := gitRepo(t, base, "lone", "dir")
+	joiner := gitRepo(t, base, "joiner", "dir")
+	_, ts := controlServer(t, home, nil)
+	registerRepoReq(t, ts, lone)
+
+	if res, body := putProjectTrackerReq(t, ts, "lone", map[string]string{
+		"TRACKER_PROVIDER": "internal",
+	}); res.StatusCode != http.StatusOK {
+		t.Fatalf("put tracker = %d (%s)", res.StatusCode, body)
+	}
+	for key, value := range map[string]string{"READY_LABEL": "solo-label", "EPIC_FLOW": "1"} {
+		res := putConfig(t, ts, "lone", ConfigWriteRequest{Key: key, Value: value, Layer: "project"})
+		if body := readBody(t, res); res.StatusCode != http.StatusOK {
+			t.Fatalf("put repo config %s = %d (%s)", key, res.StatusCode, body)
+		}
+	}
+
+	res, body := get(t, ts, APIPrefix+"/projects/lone/tracker")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("get tracker = %d (%s)", res.StatusCode, body)
+	}
+	adopted := map[string]string{}
+	for _, key := range decodeProjectTracker(t, body).Keys {
+		adopted[key.Key] = key.Value
+	}
+	want := map[string]string{
+		"TRACKER_PROVIDER": "internal",
+		"READY_LABEL":      "solo-label",
+		"EPIC_FLOW":        "1",
+	}
+	for key, value := range want {
+		if adopted[key] != value {
+			t.Fatalf("adopted %s = %q, want %q (all %v)", key, adopted[key], value, adopted)
+		}
+	}
+
+	registerRepoReq(t, ts, joiner)
+	if res, body := addProjectRepo(t, ts, "lone", joiner); res.StatusCode != http.StatusOK {
+		t.Fatalf("add %s = %d (%s)", joiner, res.StatusCode, body)
+	}
+	wantINI(t, joiner, want)
+}
+
 // Adoption rides the projects list, the read every screen makes, so an upgraded
 // hub promotes a pre-epic repo's tracker to its project before a second repo
 // joins it — with nothing but the app's own polling in between.
@@ -338,7 +387,84 @@ func TestProjectTrackerEditDropsKeysItNoLongerSets(t *testing.T) {
 	}
 }
 
-func TestProjectTrackerRefusesKeysOutsideTheTrackerSet(t *testing.T) {
+// READY_LABEL and EPIC_FLOW answer for the whole project, so configuring them
+// once reaches every member — bar the one that already answered for itself, on
+// the first seeding and on every later one.
+func TestProjectTrackerSeedsReadyLabelAndEpicFlow(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	api := gitRepo(t, base, "api", "dir")
+	web := gitRepo(t, base, "web", "dir")
+	writeRepoINI(t, web, "READY_LABEL=web-only\n")
+	_, ts := controlServer(t, home, nil)
+	registerRepoReq(t, ts, api)
+	registerRepoReq(t, ts, web)
+
+	project := createProjectReq(t, ts, "Platform")
+	for _, root := range []string{api, web} {
+		if res, body := addProjectRepo(t, ts, project.ID, root); res.StatusCode != http.StatusOK {
+			t.Fatalf("add %s = %d (%s)", root, res.StatusCode, body)
+		}
+	}
+
+	var last string
+	for _, flow := range []string{"1", "0"} {
+		res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{
+			"TRACKER_PROVIDER": "internal",
+			"READY_LABEL":      "ship-it",
+			"EPIC_FLOW":        flow,
+		})
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("put tracker = %d (%s)", res.StatusCode, body)
+		}
+		last = body
+		wantINI(t, api, map[string]string{"READY_LABEL": "ship-it", "EPIC_FLOW": flow})
+		wantINI(t, web, map[string]string{"READY_LABEL": "web-only", "EPIC_FLOW": flow})
+	}
+
+	stored := map[string]string{}
+	for _, key := range decodeProjectTracker(t, last).Keys {
+		stored[key.Key] = key.Value
+	}
+	if stored["READY_LABEL"] != "ship-it" || stored["EPIC_FLOW"] != "0" {
+		t.Fatalf("project holds %v, want READY_LABEL=ship-it and EPIC_FLOW=0", stored)
+	}
+}
+
+// Clearing the label at project level takes it out of the members that carry it
+// on the project's behalf, and only those.
+func TestProjectTrackerClearedReadyLabelSparesAMembersOwn(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	api := gitRepo(t, base, "api", "dir")
+	web := gitRepo(t, base, "web", "dir")
+	writeRepoINI(t, web, "READY_LABEL=web-only\n")
+	_, ts := controlServer(t, home, nil)
+	registerRepoReq(t, ts, api)
+	registerRepoReq(t, ts, web)
+
+	project := createProjectReq(t, ts, "Platform")
+	for _, root := range []string{api, web} {
+		if res, body := addProjectRepo(t, ts, project.ID, root); res.StatusCode != http.StatusOK {
+			t.Fatalf("add %s = %d (%s)", root, res.StatusCode, body)
+		}
+	}
+	for _, label := range []string{"ship-it", ""} {
+		if res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{
+			"TRACKER_PROVIDER": "internal",
+			"READY_LABEL":      label,
+		}); res.StatusCode != http.StatusOK {
+			t.Fatalf("put tracker = %d (%s)", res.StatusCode, body)
+		}
+	}
+
+	if _, ok := repoINI(t, api)["READY_LABEL"]; ok {
+		t.Fatalf("READY_LABEL survived being cleared (file %v)", repoINI(t, api))
+	}
+	wantINI(t, web, map[string]string{"READY_LABEL": "web-only"})
+}
+
+func TestProjectTrackerRefusesKeysOutsideTheSeededSet(t *testing.T) {
 	home := t.TempDir()
 	base := t.TempDir()
 	api := gitRepo(t, base, "api", "dir")
@@ -349,7 +475,7 @@ func TestProjectTrackerRefusesKeysOutsideTheTrackerSet(t *testing.T) {
 		name string
 		keys map[string]string
 	}{
-		{"a key the tracker does not own", map[string]string{"BASE_BRANCH": "develop"}},
+		{"a key the project does not seed", map[string]string{"BASE_BRANCH": "develop"}},
 		{"a value the key does not accept", map[string]string{"TRACKER_PROVIDER": "trello"}},
 	}
 

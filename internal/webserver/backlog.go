@@ -362,6 +362,10 @@ type trackerResolution struct {
 	reader    tracker.Reader
 	explicit  bool
 	jiraCreds bool
+	// target is the config fingerprint (provider + team/project keys) a binding
+	// resolved now would be stamped with — what resolveBinding compares against
+	// the cached stamp to notice a .trau.ini retarget.
+	target string
 }
 
 // resolveReader resolves the repo's layered config, settles the effective tracker
@@ -378,7 +382,23 @@ func (s *Server) resolveReader(repo registry.Repo) (trackerResolution, error) {
 		reader:    reader,
 		explicit:  cfg.TrackerProviderExplicit(sources),
 		jiraCreds: cfg.HasJiraCredentials(),
+		target:    bindingTarget(cfg),
 	}, err
+}
+
+// bindingTarget is the config fingerprint a cached binding is stamped with: the
+// settled provider plus the team/project keys a binding resolves from. A config
+// that names no team/project key returns "" — it has nothing to retarget a cache
+// to, so a stored binding stays usable when the key is dropped (the guard
+// TestSyncKeepsStoredBindingWithoutTeamKey pins). Azure's area/team narrowing is
+// deliberately left out — it shapes the pull, not the binding, and the reconcile
+// sweep already tracks it within an unchanged target.
+func bindingTarget(cfg config.Config) string {
+	key := strings.TrimSpace(cfg.TrackerKey())
+	if key == "" {
+		return ""
+	}
+	return strings.Join([]string{cfg.TrackerProvider, key, strings.TrimSpace(cfg.Project)}, "\x1f")
 }
 
 // actionableErr rewrites a binding or pull failure into one that names what to fix

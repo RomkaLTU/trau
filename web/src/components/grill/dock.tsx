@@ -517,6 +517,7 @@ function InterviewPanel({
           repo={session.repo}
           initial={session}
           outcome="link"
+          activity={false}
           onStatus={(s) => setStatus(s.session)}
           onReview={review}
         />
