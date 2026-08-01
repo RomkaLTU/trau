@@ -74,6 +74,14 @@ export interface RepoHealth {
   issue_count: number;
 }
 
+// externalTracker reports whether a repo's provider is one there is anything to
+// pull from. It is the rule every sync affordance gates on: an empty provider is
+// a repo with no tracker configured, the internal tracker lives in the hub
+// itself, and the sync endpoint refuses both.
+export function externalTracker(provider?: string): boolean {
+  return !!provider && provider !== "internal";
+}
+
 export interface InstancesResponse {
   instances: Instance[];
   repos: RepoView[];
@@ -327,6 +335,11 @@ export interface SyncResponse {
 export type SyncResult =
   | { status: "pulled"; response: SyncResponse }
   | { status: "syncing" };
+
+export function pullCounts(res: SyncResponse): string {
+  const counts = `pulled ${res.issues} issues · ${res.comments} comments`;
+  return res.removed > 0 ? `${counts} · removed ${res.removed}` : counts;
+}
 
 // syncRepo pulls the repo's tracker project into the hub issue store and sweeps
 // the issues the tracker no longer returns, blocking for the length of both. A

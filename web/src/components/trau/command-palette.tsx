@@ -1,18 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Check,
+  ChevronRight,
   FolderGit2,
   GitBranch,
   History,
   ListChecks,
   Settings,
 } from 'lucide-react'
+import { toast } from 'sonner'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
 import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
 import { StatusPill } from '@/components/trau/status-pill'
+import { useResolvedTheme, useTheme } from '@/components/trau/theme-toggle'
 import {
   CommandDialog,
   CommandEmpty,
@@ -22,13 +25,34 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
+import { autoScopeTarget, loadLastRepo } from '@/lib/active-repo'
+import { invalidateRepoBoard } from '@/lib/backlog'
 import { configQueryOptions } from '@/lib/config'
 import { useNow } from '@/lib/elapsed'
-import { instancesQueryOptions } from '@/lib/instances'
+import {
+  instancesQueryOptions,
+  pullCounts,
+  repoHealthQueryOptions,
+  syncRepo,
+} from '@/lib/instances'
 import { formatAge } from '@/lib/ledger'
 import { boardPill } from '@/lib/overview'
+import {
+  matchActions,
+  paletteActions,
+  updateCheckMessage,
+  type PaletteAction,
+  type PaletteActionId,
+} from '@/lib/palette-actions'
 import { matchesQuery } from '@/lib/palette-filter'
 import { isPaletteShortcut, movesHighlight } from '@/lib/palette-keys'
+import {
+  drain,
+  publishQueue,
+  queueQueryOptions,
+  stopQueue,
+  type QueueResponse,
+} from '@/lib/queue'
 import { loadRecents, visibleRecents, type RecentEntry } from '@/lib/recents'
 import { matchRuns } from '@/lib/run-search'
 import { runsQueryOptions, type Run } from '@/lib/runs'
@@ -39,6 +63,7 @@ import {
 } from '@/lib/search'
 import { displayValue, matchSettings } from '@/lib/settings'
 import { suggestFor, type SuggestionEntry } from '@/lib/suggestions'
+import { checkForUpdates, updateQueryOptions } from '@/lib/update'
 
 const GROUP_HEADING =
   '[&_[cmdk-group-heading]]:font-mono [&_[cmdk-group-heading]]:text-[0.65rem] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.2em] [&_[cmdk-group-heading]]:font-normal'
@@ -79,6 +104,28 @@ function recentIcon(entry: RecentEntry) {
   if (entry.kind === 'project') return GitBranch
   if (entry.kind === 'run') return ListChecks
   return NAV_ITEMS.find((item) => item.to === entry.path)?.icon ?? History
+}
+
+const toastError = (err: Error) => toast.error(err.message)
+
+function useLoopControl(
+  control: (repo: string) => Promise<QueueResponse>,
+  verb: string,
+) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: control,
+    onSuccess: (res, repo) => {
+      publishQueue(queryClient, repo, res)
+      toast.success(`Loop ${verb} in ${repo}`)
+    },
+    onError: toastError,
+  })
+}
+
+interface ActionRunner {
+  pending?: boolean
+  run: (target: string) => void
 }
 
 export function CommandPalette({
@@ -209,6 +256,37 @@ export function CommandPalette({
   }, [globalSearch, globalData, scopedSearch, runs.data, trimmed])
   const now = useNow(30_000)
 
+  // The Actions group describes the repo it would act on, which under "All
+  // projects" is the one the repo handoff auto-scopes to — reading its queue and
+  // health there is what keeps Start/Stop and the internal-tracker rule honest.
+  const actionRepo = useMemo(
+    () => (open ? (repo ?? autoScopeTarget(repos, loadLastRepo()) ?? '') : ''),
+    [open, repo, repos],
+  )
+  const queue = useQuery({
+    ...queueQueryOptions(actionRepo),
+    enabled: open && actionRepo !== '',
+  })
+  const health = useQuery({
+    ...repoHealthQueryOptions(actionRepo),
+    enabled: open && actionRepo !== '',
+  })
+  const theme = useResolvedTheme()
+  const { setMode } = useTheme()
+  const actionRows = useMemo(
+    () =>
+      matchActions(
+        paletteActions({
+          repo: actionRepo,
+          draining: queue.data?.draining,
+          provider: health.data?.provider,
+          theme,
+        }),
+        trimmed,
+      ),
+    [actionRepo, queue.data, health.data, theme, trimmed],
+  )
+
   // cmdk only auto-selects when nothing is selected, so late-arriving issue rows
   // would leave the highlight on a static row: move it to the top hit ourselves,
   // unless the user has already moved the highlight.
@@ -286,6 +364,70 @@ export function CommandPalette({
     void navigate({ to: '/settings', search: { q: row.key } })
   }
 
+  const queryClient = useQueryClient()
+
+  const startLoop = useLoopControl((target) => drain(target, true), 'started')
+  const stopLoop = useLoopControl(stopQueue, 'stopped')
+
+  const syncBacklog = useMutation({
+    mutationFn: syncRepo,
+    onSuccess: (result, target) =>
+      toast.success(
+        result.status === 'pulled'
+          ? `${target}: ${pullCounts(result.response)}`
+          : `${target} is already syncing`,
+      ),
+    onError: toastError,
+    onSettled: (_result, _err, target) => {
+      void queryClient.invalidateQueries({ queryKey: ['repo-health', target] })
+      invalidateRepoBoard(queryClient, target)
+    },
+  })
+
+  const checkUpdates = useMutation({
+    mutationFn: checkForUpdates,
+    onSuccess: (status) => {
+      queryClient.setQueryData(updateQueryOptions.queryKey, status)
+      toast.success(updateCheckMessage(status))
+      void navigate({ to: '/settings', hash: 'updates' })
+    },
+    onError: toastError,
+  })
+
+  // Every action id needs an entry here, so a new mutating action cannot reach
+  // the list without declaring what makes it pending.
+  const runners: Record<PaletteActionId, ActionRunner> = {
+    'start-loop': { pending: startLoop.isPending, run: startLoop.mutate },
+    'stop-loop': { pending: stopLoop.isPending, run: stopLoop.mutate },
+    'sync-backlog': { pending: syncBacklog.isPending, run: syncBacklog.mutate },
+    // ADR 0015 retired the Run once page: the Loop card owns picking the ticket
+    // and the Run next gesture that launches it.
+    'run-next': { run: () => void navigate({ to: '/loop' }) },
+    'toggle-theme': { run: () => setMode(theme === 'dark' ? 'light' : 'dark') },
+    'check-updates': {
+      pending: checkUpdates.isPending,
+      run: () => checkUpdates.mutate(),
+    },
+  }
+
+  // A repo-scoped action acts on the very repo its row describes, so under "All
+  // repos" the scope follows it there — or the pulsing switcher takes over when
+  // there was no sensible repo to describe in the first place.
+  function runAction(action: PaletteAction) {
+    onOpenChange(false)
+    const { run } = runners[action.id]
+    if (!action.requiresProject) {
+      run('')
+      return
+    }
+    if (!actionRepo) {
+      openSwitcher()
+      return
+    }
+    if (isAll) autoScope()
+    run(actionRepo)
+  }
+
   function pickRecent(entry: RecentEntry) {
     if (entry.kind === 'project') {
       pickScope(entry.label)
@@ -359,6 +501,7 @@ export function CommandPalette({
               ))}
             </CommandGroup>
             {(runRows.length > 0 ||
+              actionRows.length > 0 ||
               showProjects ||
               navRows.length > 0 ||
               settingRows.length > 0) && <CommandSeparator />}
@@ -388,9 +531,10 @@ export function CommandPalette({
                 )
               })}
             </CommandGroup>
-            {(showProjects || navRows.length > 0 || settingRows.length > 0) && (
-              <CommandSeparator />
-            )}
+            {(actionRows.length > 0 ||
+              showProjects ||
+              navRows.length > 0 ||
+              settingRows.length > 0) && <CommandSeparator />}
           </>
         )}
         {trimmed === '' && suggestions.length > 0 && (
@@ -455,6 +599,27 @@ export function CommandPalette({
               })}
             </CommandGroup>
             <CommandSeparator />
+          </>
+        )}
+        {actionRows.length > 0 && (
+          <>
+            <CommandGroup heading="Actions" className={GROUP_HEADING}>
+              {actionRows.map((action) => (
+                <CommandItem
+                  key={action.id}
+                  value={`action:${action.id}`}
+                  disabled={runners[action.id].pending}
+                  onSelect={() => runAction(action)}
+                >
+                  <action.icon />
+                  <span className="flex-1 truncate">{action.label}</span>
+                  <ChevronRight />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            {(showProjects || navRows.length > 0 || settingRows.length > 0) && (
+              <CommandSeparator />
+            )}
           </>
         )}
         {showProjects && (

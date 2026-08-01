@@ -27,7 +27,7 @@ type Navigation = {
 
 const { navigations, active } = vi.hoisted(() => ({
   navigations: [] as Navigation[],
-  active: { isAll: false, picked: [] as string[] },
+  active: { isAll: false, picked: [] as string[], switcher: 0 },
 }))
 
 vi.mock('@/lib/api', () => ({ apiFetch: vi.fn() }))
@@ -49,7 +49,9 @@ vi.mock('@/components/trau/active-repo', () => ({
     setScope: (next: string) => active.picked.push(next),
     setRepo: () => {},
     autoScope: () => null,
-    openSwitcher: () => {},
+    openSwitcher: () => {
+      active.switcher += 1
+    },
     switcherSignal: 0,
   }),
 }))
@@ -93,6 +95,8 @@ afterEach(() => {
   navigations.length = 0
   active.isAll = false
   active.picked.length = 0
+  active.switcher = 0
+  hub.draining = false
   vi.mocked(apiFetch).mockReset()
 })
 
@@ -245,6 +249,8 @@ const globalResults = {
   ],
 }
 
+const hub = { draining: false }
+
 function payloadFor(url: string) {
   if (url.startsWith('/api/v1/search')) {
     return { query: 'palette', results: globalResults }
@@ -253,7 +259,17 @@ function payloadFor(url: string) {
     return { repo: 'loop', layers: ['user'], providers: [], keys: configKeys }
   }
   if (url.includes('/runs')) return { repo: 'loop', runs: ledgerRuns }
+  if (url.includes('/queue')) {
+    return { repo: 'loop', draining: hub.draining, stopping: false, items: [] }
+  }
+  if (url.includes('/health')) {
+    return { repo: 'loop', provider: 'linear', state: 'ok' }
+  }
   return { instances: [] }
+}
+
+function requestedUrls(): string[] {
+  return vi.mocked(apiFetch).mock.calls.map(([url]) => url)
 }
 
 function renderPalette() {
@@ -378,6 +394,81 @@ it('surfaces every repo’s hits under All projects without flipping scope', asy
     { to: '/runs/$repo/$ticket', params: { repo: 'atlas', ticket: 'COD-31' } },
   ])
   expect(active.picked).toEqual([])
+  expect(opens).toEqual([false])
+})
+
+it('starts the active repo’s loop from the Actions group', async () => {
+  const opens = renderPalette()
+  typeQuery('start loop')
+  await act(async () => {})
+
+  const row = document.body.querySelector<HTMLElement>(
+    '[cmdk-item=""][data-value="action:start-loop"]',
+  )
+  expect(row?.textContent).toContain('Start loop')
+
+  act(() => row?.click())
+  await act(async () => {})
+
+  expect(requestedUrls()).toContain('/api/v1/repos/loop/queue/drain')
+  expect(opens).toEqual([false])
+})
+
+// ADR 0015 deleted the Run once page, so the action lands on the Loop card that
+// took over picking the ticket and launching it.
+it('lands the Run next action on the Loop card', async () => {
+  const opens = renderPalette()
+  typeQuery('run once')
+  await act(async () => {})
+
+  const row = document.body.querySelector<HTMLElement>(
+    '[cmdk-item=""][data-value="action:run-next"]',
+  )
+  expect(row?.textContent).toContain('Run next')
+
+  act(() => row?.click())
+
+  expect(navigations).toEqual([{ to: '/loop' }])
+  expect(opens).toEqual([false])
+})
+
+it('offers Stop instead of Start while the queue drains', async () => {
+  hub.draining = true
+  renderPalette()
+  typeQuery('loop')
+
+  // Offering Start for a repo that turns out to be draining is wrong for as long
+  // as the queue takes to answer, so the row waits for it.
+  expect(
+    document.body.querySelector('[cmdk-item=""][data-value="action:start-loop"]'),
+  ).toBeNull()
+
+  await act(async () => {})
+
+  expect(
+    document.body.querySelector('[cmdk-item=""][data-value="action:stop-loop"]'),
+  ).not.toBeNull()
+  expect(
+    document.body.querySelector('[cmdk-item=""][data-value="action:start-loop"]'),
+  ).toBeNull()
+})
+
+it('hands a repo-scoped action to the switcher under All projects', async () => {
+  active.isAll = true
+  const opens = renderPalette()
+  typeQuery('sync backlog')
+  await settleSearch()
+
+  const row = document.body.querySelector<HTMLElement>(
+    '[cmdk-item=""][data-value="action:sync-backlog"]',
+  )
+  expect(row?.textContent).toContain('Sync backlog')
+
+  act(() => row?.click())
+  await act(async () => {})
+
+  expect(active.switcher).toBe(1)
+  expect(requestedUrls()).not.toContain('/api/v1/repos/loop/sync')
   expect(opens).toEqual([false])
 })
 

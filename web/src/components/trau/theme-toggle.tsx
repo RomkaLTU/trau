@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Monitor, Moon, Sun, type LucideIcon } from 'lucide-react'
 
 import {
   applyTheme,
-  loadThemeMode,
   storeThemeMode,
+  useThemeMode,
   type ResolvedTheme,
   type ThemeMode,
 } from '@/lib/theme'
@@ -14,7 +14,7 @@ export function useTheme(): {
   mode: ThemeMode
   setMode: (mode: ThemeMode) => void
 } {
-  const [mode, setModeState] = useState<ThemeMode>(loadThemeMode)
+  const mode = useThemeMode()
 
   useEffect(() => {
     applyTheme(mode)
@@ -25,12 +25,7 @@ export function useTheme(): {
     return () => media.removeEventListener('change', onChange)
   }, [mode])
 
-  const setMode = useCallback((next: ThemeMode) => {
-    storeThemeMode(next)
-    setModeState(next)
-  }, [])
-
-  return { mode, setMode }
+  return { mode, setMode: storeThemeMode }
 }
 
 export function useResolvedTheme(): ResolvedTheme {
