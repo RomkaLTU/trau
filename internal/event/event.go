@@ -123,6 +123,19 @@ const KindQueueBatchFinished = "queue_batch_finished"
 // outcome of its own to explain why the queue dropped it.
 const KindQueueItemRemoved = "queue_item_removed"
 
+// KindQueueSpawnHeld marks a draining queue that held its next spawn while a
+// runnable item waited, carrying the gate that held it and why. The hub emits it
+// once per hold episode, since a drain that starts nothing is otherwise
+// indistinguishable from a hang for as long as the gate lasts.
+const KindQueueSpawnHeld = "queue_spawn_held"
+
+// KindHubReload marks the hub's answer to a repo's self-reload request —
+// accepted and pending the next idle gap, or refused and why. The hub emits it,
+// since the request is a background POST from a child whose outcome nothing else
+// records: a drain later held on a pending reload, or held on nothing because the
+// request never landed, has this to point at.
+const KindHubReload = "hub_reload"
+
 // KindQueueResetFailed marks a removed ticket whose reset never landed, so the
 // branch and tracker row the removal promised to clear are still standing. The
 // hub emits it, since the removal answers long before its reset child does.

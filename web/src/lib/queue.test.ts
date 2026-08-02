@@ -24,6 +24,7 @@ import {
   runNext,
   runOnly,
   skipResumeApplies,
+  spawnHoldReason,
   startBatch,
   stopQueue,
   updateBatch,
@@ -901,5 +902,30 @@ describe('releaseGateLabel', () => {
 
   it('is empty without a queue at all', () => {
     expect(releaseGateLabel()).toBe('')
+  })
+})
+
+describe('spawnHoldReason', () => {
+  it('names the gate an armed drain stopped at', () => {
+    expect(
+      spawnHoldReason(
+        queueResponse({
+          draining: true,
+          held: true,
+          held_reason: 'a loop is already running in this repo',
+        }),
+      ),
+    ).toBe('a loop is already running in this repo')
+  })
+
+  it('still says the drain is holding when the hub sends no reason', () => {
+    expect(
+      spawnHoldReason(queueResponse({ draining: true, held: true })),
+    ).toBe('the hub is holding the next spawn')
+  })
+
+  it('is empty while the drain is starting work normally', () => {
+    expect(spawnHoldReason(queueResponse({ draining: true }))).toBe('')
+    expect(spawnHoldReason()).toBe('')
   })
 })

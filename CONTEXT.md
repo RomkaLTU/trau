@@ -117,6 +117,10 @@ _Avoid_: batch (that's a named subset of it), backlog (that's the tracker's), sc
 A named, persistent subset of a Repo's Queue. Starting one drains its members in queue order, one run at a time, exactly as a whole-queue Start would — and stops when no member is left to run, however much of the Queue is still pending behind it. Membership is a label on the item, so dismissing a batch dissolves the grouping without touching any item's status or the child one is running, and an emptied batch stays listed until dismissed. An item belongs to at most one; only work the drain could still run can join.
 _Avoid_: group, wave, chunk, set
 
+**Spawn hold**:
+A draining Queue that starts nothing while a runnable item waits, named by the gate holding it — an unresolved blocker, a loop already running in the Repo, a pending self-reload, a release, or a drain loop that stopped ticking at all. The hub says so once per hold episode in the feed and for as long as it lasts on the queue API, so a wait is never indistinguishable from a hang.
+_Avoid_: stalled/stuck (that's only one of the gates), blocked (that's the item's tracker edges), paused (that's a Failure class), idle
+
 **Loop timeline**:
 The Loop screen's running view — a single card showing every ticket the running Queue covers, epics expanded into their sub-issues. Finished tickets appear in the order they actually completed, the running ticket shows its live Step and Activity, and remaining tickets are an unordered set — the future order is decided at pick time, never promised.
 _Avoid_: task list (they're tickets, not tasks), plan/schedule (implies a promised order), queue view (the Queue is the list; the timeline is its running progress)

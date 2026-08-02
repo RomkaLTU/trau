@@ -63,6 +63,11 @@ export interface QueueResponse {
   // releasing_epic names the epic whose release holds the queue: while it is set
   // the hub starts no new run in the repo. Absent when nothing gates it.
   releasing_epic?: string
+  // held reports a drain that is armed and starting nothing anyway, with
+  // held_reason naming the gate it stopped at and held_since when the wait began.
+  held?: boolean
+  held_reason?: string
+  held_since?: string
   batches?: QueueBatch[]
   items: QueueItem[]
 }
@@ -448,6 +453,15 @@ export function queueLive(queue?: QueueResponse): boolean {
 export function releaseGateLabel(queue?: QueueResponse): string {
   const epic = queue?.releasing_epic
   return epic ? `waiting for ${epic} to finish releasing` : ''
+}
+
+// spawnHoldReason says why an armed drain is starting nothing: a blocker no
+// queued item can clear, a repo already running a loop, a pending self-reload, a
+// release, or a drain loop that stopped ticking at all. Empty when the drain is
+// not holding, so a queue between children still reads as idle rather than stuck.
+export function spawnHoldReason(queue?: QueueResponse): string {
+  if (!queue?.held) return ''
+  return queue.held_reason || 'the hub is holding the next spawn'
 }
 
 // queueTerminal reports whether an item has already settled: the drain only

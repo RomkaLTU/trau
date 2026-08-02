@@ -30,6 +30,9 @@ func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	// Start arms the daily release check against GitHub; nothing here is about
 	// that, and netguard would kill the binary the moment it fired.
 	s.SetUpdateChecks(false)
+	ctx, cancel := context.WithCancel(context.Background())
+	s.drainCtx = ctx
+	t.Cleanup(cancel)
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	s.drain.repoLive = func(string) bool { return false }
@@ -1828,6 +1831,23 @@ func drainToStop(t *testing.T, s *Server, root string) []string {
 	}
 	t.Fatalf("drain never stopped, ran %v", order)
 	return nil
+}
+
+// eventMsgs returns the messages of one kind the repo's feed carries, oldest
+// first, so a case can count episodes rather than reads.
+func eventMsgs(t *testing.T, s *Server, root, kind string) []string {
+	t.Helper()
+	rows, err := s.stores.Events().Recent(root, 50, 0)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	msgs := []string{}
+	for i := len(rows) - 1; i >= 0; i-- {
+		if rows[i].Kind == kind {
+			msgs = append(msgs, rows[i].Msg)
+		}
+	}
+	return msgs
 }
 
 func eventFields(t *testing.T, s *Server, root, kind string) map[string]any {
