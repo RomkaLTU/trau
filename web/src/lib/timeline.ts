@@ -70,7 +70,8 @@ export interface FinalizeEntry {
 // running ticket, and the remaining set in snapshot order. Epic group headers do
 // not count toward done/total — only leaf tickets do. elapsedAnchor is when the
 // run in flight started: the drain's arm stamp, or the loop process's own start
-// for a CLI run the hub never armed.
+// for a CLI run the hub never armed. A batch-scoped drain covers its members
+// alone, so the timeline is built from those rows and no other.
 export interface Timeline {
   total: number
   done: number
@@ -297,10 +298,12 @@ export function buildTimeline(
   runs: Run[],
   instance?: Instance,
   drainingSince?: string,
+  batch?: string,
 ): Timeline {
+  const scope = batch ? items.filter((it) => it.batch === batch) : items
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
-  const finalize = epicFinalize(items, byTicket, instance)
-  const leaves = flatten(items)
+  const finalize = epicFinalize(scope, byTicket, instance)
+  const leaves = flatten(scope)
   // A run can outlive its queue entry or never have one (a CLI start): an
   // instance ticket missing from the snapshot still joins as a leaf, whether the
   // instance is working it or parked on the halt it stopped at. An epic mid-release
@@ -351,7 +354,7 @@ export function buildTimeline(
     (queued.has(t.id) || !isSettled(t.status))
 
   const pending: PendingEntry[] = []
-  for (const item of items) {
+  for (const item of scope) {
     if (item.kind === 'epic') {
       const subs = item.sub_issues ?? []
       const children = subs.map((s) => byId.get(s.id)).filter(remains)

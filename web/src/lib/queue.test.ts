@@ -3,6 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apiFetch } from './api'
 import {
+  batchDisplayName,
+  batchName,
+  batchSelectable,
+  batchStartBlocker,
+  batchSummary,
+  createBatch,
+  dismissBatch,
   enqueueFresh,
   promoteQueueItem,
   publishQueue,
@@ -17,7 +24,10 @@ import {
   runNext,
   runOnly,
   skipResumeApplies,
+  startBatch,
   stopQueue,
+  updateBatch,
+  type QueueBatch,
   type QueueItem,
   type QueueResponse,
 } from './queue'
@@ -666,6 +676,213 @@ describe('skipResumeApplies', () => {
         [run({ ticket: 'COD-99', terminal: false })],
       ),
     ).toBe(false)
+  })
+})
+
+describe('batch mutations', () => {
+  it('files the picked ids under a named batch', async () => {
+    mockFetch.mockResolvedValueOnce(response(200, queueResponse()))
+
+    await createBatch('trau', ['COD-1', 'COD-2'], 'API polish')
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/queue/batches',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ name: 'API polish', ids: ['COD-1', 'COD-2'] }),
+      }),
+    )
+  })
+
+  it('leaves the name out when the batch is filed unnamed', async () => {
+    mockFetch.mockResolvedValueOnce(response(200, queueResponse()))
+
+    await createBatch('trau', ['COD-1'])
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/queue/batches',
+      expect.objectContaining({ body: JSON.stringify({ ids: ['COD-1'] }) }),
+    )
+  })
+
+  it('reports a refusal of an id another batch already holds', async () => {
+    mockFetch.mockResolvedValueOnce(
+      response(409, { error: 'COD-1 already belongs to batch api-polish' }),
+    )
+
+    await expect(createBatch('trau', ['COD-1'])).rejects.toThrow(
+      'COD-1 already belongs to batch api-polish',
+    )
+  })
+
+  it('renames a batch in place', async () => {
+    mockFetch.mockResolvedValueOnce(response(200, queueResponse()))
+
+    await updateBatch('trau', 'api-polish', { name: 'API polish v2' })
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/queue/batches/api-polish',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify({ name: 'API polish v2' }),
+      }),
+    )
+  })
+
+  it('dismisses a batch without a body', async () => {
+    mockFetch.mockResolvedValueOnce(response(200, queueResponse()))
+
+    await dismissBatch('trau', 'api-polish')
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/queue/batches/api-polish',
+      { method: 'DELETE' },
+    )
+  })
+
+  it('starts a batch with the run-level knobs the footer offers', async () => {
+    mockFetch.mockResolvedValueOnce(
+      response(200, queueResponse({ draining: true, draining_batch: 'api-polish' })),
+    )
+
+    const res = await startBatch('trau', 'api-polish', {
+      no_resume: true,
+      on_fault: 'skip',
+    })
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/queue/batches/api-polish/start',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ no_resume: true, on_fault: 'skip' }),
+      }),
+    )
+    expect(res.draining_batch).toBe('api-polish')
+  })
+
+  it('surfaces a start refused by a blocker outside the batch', async () => {
+    mockFetch.mockResolvedValueOnce(
+      response(409, {
+        error:
+          'batch api-polish is blocked by COD-9 — ship them or take them into the batch',
+      }),
+    )
+
+    await expect(startBatch('trau', 'api-polish')).rejects.toThrow(
+      'batch api-polish is blocked by COD-9 — ship them or take them into the batch',
+    )
+  })
+})
+
+describe('batchDisplayName', () => {
+  const batch = (over: Partial<QueueBatch>): QueueBatch => ({
+    id: 'api-polish',
+    name: '',
+    created_at: '2026-08-01T14:32:00Z',
+    ...over,
+  })
+
+  it('is the name the batch was filed under', () => {
+    expect(batchDisplayName(batch({ name: 'API polish' }))).toBe('API polish')
+  })
+
+  it('falls back to when it was filed for an unnamed batch', () => {
+    const stamp = new Date('2026-08-01T14:32:00Z').toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    })
+    expect(batchDisplayName(batch({}))).toBe(stamp)
+  })
+
+  it('labels a member row by id and stays empty for a batch the repo dropped', () => {
+    const batches = [batch({ name: 'API polish' })]
+    expect(batchName(batches, 'api-polish')).toBe('API polish')
+    expect(batchName(batches, 'gone')).toBe('')
+    expect(batchName(undefined, '')).toBe('')
+  })
+})
+
+describe('batchSelectable', () => {
+  it('takes a runnable row no batch holds yet', () => {
+    expect(batchSelectable(item({ status: 'pending' }))).toBe(true)
+    expect(batchSelectable(item({ status: 'paused' }))).toBe(true)
+  })
+
+  it('leaves out a settled row', () => {
+    expect(batchSelectable(item({ status: 'done' }))).toBe(false)
+    expect(batchSelectable(item({ status: 'running' }))).toBe(false)
+  })
+
+  it('leaves out a row another batch already holds', () => {
+    expect(batchSelectable(item({ status: 'pending', batch: 'api-polish' }))).toBe(
+      false,
+    )
+  })
+})
+
+describe('batchSummary', () => {
+  const items = [
+    item({ id: 'COD-1', status: 'done', batch: 'api-polish' }),
+    item({ id: 'COD-2', status: 'pending', batch: 'api-polish' }),
+    item({ id: 'COD-3', status: 'paused', batch: 'api-polish' }),
+    item({ id: 'COD-4', status: 'pending' }),
+  ]
+
+  it('counts the members and what a Start would still launch', () => {
+    const summary = batchSummary(items, 'api-polish')
+    expect(summary.members).toBe(3)
+    expect(summary.runnable).toBe(2)
+  })
+
+  it('tallies the outcomes and leaves pending out of them', () => {
+    expect(batchSummary(items, 'api-polish').tally).toEqual([
+      { status: 'done', count: 1 },
+      { status: 'paused', count: 1 },
+    ])
+  })
+})
+
+describe('batchStartBlocker', () => {
+  const items = [
+    item({ id: 'COD-1', status: 'pending', batch: 'api-polish' }),
+    item({ id: 'COD-2', status: 'pending' }),
+  ]
+
+  it('is empty for a runnable batch on an idle queue', () => {
+    expect(
+      batchStartBlocker(queueResponse({ items }), 'api-polish'),
+    ).toBe('')
+  })
+
+  it('names the drain in flight', () => {
+    expect(
+      batchStartBlocker(queueResponse({ items, draining: true }), 'api-polish'),
+    ).toBe('the queue is draining — stop it before starting a batch')
+  })
+
+  it('names the run already in flight', () => {
+    expect(
+      batchStartBlocker(
+        queueResponse({
+          items: [...items, item({ id: 'COD-3', status: 'running' })],
+        }),
+        'api-polish',
+      ),
+    ).toBe('COD-3 is already running')
+  })
+
+  it('refuses a fully settled batch, which keeps its card as a record', () => {
+    expect(
+      batchStartBlocker(
+        queueResponse({
+          items: [item({ id: 'COD-1', status: 'done', batch: 'api-polish' })],
+        }),
+        'api-polish',
+      ),
+    ).toBe('nothing left to run in this batch')
   })
 })
 
