@@ -138,7 +138,7 @@ func Fingerprint(dir, status string) string {
 		if fi, err := os.Stat(filepath.Join(dir, statusPath(line))); err == nil {
 			size, modified = fi.Size(), fi.ModTime().UnixNano()
 		}
-		fmt.Fprintf(sum, "%s\x00%d\x00%d\x00", line, size, modified)
+		_, _ = fmt.Fprintf(sum, "%s\x00%d\x00%d\x00", line, size, modified)
 	}
 	return hex.EncodeToString(sum.Sum(nil))[:16]
 }
