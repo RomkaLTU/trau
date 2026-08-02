@@ -77,6 +77,12 @@ PROJECT=                     # Linear project this repo owns (e.g. salonradar.co
 # --- git / GitHub ---
 BASE_BRANCH=main
 REMOTE=origin
+FORGE=                       # code host this repo's remote points at: github | azure | gitlab | bitbucket.
+                             # Empty (the normal case) identifies it from the remote itself. Set it only to
+                             # name a host trau does not recognize — a self-hosted GitHub Enterprise, say.
+                             # Delivery is GitHub-only: a repo on any other forge is refused before the run
+                             # spends anything rather than at `gh pr create`. A Folder repo's children each
+                             # answer from their own remote and override this in their own .trau.ini.
 # Target app repo the loop operates on (REPO_ROOT). Usually empty in project
 # config; the repo is resolved first from --repo, then TRAU_REPO_ROOT, then
 # the cwd git top-level (ADR 0001 §2).

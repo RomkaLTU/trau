@@ -420,6 +420,7 @@ function RepoOption({
       role="option"
       aria-selected={active}
       onClick={onSelect}
+      title={`${repo.name}\n${repoSubtitle(repo)}`}
       className={cn(
         'flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary',
         active && 'bg-secondary/60',
@@ -435,7 +436,7 @@ function RepoOption({
         >
           {repo.name}
         </span>
-        <span className="break-words font-mono text-[0.65rem] text-muted-foreground">
+        <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
           {repoSubtitle(repo)}
         </span>
       </span>
@@ -449,13 +450,14 @@ function RepoOption({
 // A Folder repo is an ordinary Repo — one board, one queue, one row — so its
 // folder-ness rides on the subtitle rather than a badge of its own. The count
 // belongs here and not in the right-aligned slot the Project group header uses,
-// which would read as a project. The subtitle wraps rather than truncates: the
-// sidebar is narrower than the folder marker alone, so a single clipped line
-// would drop the one thing the row has to say.
+// which would read as a project. Every row is two lines and no more, so a repo
+// under a long path cannot push the ones below it off the screen: the subtitle
+// truncates, and the marker leads it so a clipped line still says what the row
+// is. The whole of it is on the button's tooltip.
 function repoSubtitle(repo: RepoView): string {
   if (repo.kind !== 'folder') return repo.root
   const count = repo.child_repos ?? 0
-  return `${repo.root} · folder repo, ${count} ${count === 1 ? 'repository' : 'repositories'}`
+  return `folder repo, ${count} ${count === 1 ? 'repository' : 'repositories'} · ${repo.root}`
 }
 
 function RepoIcon({ state }: { state: RepoBadgeState }) {

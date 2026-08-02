@@ -87,7 +87,7 @@ func (p *Pipeline) dropAttemptBranch(ctx context.Context, a attempt, branch stri
 	}
 	if local, _ := a.git.BranchExists(ctx, branch); local {
 		if err := p.baseCheckout(ctx, a, true); err != nil {
-			errs = append(errs, fmt.Errorf("check out %s%s: %w", p.Base, a.inRepo(), err))
+			errs = append(errs, fmt.Errorf("check out %s%s: %w", p.baseFor(a.repo), a.inRepo(), err))
 		} else if err := a.git.DeleteBranch(ctx, branch); err != nil {
 			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.inRepo(), err))
 		} else {

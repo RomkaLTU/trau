@@ -39,6 +39,7 @@ function inspection(over: Partial<RepoInspection> = {}): RepoInspection {
     kind: 'repo',
     has_trau_ini: false,
     credentials: [],
+    forge: 'github',
     default_branch: 'main',
     findings: [],
     ...over,

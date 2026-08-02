@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/RomkaLTU/trau/internal/forge"
 )
 
 // SweepConcurrency bounds the parallel git calls a child sweep spends. A sweep is
@@ -36,12 +38,15 @@ func Sweep[T any](ctx context.Context, children []Child, read func(context.Conte
 	return out
 }
 
-// State is a Child repo's condition when a sweep read it: the branch it sits on
-// and the Fingerprint of whatever uncommitted work its tree carries, or the error
-// that stopped either from being read.
+// State is a Child repo's condition when a sweep read it: the branch it sits on,
+// the branch it ships to and the forge it would ship through — both read from
+// its own remote — and the Fingerprint of whatever uncommitted work its tree
+// carries, or the error that stopped any of them from being read.
 type State struct {
 	Child
 	Branch string
+	Base   string
+	Forge  forge.Forge
 	Dirt   string
 	Err    error
 }
@@ -49,16 +54,25 @@ type State struct {
 // OffLimitsReason names why a run must leave this child alone, or "" when it may
 // ship to it. The doctor's preview and the start-of-run sweep both judge a child
 // with it, so what doctor shows cannot drift from the verdict a run reaches.
-func (s State) OffLimitsReason(base string) string {
+// Standing on another branch is not a reason: a clean child is moved onto its own
+// base, the same courtesy EnsureCleanBase does a plain Repo.
+func (s State) OffLimitsReason() string {
 	switch {
 	case s.Err != nil, s.Branch == "":
 		return "its git state could not be read"
 	case s.Dirt != "":
 		return "it has uncommitted changes"
-	case s.Branch != base:
-		return "it sits on " + s.Branch + ", not " + base
 	}
-	return ""
+	return s.Forge.Unsupported()
+}
+
+// ParkedAndMovable reports whether a run would move this child back onto the base
+// it ships to: it stands somewhere else, and nothing puts it off limits. An
+// off-limits child stays exactly where it is however far off its base it stands,
+// so counting it as parked would have a report promise a move that never comes.
+func (s State) ParkedAndMovable() bool {
+	parked := s.Branch != "" && s.Base != "" && s.Branch != s.Base
+	return parked && s.OffLimitsReason() == ""
 }
 
 // carries answers whether this child still holds the work a run left in it: its
@@ -75,9 +89,11 @@ func (s State) carries(start map[string]string, branch string) bool {
 	return s.Dirt != start[s.Name]
 }
 
-// ReadState reads a Child repo's condition by running git in it, for the callers
-// outside a run — the doctor's preview, the hub's diff pane — that hold no git
-// seam of their own. A run reads its children through its own.
+// ReadState reads a Child repo's tree condition by running git in it, for the
+// callers outside a run — the doctor's preview, the hub's diff pane — that hold
+// no git seam of their own. A run reads its children through its own. Base and
+// Forge are left to the caller: only it knows which remote to ask and what the
+// child declares for itself.
 func ReadState(ctx context.Context, c Child) State {
 	st := State{Child: c}
 	branch, err := gitOutput(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD")

@@ -28,11 +28,14 @@ export interface InspectPrefill {
   epic_flow: boolean
 }
 
-// One Child repo of a folder under inspection: the branch it agrees or disagrees
-// on, and whether a run could open a pull request in it.
+// One Child repo of a folder under inspection: the base it ships to, the branch
+// it currently stands on — a separate fact, never the answer to the first — the
+// forge it would ship through, and whether a run could open a pull request in it.
 export interface InspectChild {
   name: string
   default_branch: string
+  current_branch?: string
+  forge: string
   has_remote: boolean
 }
 
@@ -43,10 +46,31 @@ export interface RepoInspection {
   has_trau_ini: boolean
   detected_provider?: string
   credentials: InspectCredential[]
+  forge: string
   default_branch: string
+  current_branch?: string
   children?: InspectChild[]
   findings: DetectionFinding[]
   prefill?: InspectPrefill
+}
+
+const FORGE_LABEL: Record<string, string> = {
+  github: 'GitHub',
+  azure: 'Azure DevOps',
+  gitlab: 'GitLab',
+  bitbucket: 'Bitbucket',
+  unknown: 'an unrecognized forge',
+}
+
+// Mirrors Forge.Label in internal/forge so the wizard names a forge exactly as
+// doctor and the run's own refusal do.
+export function forgeLabel(forge: string): string {
+  return FORGE_LABEL[forge] ?? 'no remote'
+}
+
+// Delivery is GitHub-only: everything else is identified honestly and left alone.
+export function forgeDelivers(forge: string): boolean {
+  return forge === 'github' || forge === ''
 }
 
 export interface Team {

@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/select'
 import {
   credentialLayer,
+  forgeLabel,
   preselectProvider,
   testTracker,
   trackerCanContinue,
@@ -54,6 +55,15 @@ const TEST_HINT: Partial<Record<TrackerProvider, string>> = {
 // web wizard ask for the same two scopes.
 const AZURE_PAT_SCOPES = 'Work Items (read & write) and Project and Team (read)'
 const AZURE_PAT_SETTINGS_URL = 'https://dev.azure.com/_usersSettings/tokens'
+
+// codeHome names the forge the inspected repo is actually on, so this step cannot
+// read as if trau pulls code from whichever tracker is picked below. A folder's
+// children each answer for themselves, which the detection step already listed.
+function codeHome(inspection: RepoInspection): string {
+  if (inspection.kind === 'folder') return "each child repo's own remote"
+  if (inspection.forge === '') return 'this machine, with no remote configured'
+  return forgeLabel(inspection.forge)
+}
 
 export function StepTracker({
   inspection,
@@ -151,6 +161,10 @@ export function StepTracker({
           trau writes <span className="font-mono">TRACKER_PROVIDER</span> explicitly and tests the
           connection before it will sync. One tracker per project — every repo in it inherits
           these keys.
+        </Hint>
+        <Hint>
+          Tickets only. The code stays where its git remote says it does — {codeHome(inspection)}{' '}
+          — and nothing on this step changes that.
         </Hint>
       </div>
 

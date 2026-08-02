@@ -17,28 +17,33 @@ import (
 
 // realGitRepo makes an actual git repository so the inspect endpoint's git checks
 // (origin remote, default branch) run against real plumbing rather than a planted
-// .git stub.
+// .git stub. A repo with an origin also gets the refs/remotes/origin/HEAD a clone
+// records, which is what the endpoint reads the default branch off — and what
+// keeps it from asking a remote nothing in a test may reach.
 func realGitRepo(t *testing.T, dir, branch, origin string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir repo: %v", err)
 	}
-	git := func(args ...string) {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
-		)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-	}
-	git("init", "-b", branch)
-	git("commit", "--allow-empty", "-m", "init")
+	gitIn(t, dir, "init", "-b", branch)
+	gitIn(t, dir, "commit", "--allow-empty", "-m", "init")
 	if origin != "" {
-		git("remote", "add", "origin", origin)
+		gitIn(t, dir, "remote", "add", "origin", origin)
+		gitIn(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/heads/"+branch)
 	}
 	return dir
+}
+
+func gitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
 }
 
 func inspectServer(t *testing.T, home string) *httptest.Server {
@@ -113,6 +118,52 @@ func TestInspectFreshRepo(t *testing.T) {
 	}
 }
 
+// TestInspectReadsTheDefaultBranchOffTheRemote is the fact the wizard used to get
+// wrong: a working copy parked on a feature branch is still a repository whose
+// default is master, and the branch it stands on is reported as its own separate
+// row instead of being written into BASE_BRANCH as the base to build off.
+func TestInspectReadsTheDefaultBranchOffTheRemote(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := realGitRepo(t, filepath.Join(t.TempDir(), "api-administrators"), "master", "https://github.com/rd/api-administrators.git")
+	gitIn(t, repo, "checkout", "-q", "-b", "azure-devops-generic-pipeline")
+	ts := inspectServer(t, t.TempDir())
+
+	res, insp := postInspect(t, ts, repo)
+	defer func() { _ = res.Body.Close() }()
+
+	if insp.DefaultBranch != "master" {
+		t.Errorf("default branch = %q, want master — the branch the remote calls default", insp.DefaultBranch)
+	}
+	if insp.CurrentBranch != "azure-devops-generic-pipeline" {
+		t.Errorf("current branch = %q, want the branch the working copy stands on", insp.CurrentBranch)
+	}
+	if f := findingFor(t, insp, "parked on"); f.Value != "azure-devops-generic-pipeline" {
+		t.Errorf("parked finding = %+v, want the checked-out branch named as its own fact", f)
+	}
+	if f := findingFor(t, insp, "forge"); f.State != findingOK || !strings.Contains(f.Value, "GitHub") {
+		t.Errorf("forge finding = %+v, want GitHub read off the remote", f)
+	}
+}
+
+// TestInspectFailsARepoOnAForgeTrauCannotDeliverTo keeps onboarding from passing a
+// repo cleanly that a run would only die in at `gh pr create`.
+func TestInspectFailsARepoOnAForgeTrauCannotDeliverTo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := realGitRepo(t, filepath.Join(t.TempDir(), "api-billing"), "master", "https://acme@dev.azure.com/acme/platform/_git/api-billing")
+	ts := inspectServer(t, t.TempDir())
+
+	res, insp := postInspect(t, ts, repo)
+	defer func() { _ = res.Body.Close() }()
+
+	if insp.Forge != "azure" {
+		t.Errorf("forge = %q, want azure", insp.Forge)
+	}
+	f := findingFor(t, insp, "forge")
+	if f.State != findingFail || !strings.Contains(f.Value, "Azure DevOps") {
+		t.Errorf("forge finding = %+v, want a failure naming Azure DevOps", f)
+	}
+}
+
 func TestInspectRemotelessRepoReadsAsLocalDelivery(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	repo := realGitRepo(t, filepath.Join(t.TempDir(), "solo"), "main", "")
@@ -151,9 +202,9 @@ func TestInspectFolderRepoReadsItsChildren(t *testing.T) {
 		t.Errorf("default branch = %q, want main", insp.DefaultBranch)
 	}
 	want := []InspectChild{
-		{Name: "api", DefaultBranch: "main", HasRemote: true},
-		{Name: "docs", DefaultBranch: "main", HasRemote: true},
-		{Name: "web", DefaultBranch: "main", HasRemote: true},
+		{Name: "api", DefaultBranch: "main", CurrentBranch: "main", Forge: "github", HasRemote: true},
+		{Name: "docs", DefaultBranch: "main", CurrentBranch: "main", Forge: "github", HasRemote: true},
+		{Name: "web", DefaultBranch: "main", CurrentBranch: "main", Forge: "github", HasRemote: true},
 	}
 	if !slices.Equal(insp.Children, want) {
 		t.Errorf("children = %+v, want %+v", insp.Children, want)
