@@ -3,19 +3,65 @@ import { useMutation } from '@tanstack/react-query'
 import { ArrowRight, ExternalLink } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { writeConfig } from '@/lib/config'
 import {
   ensureGitignore,
   essentialsConfigWrites,
   essentialsProjectKeys,
+  FORGE_NAMES,
+  forgeLabel,
   type EssentialsFields,
   type MemberRepo,
 } from '@/lib/onboarding'
 import { writeProjectTracker } from '@/lib/projects'
 import { FieldLabel, Hint, TextInput, Toggle } from './ui'
 
+// Radix rejects an empty item value, so the "let trau read it" choice carries a
+// sentinel that never leaves this file.
+const FORGE_AUTO = 'auto'
+
+const FORGE_HINT =
+  "Read from the remote — name it only when trau couldn't. A self-hosted GitHub Enterprise install is GitHub, and picking it is what unblocks delivery. Naming another forge records the truth for doctor and the sweep, but trau still opens pull requests on GitHub only."
+
 function detectedBranch(member: MemberRepo): string {
   return member.inspection.default_branch || 'main'
+}
+
+function detectedForge(member: MemberRepo): string {
+  return FORGE_NAMES.includes(member.inspection.forge) ? member.inspection.forge : ''
+}
+
+function ForgeSelect({
+  id,
+  value,
+  onChange,
+}: {
+  id: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <Select value={value || FORGE_AUTO} onValueChange={onChange}>
+      <SelectTrigger id={id} className="w-full">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value={FORGE_AUTO}>identify from the remote</SelectItem>
+        {FORGE_NAMES.map((name) => (
+          <SelectItem key={name} value={name}>
+            {forgeLabel(name)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
 }
 
 export function StepEssentials({
@@ -31,14 +77,19 @@ export function StepEssentials({
 }) {
   const primary = members[0]
   const prefill = primary.inspection.prefill
+  // A Folder repo is not a git repository, so a .gitignore in it is inert clutter.
+  const gitignorable = members.filter((m) => m.inspection.kind !== 'folder')
+  // A Folder root has no remote of its own, and a child never inherits its FORGE.
+  const forgeable = members.filter((m) => m.inspection.kind !== 'folder')
   const [branches, setBranches] = useState<Record<string, string>>(() =>
     Object.fromEntries(members.map((m) => [m.root, detectedBranch(m)])),
+  )
+  const [forges, setForges] = useState<Record<string, string>>(() =>
+    Object.fromEntries(forgeable.map((m) => [m.root, detectedForge(m)])),
   )
   const [readyLabel, setReadyLabel] = useState(prefill?.ready_label ?? 'ready-for-agent')
   const [epicFlow, setEpicFlow] = useState(prefill?.epic_flow ?? false)
   const [gitignore, setGitignore] = useState(true)
-  // A Folder repo is not a git repository, so a .gitignore in it is inert clutter.
-  const gitignorable = members.filter((m) => m.inspection.kind !== 'folder')
 
   const fields: EssentialsFields = {
     baseBranches: members.map((m) => ({
@@ -46,12 +97,20 @@ export function StepEssentials({
       root: m.root,
       branch: branches[m.root],
     })),
+    // A pick that only restates what the remote already answered is noise in .trau.ini.
+    forges: forgeable
+      .filter((m) => forges[m.root] !== detectedForge(m))
+      .map((m) => ({ root: m.root, forge: forges[m.root] })),
     readyLabel,
     epicFlow,
   }
 
   function setBranch(root: string, value: string) {
     setBranches((prev) => ({ ...prev, [root]: value }))
+  }
+
+  function setForge(root: string, value: string) {
+    setForges((prev) => ({ ...prev, [root]: value === FORGE_AUTO ? '' : value }))
   }
 
   // Every field has a working default, so this advances on settle, not just success.
@@ -84,8 +143,12 @@ export function StepEssentials({
     onSettled: () => onContinue(fields),
   })
 
+  // Only a repo detection could not place has to be named; every other member may
+  // be left to the remote.
   const canContinue =
-    fields.baseBranches.every((b) => b.branch.trim() !== '') && readyLabel.trim() !== ''
+    fields.baseBranches.every((b) => b.branch.trim() !== '') &&
+    readyLabel.trim() !== '' &&
+    forgeable.every((m) => m.inspection.forge !== 'unknown' || forges[m.root] !== '')
 
   return (
     <div className="flex flex-col gap-5">
@@ -125,6 +188,36 @@ export function StepEssentials({
           <Hint>Detected default branch: {detectedBranch(primary)}.</Hint>
         </div>
       )}
+
+      {forgeable.length > 0 &&
+        (forgeable.length > 1 ? (
+          <div className="flex flex-col gap-3">
+            <FieldLabel>forge</FieldLabel>
+            {forgeable.map((m, i) => (
+              <div key={m.root} className="flex flex-col gap-1.5">
+                <label htmlFor={`forge-${i}`} className="font-mono text-xs text-muted-foreground">
+                  {m.repo}
+                </label>
+                <ForgeSelect
+                  id={`forge-${i}`}
+                  value={forges[m.root]}
+                  onChange={(v) => setForge(m.root, v)}
+                />
+              </div>
+            ))}
+            <Hint>{FORGE_HINT}</Hint>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <FieldLabel htmlFor="forge">forge</FieldLabel>
+            <ForgeSelect
+              id="forge"
+              value={forges[forgeable[0].root]}
+              onChange={(v) => setForge(forgeable[0].root, v)}
+            />
+            <Hint>{FORGE_HINT}</Hint>
+          </div>
+        ))}
 
       <div className="flex flex-col gap-2">
         <FieldLabel htmlFor="ready-label">ready label</FieldLabel>
