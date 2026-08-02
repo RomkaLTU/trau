@@ -221,6 +221,25 @@ export async function runQueueItem(
   return res.json()
 }
 
+// requeueIssue makes a quarantined ticket eligible again: the hub drives the
+// same trau --requeue the CLI offers — tracker labels and status restored, the
+// attempt PR closed, its branches dropped, the checkpoint cleared — then repairs
+// the queue snapshot and answers with it, so the quarantine stops being reported
+// anywhere the queue is read.
+export async function requeueIssue(
+  repo: string,
+  id: string,
+): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/issues/${encodeURIComponent(id)}/requeue`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'requeue failed'))
+  }
+  return res.json()
+}
+
 // dequeue takes an item out of the queue without touching the ticket. A running
 // item is refused unless stop is set, which asks the hub to stop the item's child
 // first — the row then goes once the run has exited, and the answer describes the
