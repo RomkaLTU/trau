@@ -346,8 +346,9 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGrillAnswer appends a user's answer and resumes the session (POST). A
-// session that cannot take an answer is refused.
+// handleGrillAnswer appends a user's message and resumes the session (POST). A running
+// session queues it as an interjection instead — the turn keeps working and the agent
+// reads it at its next tool call. A session that can take neither is refused.
 func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -358,7 +359,8 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !grillAcceptsAnswer(sess.State) {
+	interjecting := sess.State == hubstore.GrillRunning
+	if !interjecting && !grillAcceptsAnswer(sess.State) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is not awaiting an answer"})
 		return
 	}
@@ -370,6 +372,18 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "answer text is required"})
+		return
+	}
+	if interjecting {
+		msg, err := s.grillInterject(sess.ID, text)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store interjection: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, GrillAnswerResponse{
+			Session: s.grillSessionView("", sess),
+			Message: grillMessageView(msg),
+		})
 		return
 	}
 	msg, resumed, err := s.grillSubmitAnswer(r.Context(), sess, text, false)

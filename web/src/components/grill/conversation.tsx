@@ -143,7 +143,10 @@ export function GrillConversation({
       answerGrill(session.id, text),
     onSuccess: (res) => {
       dispatch({ type: "message", message: res.message });
-      dispatch({ type: "state", session: res.session });
+      // An interjection leaves the turn running, so replaying its state frame would
+      // only reset the reply the thread is still streaming.
+      if (res.message.kind !== "interjection")
+        dispatch({ type: "state", session: res.session });
       dropAwaiting(queryClient, session.id);
     },
     onError: (_err, { id, text }) =>
@@ -194,6 +197,14 @@ export function GrillConversation({
     canCompose(session.state) || (stalled !== null && resume === "");
   const freeText = question?.allow_free_text ?? true;
   const sending = answer.isPending;
+  // A running turn takes typing as steering, not as an answer, so it reads its
+  // prompt off the state rather than off the question.
+  const placeholder =
+    !answering || session.state === "running"
+      ? composerPlaceholder(session.state)
+      : freeText
+        ? "Type your answer…"
+        : "Pick one of the answers above…";
 
   return (
     <>
@@ -254,13 +265,7 @@ export function GrillConversation({
             )}
             <Composer
               repo={repo}
-              placeholder={
-                !answering
-                  ? composerPlaceholder(session.state)
-                  : freeText
-                    ? "Type your answer…"
-                    : "Pick one of the answers above…"
-              }
+              placeholder={placeholder}
               disabled={!answering || !freeText || sending}
               submitting={sending}
               onSend={send}
