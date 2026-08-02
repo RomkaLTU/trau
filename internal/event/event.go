@@ -112,6 +112,12 @@ const KindQueueReconciled = "queue_reconciled"
 // the re-attempt happens with no human click to explain it in the feed.
 const KindQueueAutoResumed = "queue_auto_resumed"
 
+// KindQueueBatchFinished marks a batch-scoped drain that stopped because its
+// batch ran dry, carrying the batch, its name, and how its members settled. The
+// hub emits it, since the drain disarms at the batch's boundary with items still
+// queued behind it and nothing else explains the stop.
+const KindQueueBatchFinished = "queue_batch_finished"
+
 // KindQueueItemRemoved marks a running queue item taken out of the queue, whose
 // child the hub stopped first. The hub emits it, since the run ends with no
 // outcome of its own to explain why the queue dropped it.

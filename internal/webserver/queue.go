@@ -41,7 +41,8 @@ type QueueRequest struct {
 // item's still-unresolved blocked-by edges and Blocked reports whether it has
 // any, so the queue can refuse to run the row on its own and say why. Removing
 // reports a stop-then-remove in flight, so a running row that is on its way out
-// reads as leaving rather than as work still under way.
+// reads as leaving rather than as work still under way. Batch names the batch
+// holding the item, empty when none does.
 type QueueItemView struct {
 	Position    int              `json:"position"`
 	Kind        string           `json:"kind"`
@@ -55,6 +56,7 @@ type QueueItemView struct {
 	Blockers    []string         `json:"blockers,omitempty"`
 	Blocked     bool             `json:"blocked"`
 	Removing    bool             `json:"removing,omitempty"`
+	Batch       string           `json:"batch,omitempty"`
 	SubIssues   []queue.SubIssue `json:"sub_issues,omitempty"`
 	QueuedAt    string           `json:"queued_at,omitempty"`
 }
@@ -64,13 +66,17 @@ type QueueItemView struct {
 // and whether a stop is ending the child that was running. DrainingSince is
 // absent unless the queue is draining. ReleasingEpic names the Epic whose release
 // holds the queue, so a drain that starts nothing reads as waiting on that release
-// rather than as idle.
+// rather than as idle. Batches lists the repo's batches and DrainingBatch names the
+// one the drain in flight is scoped to — empty when it is draining the whole queue
+// — so a client can label the run.
 type QueueResponse struct {
 	Repo          string          `json:"repo"`
 	Draining      bool            `json:"draining"`
 	DrainingSince string          `json:"draining_since,omitempty"`
+	DrainingBatch string          `json:"draining_batch"`
 	Stopping      bool            `json:"stopping"`
 	ReleasingEpic string          `json:"releasing_epic,omitempty"`
+	Batches       []BatchView     `json:"batches"`
 	Items         []QueueItemView `json:"items"`
 }
 
@@ -220,6 +226,22 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
 	s.drain.reconcileQueue(root)
 	s.drain.ensure(s.drainCtx, root)
 	return nil
+}
+
+// handleQueueItemAction dispatches the actions one queue row carries. They share
+// a wildcard segment because literal .../queue/{id}/move and .../queue/{id}/run
+// patterns conflict with .../queue/batches/{bid} in net/http's mux — both match
+// .../queue/batches/move and neither is more specific — so the action is matched
+// here instead.
+func (s *Server) handleQueueItemAction(w http.ResponseWriter, r *http.Request) {
+	switch r.PathValue("action") {
+	case "move":
+		s.handleQueueMove(w, r)
+	case "run":
+		s.handleQueueRun(w, r)
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown queue action"})
+	}
 }
 
 // handleQueueMove reorders a queued item: one slot up or down with dir, or to
@@ -446,6 +468,10 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 	if err != nil {
 		return QueueResponse{}, fmt.Errorf("read blockers: %w", err)
 	}
+	batches, err := s.stores.Queue(root).Batches()
+	if err != nil {
+		return QueueResponse{}, fmt.Errorf("read batches: %w", err)
+	}
 	drainingSince := ""
 	if !meta.DrainingSince.IsZero() {
 		drainingSince = meta.DrainingSince.UTC().Format(time.RFC3339)
@@ -454,8 +480,10 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		Repo:          filepath.Base(root),
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
+		DrainingBatch: meta.Batch,
 		Stopping:      s.isStopping(root),
 		ReleasingEpic: s.releasingEpic(root),
+		Batches:       batchViews(batches),
 		Items:         queueItemViews(items, pins, blockers, s.removingItems(root)),
 	}, nil
 }
@@ -812,6 +840,7 @@ func queueItemViews(items []queue.Item, pins map[string]string, blockers map[str
 			Blockers:    blockers[it.ID],
 			Blocked:     len(blockers[it.ID]) > 0,
 			Removing:    removing[it.ID],
+			Batch:       it.Batch,
 			SubIssues:   it.SubIssues,
 		}
 		if !it.QueuedAt.IsZero() {

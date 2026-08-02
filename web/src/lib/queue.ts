@@ -35,8 +35,18 @@ export interface QueueItem {
   // removing is set while a stop-then-remove is in flight, so a running row on
   // its way out of the queue reads as leaving rather than as work under way.
   removing?: boolean
+  // batch names the batch holding the item, absent when none does.
+  batch?: string
   sub_issues?: QueueSubIssue[]
   queued_at?: string
+}
+
+// QueueBatch is a named subset of the queue. The name may be empty, and the
+// surfaces then label the batch by when it was filed.
+export interface QueueBatch {
+  id: string
+  name: string
+  created_at: string
 }
 
 export interface QueueResponse {
@@ -44,12 +54,16 @@ export interface QueueResponse {
   draining: boolean
   // When the current drain was armed. Absent unless the queue is draining.
   draining_since?: string
+  // draining_batch names the batch the drain in flight is scoped to, empty while
+  // it is draining the whole queue.
+  draining_batch?: string
   // stopping is set while a Stop is ending the child that was running, so the
   // row still reads running but the run is already on its way out.
   stopping: boolean
   // releasing_epic names the epic whose release holds the queue: while it is set
   // the hub starts no new run in the repo. Absent when nothing gates it.
   releasing_epic?: string
+  batches?: QueueBatch[]
   items: QueueItem[]
 }
 
@@ -266,6 +280,90 @@ export async function stopQueue(repo: string): Promise<QueueResponse> {
   return res.json()
 }
 
+function batchesURL(repo: string): string {
+  return `/api/v1/repos/${encodeURIComponent(repo)}/queue/batches`
+}
+
+// createBatch files queued items under one batch, named or not. The hub refuses
+// an id that has already settled or that another batch holds.
+export async function createBatch(
+  repo: string,
+  ids: string[],
+  name?: string,
+): Promise<QueueResponse> {
+  const res = await apiFetch(batchesURL(repo), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, ids }),
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'create batch failed'))
+  }
+  return res.json()
+}
+
+// BatchEdit is what a batch can be changed to: a rename — sent empty it clears
+// the name back to the stamp the display falls back to — and the membership to
+// take in or let go.
+export interface BatchEdit {
+  name?: string
+  add?: string[]
+  remove?: string[]
+}
+
+export async function updateBatch(
+  repo: string,
+  id: string,
+  edit: BatchEdit,
+): Promise<QueueResponse> {
+  const res = await apiFetch(`${batchesURL(repo)}/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(edit),
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'edit batch failed'))
+  }
+  return res.json()
+}
+
+// dismissBatch dissolves the grouping alone: every member keeps its place in the
+// queue and its status.
+export async function dismissBatch(
+  repo: string,
+  id: string,
+): Promise<QueueResponse> {
+  const res = await apiFetch(`${batchesURL(repo)}/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'dismiss batch failed'))
+  }
+  return res.json()
+}
+
+// startBatch arms the drain scoped to one batch: it runs the batch's members in
+// queue order and disarms once none of them is runnable, however much of the
+// queue is still pending behind them.
+export async function startBatch(
+  repo: string,
+  id: string,
+  opts: DrainOptions = {},
+): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `${batchesURL(repo)}/${encodeURIComponent(id)}/start`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts),
+    },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'start batch failed'))
+  }
+  return res.json()
+}
+
 // runNext is the one web launch gesture: make the item the queue's next run,
 // then arm the drain. A fresh id front-inserts and a pending one moves to the
 // front; on the conflict an already-queued id answers instead, a paused item is
@@ -424,4 +522,71 @@ export interface QueueCounts {
 export function queueCounts(items: QueueItem[]): QueueCounts {
   const epics = items.filter((it) => it.kind === 'epic').length
   return { total: items.length, tickets: items.length - epics, epics }
+}
+
+const BATCH_STAMP: Intl.DateTimeFormatOptions = {
+  month: 'short',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  hour12: false,
+}
+
+// batchDisplayName is how a batch reads on every surface: the name it was filed
+// under, or when it was filed for one left unnamed.
+export function batchDisplayName(batch: QueueBatch): string {
+  return (
+    batch.name || new Date(batch.created_at).toLocaleString('en-US', BATCH_STAMP)
+  )
+}
+
+// batchName labels a batch a surface holds only the id of — a member row's chip,
+// or the scope of the drain in flight. Empty when the repo lists no such batch.
+export function batchName(batches: QueueBatch[] | undefined, id: string): string {
+  const batch = (batches ?? []).find((b) => b.id === id)
+  return batch ? batchDisplayName(batch) : ''
+}
+
+// batchSelectable reports whether a queued row can join a new batch: the drain
+// still has it to launch and no other batch holds it.
+export function batchSelectable(item: QueueItem): boolean {
+  return queueStatusRunnable(item.status) && !item.batch
+}
+
+export interface BatchSummary {
+  members: number
+  runnable: number
+  // tally is how the members that are past pending stand, in queue order. A
+  // pending one has no outcome yet and the member count already speaks for it.
+  tally: { status: string; count: number }[]
+}
+
+// batchSummary is what a batch card says about itself: how much work it holds,
+// how much of it a Start would still launch, and what became of the rest.
+export function batchSummary(items: QueueItem[], id: string): BatchSummary {
+  const members = items.filter((it) => it.batch === id)
+  const counts = new Map<string, number>()
+  for (const it of members) {
+    if (it.status === 'pending') continue
+    counts.set(it.status, (counts.get(it.status) ?? 0) + 1)
+  }
+  return {
+    members: members.length,
+    runnable: members.filter((it) => queueStatusRunnable(it.status)).length,
+    tally: [...counts].map(([status, count]) => ({ status, count })),
+  }
+}
+
+// batchStartBlocker says why Start batch is unavailable, mirroring the refusals
+// the hub would answer with so the disabled control reads the same as the API.
+export function batchStartBlocker(queue: QueueResponse, id: string): string {
+  if (queue.draining) {
+    return 'the queue is draining — stop it before starting a batch'
+  }
+  const running = queue.items.find((it) => it.status === 'running')
+  if (running) return `${running.id} is already running`
+  if (batchSummary(queue.items, id).runnable === 0) {
+    return 'nothing left to run in this batch'
+  }
+  return ''
 }

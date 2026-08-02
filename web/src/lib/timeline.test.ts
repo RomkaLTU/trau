@@ -696,6 +696,37 @@ describe('buildTimeline', () => {
     const tl = releasingEpic({ phase: 'merged', phase_rank: 7, terminal: true })
     expect(tl.finalize).toBeUndefined()
   })
+
+  it('covers the batch alone while the drain is scoped to one', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'COD-1', status: 'done', batch: 'api-polish' }),
+        item({ id: 'COD-2', status: 'running', batch: 'api-polish' }),
+        item({ id: 'COD-3', status: 'pending', batch: 'api-polish' }),
+        item({ id: 'COD-4', status: 'pending' }),
+      ],
+      [run({ ticket: 'COD-1', terminal: true, phase: 'merged' })],
+      undefined,
+      undefined,
+      'api-polish',
+    )
+
+    expect(tl.total).toBe(3)
+    expect(tl.done).toBe(1)
+    expect(tl.running?.id).toBe('COD-2')
+    expect(tl.pending.map((e) => (e.kind === 'ticket' ? e.ticket.id : e.id))).toEqual([
+      'COD-3',
+    ])
+  })
+
+  it('covers the whole queue without a batch scope', () => {
+    const items = [
+      item({ id: 'COD-1', status: 'pending', batch: 'api-polish' }),
+      item({ id: 'COD-2', status: 'pending' }),
+    ]
+
+    expect(buildTimeline(items, []).total).toBe(2)
+  })
 })
 
 describe('finishedView', () => {

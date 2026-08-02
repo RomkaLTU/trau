@@ -153,7 +153,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		}
 		return drainStop, nil
 	}
-	next, ok, err := d.firstUnblocked(root, items)
+	next, ok, err := d.firstUnblocked(root, items, meta.Batch)
 	if err != nil {
 		return drainWait, err
 	}
@@ -163,6 +163,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 			return drainWait, err
 		}
 		if finished {
+			d.srv.emitQueueBatchFinished(root, meta.Batch, items)
 			return drainStop, nil
 		}
 		return drainWait, nil
@@ -615,14 +616,16 @@ func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {
 // of any pending one behind it — the drain stopped when it paused — so a resume
 // re-attempts it before moving on. An item an open blocker still holds back is
 // passed over rather than started, so the blocker runs first even when the queue
-// holds it further down. Reporting none leaves the caller to FinishDraining, which
-// refuses to disarm a queue whose runnable items are merely blocked.
-func (d *drainer) firstUnblocked(root string, items []queue.Item) (queue.Item, bool, error) {
+// holds it further down. A batch scope narrows the choice to that batch's members;
+// everything queued outside it is passed over however runnable it is. Reporting
+// none leaves the caller to FinishDraining, which refuses to disarm a scope whose
+// runnable items are merely blocked.
+func (d *drainer) firstUnblocked(root string, items []queue.Item, batch string) (queue.Item, bool, error) {
 	runnable := make([]string, 0, len(items))
 	shipped := map[string]bool{}
 	for _, it := range items {
 		switch {
-		case queue.Runnable(it.Status):
+		case queue.Runnable(it.Status) && inBatch(it, batch):
 			runnable = append(runnable, it.ID)
 		case it.Status == queue.StatusDone:
 			shipped[it.ID] = true
@@ -636,11 +639,17 @@ func (d *drainer) firstUnblocked(root string, items []queue.Item) (queue.Item, b
 		return queue.Item{}, false, err
 	}
 	for _, it := range items {
-		if queue.Runnable(it.Status) && !heldBack(blockers[it.ID], shipped) {
+		if queue.Runnable(it.Status) && inBatch(it, batch) && !heldBack(blockers[it.ID], shipped) {
 			return it, true, nil
 		}
 	}
 	return queue.Item{}, false, nil
+}
+
+// inBatch reports whether the armed scope covers an item: everything queued when
+// the drain runs the whole queue, the batch's members otherwise.
+func inBatch(it queue.Item, batch string) bool {
+	return batch == "" || it.Batch == batch
 }
 
 // heldBack reports whether any blocker still holds an item back. A blocker this
