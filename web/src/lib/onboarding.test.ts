@@ -180,6 +180,7 @@ describe('essentialsProjectKeys', () => {
     expect(
       essentialsProjectKeys({
         baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
+        forges: [],
         readyLabel: ' ship-it ',
         epicFlow: true,
       }),
@@ -190,6 +191,7 @@ describe('essentialsProjectKeys', () => {
     expect(
       essentialsProjectKeys({
         baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
+        forges: [],
         readyLabel: '  ',
         epicFlow: false,
       }),
@@ -202,6 +204,7 @@ describe('essentialsConfigWrites', () => {
     const writes = essentialsConfigWrites(
       {
         baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
+        forges: [{ root: '/src/acme', forge: '' }],
         readyLabel: 'ready-for-agent',
         epicFlow: true,
       },
@@ -221,6 +224,7 @@ describe('essentialsConfigWrites', () => {
           { repo: 'api', root: '/src/api', branch: 'main' },
           { repo: 'web', root: '/src/web', branch: ' master ' },
         ],
+        forges: [],
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -239,6 +243,7 @@ describe('essentialsConfigWrites', () => {
           { repo: 'svc', root: '/src/dupA/svc', branch: 'main' },
           { repo: 'svc', root: '/src/dupB/svc', branch: 'develop' },
         ],
+        forges: [],
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -257,6 +262,7 @@ describe('essentialsConfigWrites', () => {
           { repo: 'api', root: '/src/api', branch: '  ' },
           { repo: 'web', root: '/src/web', branch: 'master' },
         ],
+        forges: [],
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -266,6 +272,51 @@ describe('essentialsConfigWrites', () => {
       { root: '/src/web', key: 'BASE_BRANCH', value: 'master', layer: 'project' },
     ])
     expect(writes.find((w) => w.key === 'EPIC_FLOW')?.value).toBe('0')
+  })
+
+  it('writes each member its own forge alongside its base branch', () => {
+    const writes = essentialsConfigWrites(
+      {
+        baseBranches: [
+          { repo: 'api', root: '/src/api', branch: 'main' },
+          { repo: 'web', root: '/src/web', branch: 'master' },
+        ],
+        forges: [
+          { root: '/src/api', forge: 'github' },
+          { root: '/src/web', forge: 'azure' },
+        ],
+        readyLabel: 'ready-for-agent',
+        epicFlow: false,
+      },
+      'platform',
+    )
+    expect(writes).toEqual([
+      { root: '/src/api', key: 'BASE_BRANCH', value: 'main', layer: 'project' },
+      { root: '/src/web', key: 'BASE_BRANCH', value: 'master', layer: 'project' },
+      { root: '/src/api', key: 'FORGE', value: 'github', layer: 'project' },
+      { root: '/src/web', key: 'FORGE', value: 'azure', layer: 'project' },
+    ])
+  })
+
+  it('skips the members whose forge was left to the remote', () => {
+    const writes = essentialsConfigWrites(
+      {
+        baseBranches: [
+          { repo: 'api', root: '/src/api', branch: 'main' },
+          { repo: 'web', root: '/src/web', branch: 'master' },
+        ],
+        forges: [
+          { root: '/src/api', forge: '' },
+          { root: '/src/web', forge: 'gitlab' },
+        ],
+        readyLabel: 'ready-for-agent',
+        epicFlow: false,
+      },
+      'platform',
+    )
+    expect(writes.filter((w) => w.key === 'FORGE')).toEqual([
+      { root: '/src/web', key: 'FORGE', value: 'gitlab', layer: 'project' },
+    ])
   })
 })
 
