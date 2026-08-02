@@ -81,7 +81,7 @@ func autoAcceptedTurn(questions int, settle func(*Server, hubstore.GrillSession)
 			appendPregrillMessage(s, sess.ID, hubstore.NewGrillMessage{
 				Role:    hubstore.GrillRoleUser,
 				Kind:    hubstore.GrillKindAnswer,
-				Payload: grillAnswerPayload("yes", true),
+				Payload: grillAnswerPayload("yes", true, false),
 			})
 		}
 		settle(s, sess)

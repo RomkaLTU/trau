@@ -18,6 +18,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -37,18 +38,20 @@ const grillStdoutBuffer = 64 << 10
 const (
 	grillCrashReason     = "the grilling agent stopped unexpectedly before proposing an outcome; resume to continue"
 	grillNoOutcomeReason = "the grilling agent ended its turn without asking a question or proposing an outcome; resume to continue"
+	grillStoppedReason   = "you stopped the agent — your next message steers the conversation"
 	grillResumeNudge     = "Please continue."
 )
 
 // grillRunner is the process side of a grilling session. One turn per session at a
-// time: inflight guards a create and a resume from racing into two children.
+// time: inflight guards a create and a resume from racing into two children, and
+// holds each turn's cancel so a stop can kill the child it spawned.
 type grillRunner struct {
 	srv     *Server
 	baseCtx context.Context
 	baseURL string
 
 	mu       sync.Mutex
-	inflight map[int64]bool
+	inflight map[int64]context.CancelFunc
 }
 
 // EnableGrilling wires the turn runner into the create/resume seams. baseCtx is the
@@ -61,17 +64,50 @@ func (s *Server) EnableGrilling(baseCtx context.Context, baseURL string) {
 		srv:      s,
 		baseCtx:  baseCtx,
 		baseURL:  strings.TrimRight(baseURL, "/"),
-		inflight: map[int64]bool{},
+		inflight: map[int64]context.CancelFunc{},
 	}
 	s.startGrill = r.launch
 	s.runGrillTurn = r.runPregrill
 	s.grillTurnActive = r.active
+	s.stopGrillTurn = r.stop
 }
 
 func (r *grillRunner) active(sid int64) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.inflight[sid]
+	_, ok := r.inflight[sid]
+	return ok
+}
+
+// stop ends the session's in-flight turn by cancelling its context, which kills the
+// child and everything it spawned.
+func (r *grillRunner) stop(sid int64) {
+	r.mu.Lock()
+	cancel := r.inflight[sid]
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// begin claims the session's one turn slot and hands back the turn's context, or
+// reports that a turn is already in flight for it.
+func (r *grillRunner) begin(sid int64) (context.Context, context.CancelFunc, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.inflight[sid]; ok {
+		return nil, nil, false
+	}
+	ctx, cancel := context.WithTimeout(r.baseCtx, grillTurnTimeout)
+	r.inflight[sid] = cancel
+	return ctx, cancel, true
+}
+
+func (r *grillRunner) end(sid int64, cancel context.CancelFunc) {
+	r.mu.Lock()
+	delete(r.inflight, sid)
+	r.mu.Unlock()
+	cancel()
 }
 
 // runPregrill runs one pre-grill turn synchronously — the pass waits on it to read
@@ -79,20 +115,11 @@ func (r *grillRunner) active(sid int64) bool {
 // inflight guard and hub-lifetime timeout; the caller's context is ignored so a
 // disconnected pass request never kills a turn mid-flight.
 func (r *grillRunner) runPregrill(_ context.Context, sess hubstore.GrillSession) {
-	r.mu.Lock()
-	if r.inflight[sess.ID] {
-		r.mu.Unlock()
+	ctx, cancel, ok := r.begin(sess.ID)
+	if !ok {
 		return
 	}
-	r.inflight[sess.ID] = true
-	r.mu.Unlock()
-	defer func() {
-		r.mu.Lock()
-		delete(r.inflight, sess.ID)
-		r.mu.Unlock()
-	}()
-	ctx, cancel := context.WithTimeout(r.baseCtx, grillTurnTimeout)
-	defer cancel()
+	defer r.end(sess.ID, cancel)
 	r.runTurn(ctx, sess)
 }
 
@@ -101,22 +128,12 @@ func (r *grillRunner) runPregrill(_ context.Context, sess hubstore.GrillSession)
 // a turn outlives the HTTP call that started it and is bounded by the hub context
 // instead.
 func (r *grillRunner) launch(_ context.Context, sess hubstore.GrillSession) {
-	r.mu.Lock()
-	if r.inflight[sess.ID] {
-		r.mu.Unlock()
+	ctx, cancel, ok := r.begin(sess.ID)
+	if !ok {
 		return
 	}
-	r.inflight[sess.ID] = true
-	r.mu.Unlock()
-
 	go func() {
-		defer func() {
-			r.mu.Lock()
-			delete(r.inflight, sess.ID)
-			r.mu.Unlock()
-		}()
-		ctx, cancel := context.WithTimeout(r.baseCtx, grillTurnTimeout)
-		defer cancel()
+		defer r.end(sess.ID, cancel)
 		r.runTurn(ctx, sess)
 	}()
 }
@@ -268,11 +285,21 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 // they pasted mid-interview materialized locally and referenced by path, so a
 // screenshot dropped into an answer is something the child can open on this turn.
 func (r *grillRunner) answerPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
-	text := r.latestAnswer(sess.ID)
+	text, steer := r.latestAnswer(sess.ID)
 	if text == "" {
 		return grillResumeNudge
 	}
-	return r.srv.withPastedFiles(ctx, repo, sess, text)
+	text = r.srv.withPastedFiles(ctx, repo, sess, text)
+	if steer {
+		return grillSteerPrompt(text)
+	}
+	return text
+}
+
+func grillSteerPrompt(text string) string {
+	return "The user stopped your previous turn mid-flight to redirect the interview. " +
+		"Their steering message: " + text +
+		"\n\nFollow this direction; do not resume your interrupted line of questioning unless it still applies."
 }
 
 // grillAttachTicket names the directory a session's files materialize into: the
@@ -301,19 +328,19 @@ func (r *grillRunner) openingNote(sid int64) string {
 	return ""
 }
 
-// latestAnswer returns the text of the session's most recent user answer, the
-// prompt for a resume turn.
-func (r *grillRunner) latestAnswer(sid int64) string {
+// latestAnswer returns the text of the session's most recent user answer, the prompt
+// for a resume turn, and whether it was sent to steer a stopped turn.
+func (r *grillRunner) latestAnswer(sid int64) (string, bool) {
 	msgs, err := r.srv.stores.Grill().Messages(sid, 0)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == hubstore.GrillRoleUser && msgs[i].Kind == hubstore.GrillKindAnswer {
-			return grillMessageText(msgs[i].Payload)
+			return grillMessageText(msgs[i].Payload), grillMessageSteer(msgs[i].Payload)
 		}
 	}
-	return ""
+	return "", false
 }
 
 // grillOutput is a finished child's captured output.
@@ -324,11 +351,14 @@ type grillOutput struct {
 
 // spawnGrill runs one turn to completion, handing every stdout line to onLine as it
 // lands rather than buffering the stream whole, so a turn's text can leave the hub
-// while the child is still producing it.
+// while the child is still producing it. The child leads its own process group and a
+// cancelled turn ends that group, so a provider CLI's own children die with it.
 func (r *grillRunner) spawnGrill(ctx context.Context, spec grillTurnSpec, onLine func([]byte)) (grillOutput, error) {
 	cmd := exec.CommandContext(ctx, spec.bin, spec.args...)
 	cmd.Dir = spec.dir
 	cmd.Env = spec.env
+	cmd.SysProcAttr = proc.Detached()
+	cmd.Cancel = func() error { return proc.KillGroup(cmd.Process.Pid) }
 	stderr := newTailWriter(spawnStderrTailBytes)
 	cmd.Stderr = stderr
 	pipe, err := cmd.StdoutPipe()
@@ -388,10 +418,12 @@ func (r *grillRunner) reconcile(sid int64, adapter grillAdapter, out grillOutput
 	}
 	reason := grillStallReason(adapter, out.stdout, out.stderr)
 	switch sess.State {
-	case hubstore.GrillWaiting, hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
+	case hubstore.GrillWaiting, hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned, hubstore.GrillStalled:
 		return
-	case hubstore.GrillParked, hubstore.GrillStalled:
-		if reason != "" && sess.State == hubstore.GrillParked {
+	case hubstore.GrillParked:
+		// A stopped session is already settled by the user's own hand: what its
+		// killed child left on stdout describes the kill, not a wall the session hit.
+		if reason != "" && !grillStopped(sess) {
 			r.settle(sid, hubstore.GrillStalled, reason)
 		}
 	default:

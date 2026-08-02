@@ -589,7 +589,7 @@ func newGrillRunnerTest(t *testing.T, script string) (*grillRunner, *hubstore.Gr
 	}
 
 	srv := New("test", "127.0.0.1", "", nil, false, stores)
-	r := &grillRunner{srv: srv, baseCtx: context.Background(), baseURL: "http://127.0.0.1:1", inflight: map[int64]bool{}}
+	r := &grillRunner{srv: srv, baseCtx: context.Background(), baseURL: "http://127.0.0.1:1", inflight: map[int64]context.CancelFunc{}}
 	return r, stores.Grill(), repo, stubDir
 }
 

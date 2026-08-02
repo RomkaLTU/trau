@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { AlertTriangle, Play, RotateCw } from "lucide-react";
+import { AlertTriangle, Play, RotateCw, Square } from "lucide-react";
 
 import { ActivityFeed } from "@/components/grill/activity";
 import { AnswerBody } from "@/components/grill/answer-body";
@@ -47,9 +47,12 @@ export function GrillThread({
   streaming,
   activity,
   stalled,
+  stopping,
+  stopError,
   onRetry,
   onDiscard,
   onResume,
+  onStop,
 }: {
   session: GrillSession;
   messages: GrillMessage[];
@@ -58,9 +61,12 @@ export function GrillThread({
   streaming: StreamingReply;
   activity: GrillActivity[];
   stalled: GrillBanner | null;
+  stopping?: boolean;
+  stopError?: string;
   onRetry: (id: string) => void;
   onDiscard: (id: string) => void;
   onResume?: () => void;
+  onStop?: () => void;
 }) {
   return (
     <MessageScrollerProvider autoScroll>
@@ -86,7 +92,12 @@ export function GrillThread({
                 Viewport asks for is only parked while the thread is still empty. */}
             {hydrated && session.state === "running" && (
               <MessageScrollerItem messageId="thinking">
-                <ThinkingRow text={streaming.holed ? "" : streaming.text} />
+                <ThinkingRow
+                  text={streaming.holed ? "" : streaming.text}
+                  stopping={stopping}
+                  stopError={stopError}
+                  onStop={onStop}
+                />
               </MessageScrollerItem>
             )}
             {hydrated && session.state === "running" && activity.length > 0 && (
@@ -272,14 +283,43 @@ function PendingRow({
 // in the shell it already occupies rather than jolting the thread. text is the reply
 // so far and grows in place under the same shimmer, reading as provisional until the
 // stored message settles it; a turn that streams nothing keeps the bare word.
-function ThinkingRow({ text }: { text: string }) {
+function ThinkingRow({
+  text,
+  stopping,
+  stopError,
+  onStop,
+}: {
+  text: string;
+  stopping?: boolean;
+  stopError?: string;
+  onStop?: () => void;
+}) {
   return (
-    <AgentBubble>
-      <span className="shimmer">{text === "" ? "Thinking" : text}</span>{" "}
-      <span className="cursor-block text-teal" aria-hidden="true">
-        ▌
-      </span>
-    </AgentBubble>
+    <div className="flex flex-col items-start gap-2">
+      <AgentBubble>
+        <span className="shimmer">{text === "" ? "Thinking" : text}</span>{" "}
+        <span className="cursor-block text-teal" aria-hidden="true">
+          ▌
+        </span>
+      </AgentBubble>
+      {onStop && (
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onStop}
+            disabled={stopping}
+            title="End this turn and take the conversation back"
+          >
+            <Square />
+            Stop
+          </Button>
+          {stopError && (
+            <span className="text-[11px] text-fail">{stopError}</span>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
