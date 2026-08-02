@@ -53,6 +53,26 @@ func TestHubUnsuperviseWithoutAnAgentIsANoOp(t *testing.T) {
 	}
 }
 
+// TestHubPreflightOpensTheDatabases covers what a hub asks a candidate build
+// before restarting onto it: this binary's migrations apply and both databases
+// open, so it would reach the point of serving rather than dying at startup.
+func TestHubPreflightOpensTheDatabases(t *testing.T) {
+	home := filepath.Join(t.TempDir(), ".trau")
+	t.Setenv("TRAU_HOME", home)
+
+	var out strings.Builder
+	if err := runHubPreflight(nil, &out); err != nil {
+		t.Fatalf("runHubPreflight: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "can serve") {
+		t.Errorf("output = %q, want it to report the binary can serve", out.String())
+	}
+	if _, err := os.Stat(hubdb.Path(home)); err != nil {
+		t.Errorf("hub database: %v", err)
+	}
+}
+
 // TestHubSuperviseGuardsReleasingTheAgent covers the re-run that adopts a moved
 // binary: releasing the agent boots the hub under it out, so the same refusals a
 // forced restart answers to have to be reached before the plist is touched.

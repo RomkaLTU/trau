@@ -91,6 +91,7 @@ Usage:
   trau hub restart --force   stop a hub whose API has wedged, then start a fresh one (refuses while any run is live)
   trau hub supervise         hand the hub to launchd with KeepAlive (macOS), so a crashed or killed one comes back on its own
   trau hub unsupervise       remove that LaunchAgent and stop the hub with it
+  trau hub preflight         prove this binary could serve: open and migrate the hub databases, then exit
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
   trau --list-eligible [--json]  list the repo's eligible ready tickets (ID, title, labels)

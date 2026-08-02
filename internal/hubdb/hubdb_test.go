@@ -462,6 +462,26 @@ func TestMigrateBackfillsLegacyVersionCounter(t *testing.T) {
 	}
 }
 
+// TestEmbeddedMigrationsAreUniquelyNumbered puts the real schema directory
+// through the collision check migrateAll owns. Two branches numbering their
+// migration the same is a merge conflict git cannot see, and it stops every
+// binary built from the merge from opening the hub database at all.
+func TestEmbeddedMigrationsAreUniquelyNumbered(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	if _, err := migrateAll(db, migs); err != nil {
+		t.Fatalf("migrate the embedded schema: %v", err)
+	}
+}
+
 func TestMigrateRejectsCollidingMigrations(t *testing.T) {
 	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

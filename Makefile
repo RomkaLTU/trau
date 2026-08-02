@@ -91,9 +91,14 @@ race-guard:
 net-guard:
 	go run ./internal/netguard/check
 
+# TESTFLAGS reaches `go test` for the runs the default does not fit: a repeat
+# (-count=2) or a slow machine needs a -timeout past Go's 10-minute per-package
+# default, which internal/webserver is already close to under -race.
+TESTFLAGS ?=
+
 ## test: run the suite under the race detector
 test: race-guard net-guard
-	CGO_ENABLED=$(CGO_FOR_TEST) go test -race ./...
+	CGO_ENABLED=$(CGO_FOR_TEST) go test -race $(TESTFLAGS) ./...
 
 ## lint: golangci-lint (install separately)
 lint:

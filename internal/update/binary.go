@@ -2,6 +2,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -68,6 +69,48 @@ func ProbeVersion(ctx context.Context, path string) (string, error) {
 		return "", fmt.Errorf("%s --version: reported no version", path)
 	}
 	return version, nil
+}
+
+// preflightTailLines is how much of a failed preflight's output the error keeps
+// — enough for the reason the binary cannot serve, not its whole startup log.
+const preflightTailLines = 10
+
+// unknownPreflight is how cmd/trau turned `hub preflight` away in every release
+// before the subcommand existed, and so the only answer those builds can give it.
+const unknownPreflight = "unknown subcommand: preflight"
+
+// ErrPreflightUnsupported reports a binary too old to have a preflight to run.
+// Every trau shipped before the subcommand existed answers it as unknown, and
+// they are the installs the release direction restarts onto — refusing them
+// would close the way off a dev build (ADR 0024 §2).
+var ErrPreflightUnsupported = errors.New("this build predates hub preflight")
+
+// ProbePreflight runs the hub's startup preflight on the trau binary at path.
+// --version returns before any of the work that opens the hub databases, so it
+// proves only that the binary parses arguments; a build whose migrations collide
+// or whose schema will not apply passes it and then dies at startup.
+func ProbePreflight(ctx context.Context, path string) error {
+	out, err := exec.CommandContext(ctx, path, "hub", "preflight").CombinedOutput()
+	return preflightResult(path, out, err)
+}
+
+// preflightResult reads the candidate's answer, keeping the tail of its output on
+// a failure: why the candidate cannot serve is the whole point of asking. A
+// binary with no preflight to run is recognised by its own words and not by the
+// usage exit code that comes with them — Go's runtime exits 2 on an unrecovered
+// panic too, so the code alone would read a build that crashes at startup as one
+// that merely predates the subcommand.
+func preflightResult(path string, out []byte, err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(string(out), unknownPreflight) {
+		return fmt.Errorf("%s hub preflight: %w", path, ErrPreflightUnsupported)
+	}
+	if reason := tail(string(out), preflightTailLines); reason != "" {
+		return fmt.Errorf("%s hub preflight: %w\n%s", path, err, reason)
+	}
+	return fmt.Errorf("%s hub preflight: %w", path, err)
 }
 
 // parseVersionOutput reads the version out of `trau --version`, whose only line
