@@ -462,6 +462,42 @@ func (q *Queue) Pause(id, reason string) error {
 	return queue.ErrNotQueued
 }
 
+// Requeue restores a ticket's queue footprint after a requeue made it eligible
+// again in the tracker: its own settled-failed row goes back to pending with the
+// stale reason dropped, and any epic row carrying it as a quarantined sub-issue
+// has that sub-issue reset to todo — so neither surface keeps reporting a
+// quarantine the requeue just undid. Every other row is left alone, and a queue
+// that holds the ticket nowhere writes nothing.
+func (q *Queue) Requeue(id string) error {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return err
+	}
+	changed := false
+	for i := range st.items {
+		it := &st.items[i]
+		if it.ID == id && it.Status == queue.StatusFailed {
+			it.Status = queue.StatusPending
+			it.Reason = ""
+			it.PID = 0
+			changed = true
+		}
+		for j := range it.SubIssues {
+			sub := &it.SubIssues[j]
+			if sub.ID == id && sub.State == queue.SubIssueQuarantined {
+				sub.State = queue.SubIssueTodo
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return q.persist(st)
+}
+
 // SetSubIssueStates advances the recorded states of an item's sub-issues,
 // leaving every id states does not name alone and writing nothing when none of
 // them moves. It is how the drain reports a child that settled while the item

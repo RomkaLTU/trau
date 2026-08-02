@@ -74,6 +74,15 @@ type SubIssue struct {
 	State string `json:"state"`
 }
 
+// The sub-issue states the queue itself moves between: a child enqueued as
+// buildable work is Todo, and one the drain parked for a human instead of
+// shipping is Quarantined. The remaining states a sub-issue can carry (done,
+// epic, backlog, …) are stamped from tracker previews and only read here.
+const (
+	SubIssueTodo        = "todo"
+	SubIssueQuarantined = "quarantined"
+)
+
 // Item is one queued unit of work — a run-once ticket or an epic. Its position
 // is implicit in the queue's order. PID is the child the hub spawned to run it,
 // set while Running so a resumed hub can tell whether that child is still alive.
