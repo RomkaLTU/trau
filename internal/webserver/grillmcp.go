@@ -310,7 +310,7 @@ func (s *Server) grillAutoAnswer(w http.ResponseWriter, sid int64, rpcID json.Ra
 	answer, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleUser,
 		Kind:    hubstore.GrillKindAnswer,
-		Payload: grillAnswerPayload(recommended, true),
+		Payload: grillAnswerPayload(recommended, true, false),
 	})
 	if err != nil {
 		respondRPCError(w, rpcID, rpcInternalError, "store auto-accepted answer: "+err.Error())

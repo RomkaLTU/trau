@@ -24,6 +24,7 @@ import {
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  stopGrill,
   type GrillActivity,
   type GrillAppliedOutcome,
   type GrillDelta,
@@ -149,6 +150,16 @@ export function GrillConversation({
       dispatch({ type: "send-failed", id, text }),
   });
 
+  // The hub publishes the park it made on the session's own state frames, so the
+  // reply is left undispatched: it is a snapshot of the moment the stop landed, and
+  // replaying it would roll the thread back over whatever frame arrived since.
+  const stop = useMutation({ mutationFn: () => stopGrill(session.id) });
+
+  // A refused stop belongs to the turn it was aimed at; the next turn starts clean.
+  useEffect(() => {
+    if (session.state !== "running") stop.reset();
+  }, [session.state]);
+
   useEffect(() => {
     onStatus?.({ stream: status, session, messages });
   }, [status, session, messages]);
@@ -196,9 +207,12 @@ export function GrillConversation({
           activity && activityShown ? state.activity.items : NO_ACTIVITY.items
         }
         stalled={stalled}
+        stopping={stop.isPending}
+        stopError={stop.error?.message}
         onRetry={retry}
         onDiscard={(id) => dispatch({ type: "send-discard", id })}
         onResume={resume === "" ? undefined : () => send(resume)}
+        onStop={() => stop.mutate()}
       />
 
       <div className="flex flex-col gap-3 border-t p-4">

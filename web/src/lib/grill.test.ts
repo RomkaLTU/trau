@@ -38,6 +38,7 @@ import {
   setGrillAutoAccept,
   sortAwaiting,
   startGrillSession,
+  stopGrill,
   upsertMessage,
   type DiffLine,
   type GrillActivity,
@@ -1176,6 +1177,43 @@ describe('setGrillAutoAccept', () => {
     expect(url).toBe('/api/v1/grill/7/auto-accept')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ enabled: true })
+  })
+})
+
+describe('stopGrill', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('parks the running session and hands back the stopped view', async () => {
+    const parked = session({
+      id: '4',
+      state: 'parked',
+      parked_reason: 'you stopped the agent — your next message steers the conversation',
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => parked } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await stopGrill('4')).toEqual(parked)
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/grill/4/stop')
+    expect(init.method).toBe('POST')
+  })
+
+  it('raises the hub refusal when the session has no turn to stop', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: async () => ({ error: 'no turn is running' }),
+      } as Response),
+    )
+
+    await expect(stopGrill('4')).rejects.toThrow('no turn is running')
   })
 })
 

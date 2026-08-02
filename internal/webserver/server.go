@@ -47,8 +47,11 @@ type Server struct {
 	startGrill       func(ctx context.Context, sess hubstore.GrillSession)
 	runGrillTurn     func(ctx context.Context, sess hubstore.GrillSession)
 	grillTurnActive  func(sid int64) bool
+	stopGrillTurn    func(sid int64)
 	pregrillMu       sync.Mutex
 	pregrill         map[int64]bool
+	grillStopMu      sync.Mutex
+	grillStopping    map[int64]bool
 	stopMu           sync.Mutex
 	stopping         map[string]bool
 	removeMu         sync.Mutex
@@ -118,6 +121,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		transcriptEvents: newTranscriptBroadcaster(),
 		grillEvents:      newGrillBroadcaster(),
 		pregrill:         map[int64]bool{},
+		grillStopping:    map[int64]bool{},
 		stopping:         map[string]bool{},
 		removing:         map[queueItemKey]bool{},
 		overlapWarned:    map[overlapKey]bool{},
@@ -405,6 +409,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/answer", s.handleGrillAnswer)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/apply", s.handleGrillApply)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/abandon", s.handleGrillAbandon)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}/stop", s.handleGrillStop)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/model", s.handleGrillModel)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/auto-accept", s.handleGrillAutoAccept)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/stream", s.handleGrillStream)

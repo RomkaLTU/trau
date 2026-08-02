@@ -673,6 +673,17 @@ export async function setGrillAutoAccept(sid: string, enabled: boolean): Promise
   return res.json()
 }
 
+// stopGrill kills the session's in-flight turn and parks it: the next message the
+// user sends steers the conversation instead of answering a question. The hub echoes
+// the park over the session's state frames, so callers need no optimistic update.
+export async function stopGrill(sid: string): Promise<GrillSession> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/stop`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'stop failed'))
+  return res.json()
+}
+
 // abandonGrill settles a session as abandoned — the discard path, where the user
 // rejects the proposal and nothing is written to the tracker.
 export async function abandonGrill(sid: string): Promise<GrillSession> {
