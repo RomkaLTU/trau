@@ -477,6 +477,15 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 	if provider == "internal" {
 		return nil, tracker.ErrReaderUnavailable
 	}
+	return tracker.NewReader(provider, readerConfig(cfg, provider))
+}
+
+// readerConfig maps a repo's resolved config onto the credentials and scope a
+// Reader needs. STATUS_TODO travels with them because on Azure DevOps it decides
+// more than which state a write targets: the same pin names the column the board
+// groups as unstarted, so a hub read that dropped it would group the board
+// differently from the loop that writes to it.
+func readerConfig(cfg config.Config, provider string) tracker.Config {
 	tc := tracker.Config{
 		Team:            cfg.TrackerKey(),
 		Project:         cfg.Project,
@@ -484,6 +493,7 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 		QuarantineLabel: cfg.QuarantineLabel,
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
+		StatusOverrides: map[tracker.Stage]string{tracker.StageTodo: cfg.StatusTodo},
 	}
 	switch provider {
 	case "jira":
@@ -496,7 +506,7 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 		tc.AreaPath = cfg.AzureAreaPath
 		tc.BoardTeams = cfg.AzureTeams
 	}
-	return tracker.NewReader(provider, tc)
+	return tc
 }
 
 // toBacklogEntries maps the stored issues onto the JSON board rows, deriving the

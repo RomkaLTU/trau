@@ -44,7 +44,8 @@ workflow its tracker reports.**
    `ApplyTransition` instead of resolving a name itself, `linearapi` exposes
    `WorkflowStates`, and `azureapi.SetState` writes a state the caller already
    resolved. This supersedes the resolution half of ADR 0024 §2; the read-side
-   `azureapi.Category` mapping is unchanged.
+   `azureapi.Category` mapping is unchanged. (ADR 0033 later demoted that mapping
+   to a fallback behind the categories Azure DevOps reports for itself.)
 4. `STATUS_TODO` / `STATUS_IN_PROGRESS` / `STATUS_IN_REVIEW` / `STATUS_DONE` pin a
    stage to an exact status name for the workflows where a category holds two
    plausible candidates. They take the standard `TRAU_*` env aliases and layer
