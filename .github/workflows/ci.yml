@@ -28,10 +28,13 @@ jobs:
         run: make vet
       # No npm step: the SPA is committed under internal/webserver/dist, so the
       # embed resolves from the checkout. `make test` brings the network guard
-      # (ADR 0027) and the race detector with it, and internal/webserver alone
-      # outlasts Go's 10-minute per-package default on a two-core runner.
+      # (ADR 0027) and the race detector with it.
       # CGO_FOR_TEST=1 because -race requires cgo everywhere but darwin, while
       # the Makefile's default only assumes that of a Windows host; the runner
       # ships gcc, so the race guard is satisfied.
+      # -timeout is per package, not per suite. Measured 2026-08-03 in a two-core
+      # golang:1.25 container: the whole -race suite runs in 3m30s and its slowest
+      # package, internal/webserver, in 128s. 8m is ~4x that; if a package ever
+      # approaches it, re-measure rather than raise it.
       - name: test
-        run: make test CGO_FOR_TEST=1 TESTFLAGS='-timeout 20m'
+        run: make test CGO_FOR_TEST=1 TESTFLAGS='-timeout 8m'

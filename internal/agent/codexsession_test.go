@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,9 +13,12 @@ import (
 // session_meta header, the turn_context naming the model, and the token_count
 // events whose total_token_usage accumulates across the session.
 func rolloutFixture(cwd string) string {
+	// Quoted, not pasted: a Windows workspace is full of backslashes, and each one
+	// pasted raw makes session_meta unparseable.
+	dir := strconv.Quote(cwd)
 	return strings.Join([]string{
-		`{"timestamp":"2026-07-23T02:13:30.101Z","type":"session_meta","payload":{"session_id":"019f8c1b-0d46-7980-947b-8d24261f5b59","cwd":"` + cwd + `","originator":"codex_cli_rs","cli_version":"0.144.5"}}`,
-		`{"timestamp":"2026-07-23T02:13:30.140Z","type":"turn_context","payload":{"cwd":"` + cwd + `","approval_policy":"never","model":"gpt-5.6-sol"}}`,
+		`{"timestamp":"2026-07-23T02:13:30.101Z","type":"session_meta","payload":{"session_id":"019f8c1b-0d46-7980-947b-8d24261f5b59","cwd":` + dir + `,"originator":"codex_cli_rs","cli_version":"0.144.5"}}`,
+		`{"timestamp":"2026-07-23T02:13:30.140Z","type":"turn_context","payload":{"cwd":` + dir + `,"approval_policy":"never","model":"gpt-5.6-sol"}}`,
 		`{"timestamp":"2026-07-23T02:13:41.500Z","type":"event_msg","payload":{"type":"task_started"}}`,
 		`{"timestamp":"2026-07-23T02:13:44.592Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"reasoning_output_tokens":5,"total_tokens":110},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10,"reasoning_output_tokens":5,"total_tokens":110},"model_context_window":258400}}}`,
 		`{"timestamp":"2026-07-23T02:14:02.113Z","type":"response_item","payload":{"type":"function_call","name":"shell"}}`,
@@ -125,5 +129,32 @@ func TestFindCodexRolloutPicksThisCallsSession(t *testing.T) {
 	}
 	if _, ok := findCodexRollout(sessions, t.TempDir(), since); ok {
 		t.Error("a workspace with no session of its own must find none")
+	}
+}
+
+// TestFindCodexRolloutFindsTheSessionThisRunJustStarted pins the clock contract
+// the lookup rests on. Linux stamps mtimes from a coarse clock 2-3ms behind
+// time.Now(), so a run start read off the Go clock rejects the rollout the
+// session wrote moments later and the call's whole accounting is lost.
+func TestFindCodexRolloutFindsTheSessionThisRunJustStarted(t *testing.T) {
+	sessions, repo := t.TempDir(), t.TempDir()
+	day := filepath.Join(sessions, "2026", "07", "23")
+	if err := os.MkdirAll(day, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	since := usageSince(filepath.Join(t.TempDir(), "run.result.json"), time.Now())
+
+	want := filepath.Join(day, "rollout-2026-07-23T02-13-30-019f8c1b.jsonl")
+	if err := os.WriteFile(want, []byte(rolloutFixture(repo)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := findCodexRollout(sessions, repo, since)
+	if !ok {
+		t.Fatal("findCodexRollout ok = false, want the rollout this run just wrote")
+	}
+	if got != want {
+		t.Errorf("rollout = %s, want %s", filepath.Base(got), filepath.Base(want))
 	}
 }

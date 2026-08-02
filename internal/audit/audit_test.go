@@ -84,6 +84,11 @@ var allowedReaders = map[string]string{
 	"internal/webserver/fsdiscover.go":  "bounded repo discovery under an operator-selected folder",
 	"internal/folderrepo/folderrepo.go": "Folder repo child scan under an operator-registered folder",
 
+	// Test-only helper — reads back the migrated schema template it builds in a
+	// throwaway home, so a test binary runs the ladder once instead of once per
+	// test. Imported from _test.go files only; it never reaches the shipped binary.
+	"internal/hubdb/hubdbtest/hubdbtest.go": "test hub schema template",
+
 	// One-shot legacy importers — the only file-era code, gated to first hub touch.
 	"internal/state/state.go":             "file-era checkpoint store read by the checkpoint importer",
 	"internal/hubstore/checkpoints.go":    "legacy checkpoint import",

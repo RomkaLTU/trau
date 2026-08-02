@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
@@ -34,7 +34,7 @@ func testStores(t *testing.T) *hubstore.Stores {
 // re-opens the same database.
 func testStoresAt(t *testing.T, home string) *hubstore.Stores {
 	t.Helper()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

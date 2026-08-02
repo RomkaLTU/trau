@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 func testStore(t *testing.T, home string) *Registrations {
 	t.Helper()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

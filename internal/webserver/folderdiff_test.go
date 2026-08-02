@@ -26,10 +26,6 @@ func folderDiffFixture(t *testing.T) (*httptest.Server, *Server, string, func(ch
 	git := func(child string, args ...string) {
 		t.Helper()
 		cmd := exec.Command("git", append([]string{"-C", filepath.Join(root, child)}, args...)...)
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@example.com",
-			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@example.com",
-		)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git -C %s %v: %v\n%s", child, args, err, out)
 		}

@@ -3,13 +3,13 @@ package hubstore
 import (
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 func testTeamSync(t *testing.T) *TeamSync {
 	t.Helper()
 	home := t.TempDir()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 func testEvents(t *testing.T) *Events {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestEventsAppendEmpty(t *testing.T) {
 }
 
 func TestEventsPruneKeepsRecentPerRepo(t *testing.T) {
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestEventsPruneKeepsRecentPerRepo(t *testing.T) {
 }
 
 func TestEventsPruneDisabled(t *testing.T) {
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

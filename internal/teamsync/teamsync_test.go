@@ -197,8 +197,6 @@ func clone(t *testing.T, remote, name string) string {
 	t.Helper()
 	dir := filepath.Join(t.TempDir(), name)
 	git(t, t.TempDir(), "clone", "-q", remote, dir)
-	git(t, dir, "config", "user.name", "Tester")
-	git(t, dir, "config", "user.email", "tester@example.com")
 	return dir
 }
 

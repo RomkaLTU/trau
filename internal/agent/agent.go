@@ -516,6 +516,28 @@ func newResultPath(root, label string, now time.Time) (string, error) {
 	return abs, nil
 }
 
+// usageSince returns the run-start instant that a session lookup compares file
+// mtimes against, read back off the filesystem through a sentinel written beside
+// path. Linux stamps mtimes from a coarse clock that trails time.Now() by 2-3ms,
+// so a session file the agent creates moments after the run starts reads as older
+// than the run: the lookup misses, and the call is recorded with no usage, no
+// turns and no ledger row. Both sides of the comparison have to come from the
+// same clock. A directory that cannot be written falls back to fallback rather
+// than failing the run.
+func usageSince(path string, fallback time.Time) time.Time {
+	sentinel := path + ".since"
+	if err := os.WriteFile(sentinel, nil, 0o600); err != nil {
+		return fallback
+	}
+	defer func() { _ = os.Remove(sentinel) }()
+
+	info, err := os.Stat(sentinel)
+	if err != nil {
+		return fallback
+	}
+	return info.ModTime()
+}
+
 func (c *ClaudeInteractive) clock() time.Time {
 	if c.now != nil {
 		return c.now()
