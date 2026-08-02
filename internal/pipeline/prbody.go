@@ -33,15 +33,15 @@ func (p *Pipeline) prBody(ctx context.Context, id, proofsSection string) string 
 	return b.String()
 }
 
-// proofsSection publishes the run's verify screenshots to the target repo's
-// trau-proofs branch and renders the PR body's QA-proofs section. It returns ""
-// — no section, no claim — when proofs are disabled, none were captured, or the
-// repo has no remote. A publish failure is non-fatal: it warns and returns "".
-func (p *Pipeline) proofsSection(ctx context.Context, id string) string {
+// proofsSection publishes the run's verify screenshots to repoDir's trau-proofs
+// branch and renders the PR body's QA-proofs section. It returns "" — no section,
+// no claim — when proofs are disabled, none were captured, or the repo has no
+// remote. A publish failure is non-fatal: it warns and returns "".
+func (p *Pipeline) proofsSection(ctx context.Context, id, repoDir string) string {
 	if p.PublishProofs == nil {
 		return ""
 	}
-	pub, err := p.PublishProofs(ctx, id)
+	pub, err := p.PublishProofs(ctx, repoDir, id)
 	if err != nil {
 		p.logf("  ⚠ publish verify proofs: %v", err)
 		if p.Events != nil {

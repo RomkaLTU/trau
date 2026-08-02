@@ -1406,6 +1406,8 @@ type epicGitHub struct {
 	mergeDeleted bool
 	closedPR     string
 	closeErr     error
+	bodyEdits    map[string]string
+	editErr      error
 }
 
 func (e *epicGitHub) PRURL(context.Context, string) (string, error) { return "", nil }
@@ -1417,7 +1419,18 @@ func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string,
 	e.base, e.head, e.title, e.body, e.createDraft = base, head, title, body, draft
 	return e.createURL, e.createErr
 }
-func (e *epicGitHub) MarkPRReady(context.Context, string) error       { e.readyCalls++; return nil }
+func (e *epicGitHub) MarkPRReady(context.Context, string) error { e.readyCalls++; return nil }
+func (e *epicGitHub) UpdatePRBody(_ context.Context, pr, body string) error {
+	if e.editErr != nil {
+		return e.editErr
+	}
+	if e.bodyEdits == nil {
+		e.bodyEdits = map[string]string{}
+	}
+	e.bodyEdits[pr] = body
+	return nil
+}
+
 func (e *epicGitHub) PRState(context.Context, string) (string, error) { return e.prState, nil }
 func (e *epicGitHub) Checks(context.Context, string) ([]Check, error) { return e.checks, nil }
 func (e *epicGitHub) PRSize(context.Context, string) (int, int, error) {

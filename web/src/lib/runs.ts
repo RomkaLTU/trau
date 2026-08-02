@@ -32,6 +32,15 @@ export interface SharedRun {
   fetched_at?: string
 }
 
+// RunShip is one Child repo a Folder repo run shipped to and the pull request the
+// branch it cut there carries. A run has one entry per changed child; pr is absent
+// until that child's PR is opened.
+export interface RunShip {
+  repo: string
+  pr?: string
+  url?: string
+}
+
 export interface Run {
   ticket: string
   title?: string
@@ -49,6 +58,7 @@ export interface Run {
   updated_at?: string
   handback?: Handback
   shared?: SharedRun
+  ships?: RunShip[]
 }
 
 export interface ReposResponse {

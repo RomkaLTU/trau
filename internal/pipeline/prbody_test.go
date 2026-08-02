@@ -266,15 +266,15 @@ func TestProofsSectionAbsentWithoutProofs(t *testing.T) {
 	id := "COD-91148"
 
 	nilPub := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
-	if got := nilPub.proofsSection(context.Background(), id); got != "" {
+	if got := nilPub.proofsSection(context.Background(), id, nilPub.RepoRoot); got != "" {
 		t.Errorf("no publisher must yield no section, got %q", got)
 	}
 
 	empty := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
-	empty.PublishProofs = func(context.Context, string) (proofsbranch.Publication, error) {
+	empty.PublishProofs = func(context.Context, string, string) (proofsbranch.Publication, error) {
 		return proofsbranch.Publication{}, nil
 	}
-	if got := empty.proofsSection(context.Background(), id); got != "" {
+	if got := empty.proofsSection(context.Background(), id, empty.RepoRoot); got != "" {
 		t.Errorf("empty publication must yield no section, got %q", got)
 	}
 }
@@ -285,11 +285,11 @@ func TestProofsSectionPublishFailureIsNonFatal(t *testing.T) {
 	var buf bytes.Buffer
 	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
 	p.Events = event.New(&buf)
-	p.PublishProofs = func(context.Context, string) (proofsbranch.Publication, error) {
+	p.PublishProofs = func(context.Context, string, string) (proofsbranch.Publication, error) {
 		return proofsbranch.Publication{}, errors.New("push rejected")
 	}
 
-	if got := p.proofsSection(context.Background(), "COD-91148"); got != "" {
+	if got := p.proofsSection(context.Background(), "COD-91148", p.RepoRoot); got != "" {
 		t.Errorf("publish failure must yield no section, got %q", got)
 	}
 	evs := kindEvents(t, &buf, event.KindProofsPublishFailed)
@@ -308,7 +308,7 @@ func TestProofsSectionCarriesVerdictOutcome(t *testing.T) {
 	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
 	p.AppURL = "http://app.test"
 	writeSliceVerdict(t, id, verdict{Pass: true, Summary: "UI verified", Browser: "driven"})
-	p.PublishProofs = func(context.Context, string) (proofsbranch.Publication, error) {
+	p.PublishProofs = func(context.Context, string, string) (proofsbranch.Publication, error) {
 		return proofsbranch.Publication{
 			Owner:  "acme",
 			Repo:   "web",
@@ -317,7 +317,7 @@ func TestProofsSectionCarriesVerdictOutcome(t *testing.T) {
 		}, nil
 	}
 
-	section := p.proofsSection(context.Background(), id)
+	section := p.proofsSection(context.Background(), id, p.RepoRoot)
 	if !strings.Contains(section, "Browser QA: driven against http://app.test") {
 		t.Errorf("section must carry the driven outcome:\n%s", section)
 	}
