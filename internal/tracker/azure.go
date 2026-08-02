@@ -275,7 +275,19 @@ func (a *AzureDevOps) IssueStatus(ctx context.Context, id string) (IssueStatus, 
 	if err != nil {
 		return StatusUnknown, err
 	}
-	return mapAzureStatus(item.Category(), item.Reason), nil
+	return mapAzureStatus(a.stateCategory(ctx, item), item.Reason), nil
+}
+
+// stateCategory classifies a work item's state against the categories its own
+// work-item type declares, so a state a customized process renamed reports a
+// lifecycle bucket instead of unknown. Metadata the token cannot read leaves the
+// name table in charge rather than failing the read.
+func (a *AzureDevOps) stateCategory(ctx context.Context, item *azureapi.WorkItem) azureapi.StateCategory {
+	states, err := a.api().StateCategories(ctx, a.Project, item.Type)
+	if err != nil {
+		logger.Debugf("azure: read %s states: %v", item.Type, err)
+	}
+	return azureapi.CategoryOf(states, item.State)
 }
 
 // mapAzureStatus maps a work item's state category onto the normalized status. A
@@ -386,9 +398,14 @@ func (a *AzureDevOps) resolveState(ctx context.Context, id int, stage Stage) (st
 	if err != nil {
 		return "", err
 	}
-	states, err := a.api().States(ctx, a.Project, item.Type)
+	states, err := a.api().StateCategories(ctx, a.Project, item.Type)
 	if err != nil {
 		return "", err
+	}
+	if stage == StageTodo {
+		if state, ok := azureUnstartedState(states, a.StatusOverrides[stage]); ok {
+			return state, nil
+		}
 	}
 	options := make([]WorkflowOption, len(states))
 	for i, s := range states {
@@ -418,6 +435,53 @@ func azureCategories(stage Stage) []string {
 	default:
 		return nil
 	}
+}
+
+// azureTodoNames ranks the names an Azure DevOps process gives the column a
+// groomed, ready-to-pick item waits in, most preferred first. A process that
+// splits its Proposed category into a raw intake column and a groomed one names
+// the groomed one from the head of this list, so New and its siblings win only
+// where the process offers nothing better. It is deliberately Azure-local: the
+// shared Stage vocabulary orders these the other way round, and reordering it
+// would move Jira and Linear too.
+var azureTodoNames = []string{"ready", "approved", "selected", "to do", "todo", "new", "proposed", "backlog", "triage"}
+
+// azureUnstartedState picks the state that means groomed but not started: the
+// state a todo write targets, and the one Proposed state the board groups as
+// unstarted rather than backlog. Both directions read the same answer, so the
+// column the loop resets a ticket into is the column the board shows it in. A
+// pinned STATUS_TODO wins outright, and an abandonment never stands in.
+func azureUnstartedState(states []azureapi.State, pin string) (string, bool) {
+	if pinned := strings.TrimSpace(pin); pinned != "" {
+		for _, s := range states {
+			if normalizeStatus(s.Name) == normalizeStatus(pinned) {
+				return s.Name, true
+			}
+		}
+	}
+	best, bestRank := "", 0
+	for _, s := range states {
+		if azureapi.CategoryOf(states, s.Name) != azureapi.CategoryProposed || abandons(s.Name) {
+			continue
+		}
+		if rank := azureTodoRank(s.Name); best == "" || rank < bestRank {
+			best, bestRank = s.Name, rank
+		}
+	}
+	return best, best != ""
+}
+
+// azureTodoRank scores how strongly a state name reads as the ready-to-pick
+// column, lowest first. A name the vocabulary does not know ranks last, so the
+// workflow's own order decides between two states neither of them claims.
+func azureTodoRank(name string) int {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	for i, want := range azureTodoNames {
+		if strings.Contains(lower, want) {
+			return i
+		}
+	}
+	return len(azureTodoNames)
 }
 
 // AddLabel adds one tag to a work item without disturbing its other tags.

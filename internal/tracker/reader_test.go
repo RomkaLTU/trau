@@ -55,6 +55,58 @@ func TestMapJiraGroup(t *testing.T) {
 	}
 }
 
+func TestMapAzureGroup(t *testing.T) {
+	custom := []azureapi.State{
+		{Name: "New", Category: "Proposed"},
+		{Name: "Ready to Develop", Category: "Proposed"},
+		{Name: "In Progress", Category: "InProgress"},
+		{Name: "Done", Category: "Completed"},
+	}
+	agile := []azureapi.State{
+		{Name: "New", Category: "Proposed"},
+		{Name: "Active", Category: "InProgress"},
+		{Name: "Resolved", Category: "Resolved"},
+		{Name: "Closed", Category: "Completed"},
+		{Name: "Removed", Category: "Removed"},
+	}
+	scrum := []azureapi.State{
+		{Name: "New", Category: "Proposed"},
+		{Name: "Approved", Category: "Proposed"},
+		{Name: "Committed", Category: "InProgress"},
+		{Name: "Done", Category: "Completed"},
+		{Name: "Removed", Category: "Removed"},
+	}
+	cases := []struct {
+		name          string
+		states        []azureapi.State
+		pin           string
+		state, reason string
+		want          StatusGroup
+	}{
+		{"custom intake column", custom, "", "New", "", StatusGroupBacklog},
+		{"custom groomed column", custom, "", "Ready to Develop", "", StatusGroupUnstarted},
+		{"custom started", custom, "", "In Progress", "", StatusGroupStarted},
+		{"custom done", custom, "", "Done", "Completed", StatusGroupDone},
+		{"agile keeps its single proposed state unstarted", agile, "", "New", "", StatusGroupUnstarted},
+		{"agile active", agile, "", "Active", "", StatusGroupStarted},
+		{"agile resolved is still live", agile, "", "Resolved", "", StatusGroupStarted},
+		{"agile closed", agile, "", "Closed", "Completed", StatusGroupDone},
+		{"agile closed as cut", agile, "", "Closed", "Cut", StatusGroupCanceled},
+		{"agile removed", agile, "", "Removed", "", StatusGroupCanceled},
+		{"scrum new", scrum, "", "New", "", StatusGroupBacklog},
+		{"scrum approved", scrum, "", "Approved", "", StatusGroupUnstarted},
+		{"a pin flips the custom split", custom, "New", "New", "", StatusGroupUnstarted},
+		{"a pin backlogs the column it did not name", custom, "New", "Ready to Develop", "", StatusGroupBacklog},
+		{"a pin outside Proposed leaves every proposed state unstarted", custom, "Done", "New", "", StatusGroupUnstarted},
+		{"states the token could not read fall back to the name table", nil, "", "New", "", StatusGroupUnstarted},
+	}
+	for _, tc := range cases {
+		if got := mapAzureGroup(tc.states, tc.pin, tc.state, tc.reason); got != tc.want {
+			t.Errorf("%s: mapAzureGroup(%q) = %q, want %q", tc.name, tc.state, got, tc.want)
+		}
+	}
+}
+
 func TestNewReaderUnavailableWithoutCredentials(t *testing.T) {
 	cases := []struct {
 		name     string

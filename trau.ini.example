@@ -62,7 +62,9 @@ SPLIT_LABEL=needs-split      # label the pre-flight size judge applies to a tick
 # process template — so a project that spells review "READY FOR QA" needs no configuration at all.
 # Set a key below only when the category alone is ambiguous (two In Progress statuses, say) and
 # the loop picks the wrong one; the value must be a status name the workflow actually offers.
-STATUS_TODO=                 # e.g. Backlog
+STATUS_TODO=                 # e.g. Backlog. On Azure DevOps this one also names the board's ready-to-pick
+                             # column: the state it points at groups as Todo and every other Proposed state
+                             # (New, Triage, …) groups as Backlog. Empty lets the process decide.
 STATUS_IN_PROGRESS=          # e.g. In Development
 STATUS_IN_REVIEW=            # e.g. READY FOR QA
 STATUS_DONE=                 # e.g. Released

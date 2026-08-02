@@ -210,10 +210,10 @@ func (r *azureReader) ResolveBinding(ctx context.Context) (ProjectBinding, error
 }
 
 // azurePulls coalesces the sync work of repos that mirror the same Azure DevOps
-// board. Two repos bound to one organization, team project and team scope produce
-// byte-identical reads, so the first one in flight runs the WIQL, the batch read and
-// the comment sweep and the rest of that tick read its answer; each still stores its
-// own rows (ADR 0028 §7). A reader is built fresh per sync, so the group is
+// board. Two repos bound to one organization, team project, team scope and todo pin
+// produce byte-identical reads, so the first in flight runs the WIQL, the batch read
+// and the comment sweep and the rest of that tick read its answer; each still stores
+// its own rows (ADR 0028 §7). A reader is built fresh per sync, so the group is
 // package-level — process-wide is exactly the scope the sharing needs. Sharers also
 // share the winner's context, which is safe because the syncer gives every repo on a
 // tick the same budget.
@@ -248,7 +248,7 @@ func (r *azureReader) syncPull(ctx context.Context, project, since string) ([]Sy
 	levels := readBacklogLevels(ctx, r.client, project, r.teams)
 	out := make([]SyncedIssue, len(items))
 	for i := range items {
-		out[i] = r.synced(project, &items[i], blockers, levels)
+		out[i] = r.synced(ctx, project, &items[i], blockers, levels)
 	}
 	r.sweepComments(ctx, project, items, out)
 	return out, nil
@@ -284,23 +284,27 @@ func (r *azureReader) projectOf(b ProjectBinding) string {
 }
 
 // scopeKey names the read a repo's board scope produces, so two repos asking the
-// same question of the same organization recognise each other's work.
+// same question of the same organization recognise each other's work. The todo pin
+// is part of the question, because it decides which Proposed state reads back as
+// unstarted; the variable-length team list stays last so no two scopes spell the
+// same key.
 func (r *azureReader) scopeKey(stage, project, since string) string {
-	return strings.Join(append([]string{stage, r.org, project, r.areaPath, since}, r.teams...), "\x00")
+	fixed := []string{stage, r.org, project, r.areaPath, since, r.statusTodo}
+	return strings.Join(append(fixed, r.teams...), "\x00")
 }
 
 // synced maps one work item onto a SyncedIssue, discussion excluded — that costs a
 // round-trip per item and is swept separately. Work-item file attachments are not
 // mirrored: their bytes sit behind the same PAT the pull holds, which the hub's
 // attachment surface cannot present.
-func (r *azureReader) synced(project string, item *azureapi.WorkItem, blockers map[int]bool, levels azureapi.Levels) SyncedIssue {
+func (r *azureReader) synced(ctx context.Context, project string, item *azureapi.WorkItem, blockers map[int]bool, levels azureapi.Levels) SyncedIssue {
 	out := SyncedIssue{
 		ID:           azureIdentifier(item.ID),
 		ExternalID:   strconv.Itoa(item.ID),
 		Title:        item.Title,
 		Description:  item.Description,
 		Status:       item.State,
-		Group:        mapAzureGroup(item.Category(), item.Reason),
+		Group:        mapAzureGroup(r.states(ctx, item), r.statusTodo, item.State, item.Reason),
 		Priority:     item.Priority,
 		Labels:       item.Tags,
 		Parent:       azureParentIdentifier(item.Parent),

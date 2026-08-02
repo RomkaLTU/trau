@@ -80,10 +80,12 @@ through the same seam as Linear and Jira and no caller learns a new provider.
 7. **One pull per Azure scope, fanned out to each repo.** Every repo bound to a team
    project used to mirror it whole: the same work items appeared twice, and both
    repos spent the same PAT's request budget fetching them. Now repos that share an
-   organization, team project and team scope produce a byte-identical read, so the
-   first one in flight runs the WIQL, the batch read and the comment sweep and the
-   rest of that tick read its answer — each still storing its own rows. Coalescing
-   releases every sharer at the same instant, so those stores land concurrently;
+   organization, team project, team scope and `STATUS_TODO` pin produce a
+   byte-identical read — the pin belongs in that list because it decides which
+   Proposed state reads back as unstarted (ADR 0033) — so the first one in flight
+   runs the WIQL, the batch read and the comment sweep and the rest of that tick
+   read its answer, each still storing its own rows. Coalescing releases every
+   sharer at the same instant, so those stores land concurrently;
    the hub database begins its transactions `IMMEDIATE` for exactly that reason
    (ADR 0007 §1).
 

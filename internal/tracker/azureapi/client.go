@@ -23,6 +23,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -98,6 +99,9 @@ type Client struct {
 	baseURL string
 	auth    string // "Basic <base64(:pat)>", or "" when the client is disabled
 	http    *http.Client
+
+	statesMu sync.Mutex
+	states   map[string]cachedStates // keyed by project + work-item type, see StateCategories
 }
 
 // New returns a client for the given organization URL. An empty token (or base
@@ -107,6 +111,7 @@ func New(orgURL, pat string) *Client {
 	c := &Client{
 		baseURL: orgURL,
 		http:    &http.Client{Timeout: requestTimeout},
+		states:  map[string]cachedStates{},
 	}
 	if orgURL != "" {
 		c.auth = basicAuth(pat)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
@@ -202,6 +203,7 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 			areaPath:   cfg.AreaPath,
 			teams:      cfg.BoardTeams,
 			readyLabel: cfg.ReadyLabel,
+			statusTodo: cfg.StatusOverrides[StageTodo],
 		}, nil
 	case "github":
 		return nil, ErrReaderUnavailable
@@ -335,6 +337,7 @@ type azureReader struct {
 	areaPath   string
 	teams      []string
 	readyLabel string
+	statusTodo string // STATUS_TODO, which also decides which Proposed state groups as unstarted
 }
 
 func (r *azureReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
@@ -344,23 +347,40 @@ func (r *azureReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
 	}
 	out := make([]BacklogItem, 0, len(items))
 	for i := range items {
-		out = append(out, r.backlogItem(&items[i]))
+		out = append(out, r.backlogItem(ctx, &items[i]))
 	}
 	return out, nil
 }
 
 // backlogItem renders one work item as a board row.
-func (r *azureReader) backlogItem(item *azureapi.WorkItem) BacklogItem {
+func (r *azureReader) backlogItem(ctx context.Context, item *azureapi.WorkItem) BacklogItem {
 	return BacklogItem{
 		ID:          azureIdentifier(item.ID),
 		Title:       item.Title,
 		Status:      item.State,
-		Group:       mapAzureGroup(item.Category(), item.Reason),
+		Group:       mapAzureGroup(r.states(ctx, item), r.statusTodo, item.State, item.Reason),
 		Labels:      item.Tags,
 		Parent:      azureParentIdentifier(item.Parent),
 		HasChildren: item.HasChildren(),
 		Ready:       containsLabel(item.Tags, r.readyLabel),
 	}
+}
+
+// states reads the states the work item's own type declares, so grouping follows
+// the process the project actually runs rather than the state names this build
+// happens to know. Metadata the token cannot read returns nothing, which leaves
+// the name table in charge instead of failing the pull.
+func (r *azureReader) states(ctx context.Context, item *azureapi.WorkItem) []azureapi.State {
+	project := strings.TrimSpace(item.Project)
+	if project == "" {
+		project = strings.TrimSpace(r.project)
+	}
+	states, err := r.client.StateCategories(ctx, project, item.Type)
+	if err != nil {
+		logger.Debugf("azure: read %s states in %s: %v", item.Type, project, err)
+		return nil
+	}
+	return states
 }
 
 // workItems resolves the reader's scope to full work items: the ids WIQL matches
@@ -415,7 +435,7 @@ func (r *azureReader) Issue(ctx context.Context, id string) (IssueSummary, error
 		return IssueSummary{}, err
 	}
 	return IssueSummary{
-		BacklogItem: r.backlogItem(item),
+		BacklogItem: r.backlogItem(ctx, item),
 		Project:     item.Project,
 		InProject:   onBoard,
 	}, nil
@@ -481,14 +501,22 @@ func mapJiraGroup(category, resolution string) StatusGroup {
 	}
 }
 
-// mapAzureGroup maps an Azure DevOps state category onto a normalized status
-// group. Proposed covers a fresh item and a backlog-parked one alike — the
-// category draws no line between them — and a Completed item closed with a
-// discarded reason groups as canceled rather than done, the same discriminator
+// mapAzureGroup maps an Azure DevOps state onto a normalized status group,
+// classified against the states its work-item type declares. Proposed covers a
+// raw intake column and a groomed ready-to-pick one alike — the category draws no
+// line between them — so the state a todo write targets is the one that reads
+// back as unstarted and every other Proposed state is backlog. A process with a
+// single Proposed state therefore groups exactly as it always did, and so does
+// one whose states could not be read. A Completed item closed with a discarded
+// reason groups as canceled rather than done, the same discriminator
 // mapAzureStatus applies.
-func mapAzureGroup(category azureapi.StateCategory, reason string) StatusGroup {
-	switch category {
+func mapAzureGroup(states []azureapi.State, pin, state, reason string) StatusGroup {
+	switch azureapi.CategoryOf(states, state) {
 	case azureapi.CategoryProposed:
+		todo, ok := azureUnstartedState(states, pin)
+		if ok && azureapi.CategoryOf(states, todo) == azureapi.CategoryProposed && !strings.EqualFold(todo, state) {
+			return StatusGroupBacklog
+		}
 		return StatusGroupUnstarted
 	case azureapi.CategoryInProgress, azureapi.CategoryResolved:
 		return StatusGroupStarted

@@ -253,6 +253,61 @@ func TestOpenBackfillsQAAccountSource(t *testing.T) {
 	}
 }
 
+// Azure grouping now splits the Proposed category, and an incremental sync would
+// leave every untouched mirrored row on its old grouping. Blanking the cursor
+// buys one full re-pull — for the Azure repos only, since nothing else regrouped.
+func TestOpenRepullsAzureMirrorsAfterRegrouping(t *testing.T) {
+	home := t.TempDir()
+
+	seed, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedVersion(t, seed, 53)
+	for _, repo := range []struct{ root, source string }{{"/repos/acme", "azure"}, {"/repos/beta", "linear"}} {
+		if _, err := seed.Exec(
+			`INSERT INTO issues(repo, source, identifier, title) VALUES(?, ?, '1', 'Fix')`, repo.root, repo.source,
+		); err != nil {
+			t.Fatalf("seed %s issue: %v", repo.source, err)
+		}
+		if _, err := seed.Exec(`INSERT INTO issue_sync(repo, cursor) VALUES(?, '2026-08-01T00:00:00Z')`, repo.root); err != nil {
+			t.Fatalf("seed %s sync state: %v", repo.source, err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(home)
+	if err != nil {
+		t.Fatalf("Open over a pre-regrouping database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	cursors := map[string]string{}
+	rows, err := db.SQL().Query(`SELECT repo, cursor FROM issue_sync`)
+	if err != nil {
+		t.Fatalf("read migrated cursors: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var repo, cursor string
+		if err := rows.Scan(&repo, &cursor); err != nil {
+			t.Fatalf("scan cursor: %v", err)
+		}
+		cursors[repo] = cursor
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate cursors: %v", err)
+	}
+	if cursors["/repos/acme"] != "" {
+		t.Errorf("azure cursor = %q, want it blanked for one full re-pull", cursors["/repos/acme"])
+	}
+	if cursors["/repos/beta"] == "" {
+		t.Error("linear cursor was blanked, want only azure repos re-pulled")
+	}
+}
+
 func TestOpenCorrupt(t *testing.T) {
 	home := t.TempDir()
 	garbage := []byte(strings.Repeat("not a sqlite database ", 64))
