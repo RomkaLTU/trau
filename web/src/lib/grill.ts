@@ -10,7 +10,9 @@ export type GrillState =
   'running' | 'waiting' | 'parked' | 'stalled' | 'finished' | 'applied' | 'abandoned'
 
 export type GrillRole = 'agent' | 'user' | 'system'
-export type GrillKind = 'question' | 'answer' | 'info' | 'outcome'
+// interjection is a message the user typed while a turn was in flight: it steers the
+// agent at its next step rather than answering anything it asked.
+export type GrillKind = 'question' | 'answer' | 'info' | 'outcome' | 'interjection'
 
 // GrillMode is the session type declared at create: an interview clarifies or
 // authors an issue, research answers a question and delivers a findings report.
@@ -178,8 +180,9 @@ export interface QuestionPayload {
   allow_free_text: boolean
 }
 
-// AnswerPayload is an answer turn's body. auto marks one the hub took from the agent's
-// own recommendation on an auto-accept session rather than from the user.
+// AnswerPayload is an answer turn's body, and an interjection's. auto marks one the
+// hub took from the agent's own recommendation on an auto-accept session rather than
+// from the user.
 export interface AnswerPayload {
   text: string
   auto?: boolean
@@ -232,19 +235,20 @@ export function isAwaitingAnswer(state: GrillState): boolean {
   return state === 'waiting' || state === 'parked' || state === 'stalled'
 }
 
-// canCompose reports whether the composer takes typing in state. stalled awaits an
-// answer but resumes through its banner's pre-filled Resume button, so the box stays
-// shut until the session is moving again.
+// canCompose reports whether the composer takes typing in state. running takes it as
+// an interjection the agent reads at its next step, so a turn never has to be waited
+// out. stalled awaits an answer but resumes through its banner's pre-filled Resume
+// button, so the box stays shut until the session is moving again.
 export function canCompose(state: GrillState): boolean {
-  return state === 'waiting' || state === 'parked'
+  return state === 'running' || state === 'waiting' || state === 'parked'
 }
 
-// composerPlaceholder is the composer's prompt — and, in a state canCompose refuses,
-// the reason the box is disabled.
+// composerPlaceholder is the composer's prompt — what the message will do in a state
+// that takes typing on its own terms, and otherwise the reason the box is disabled.
 export function composerPlaceholder(state: GrillState): string {
   switch (state) {
     case 'running':
-      return 'Agent is thinking…'
+      return 'Steer the agent — it will see this at its next step…'
     case 'stalled':
       return 'Session stalled — resume to keep answering…'
     case 'waiting':
@@ -914,16 +918,20 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
           .filter((m) => !holds(state.messages, m))
           .reduce(retirePending, state.pending),
       }
-    case 'message':
+    // An interjection lands mid-turn and settles nothing: the reply it arrives beside
+    // is still being written, so it is the one message frame that leaves it standing.
+    case 'message': {
+      const interjected = action.message.kind === 'interjection'
       return {
         ...state,
         messages: upsertMessage(state.messages, action.message),
         pending: holds(state.messages, action.message)
           ? state.pending
           : retirePending(state.pending, action.message),
-        streaming: NO_REPLY,
-        activity: NO_ACTIVITY,
+        streaming: interjected ? state.streaming : NO_REPLY,
+        activity: interjected ? state.activity : NO_ACTIVITY,
       }
+    }
     // Every state frame either settles the running turn or opens the next one, so it
     // ends whatever was streaming and rebases the seq for the turn ahead.
     case 'state':
@@ -1001,7 +1009,7 @@ function holds(list: GrillMessage[], msg: GrillMessage): boolean {
 // held before retires a twin: the hub delivers every answer twice, once in the POST
 // response and once over the stream, and a re-hydrate replays the whole transcript.
 function retirePending(pending: PendingAnswer[], msg: GrillMessage): PendingAnswer[] {
-  if (msg.kind !== 'answer') return pending
+  if (msg.kind !== 'answer' && msg.kind !== 'interjection') return pending
   const text = answerText(msg)
   const at = pending.findIndex((p) => !p.failed && p.text === text)
   return at === -1 ? pending : pending.filter((_, i) => i !== at)

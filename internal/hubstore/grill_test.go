@@ -2,6 +2,7 @@ package hubstore
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -250,6 +251,136 @@ func TestGrillSetAutoAccept(t *testing.T) {
 	if _, found, err := g.SetAutoAccept(9999, true); found || err != nil {
 		t.Fatalf("set auto-accept on unknown session = (found=%v, err=%v), want (false, nil)", found, err)
 	}
+}
+
+func TestGrillInterjectionQueue(t *testing.T) {
+	tests := []struct {
+		name    string
+		queue   []string
+		consume int
+		want    []string
+	}{
+		{name: "nothing queued", want: []string{}},
+		{name: "one interjection", queue: []string{"drop the schema thread"}, want: []string{"drop the schema thread"}},
+		{name: "multiple deliver in order", queue: []string{"first", "second", "third"}, want: []string{"first", "second", "third"}},
+		{
+			name:    "a second consume takes nothing",
+			queue:   []string{"first", "second"},
+			consume: 1,
+			want:    []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g, _ := testGrill(t, 0)
+			sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			// Answers and questions share the queue's table and must never be claimed by it.
+			for _, text := range tt.queue {
+				if _, _, err := g.AppendMessage(sess.ID, NewGrillMessage{
+					Role: GrillRoleAgent, Kind: GrillKindQuestion, Payload: `{"text":"why?"}`,
+				}); err != nil {
+					t.Fatalf("append question: %v", err)
+				}
+				if _, _, err := g.AppendMessage(sess.ID, NewGrillMessage{
+					Role: GrillRoleUser, Kind: GrillKindInterjection, Payload: `{"text":"` + text + `"}`,
+				}); err != nil {
+					t.Fatalf("append interjection: %v", err)
+				}
+			}
+			if _, _, err := g.AppendMessage(sess.ID, NewGrillMessage{
+				Role: GrillRoleUser, Kind: GrillKindAnswer, Payload: `{"text":"an answer"}`,
+			}); err != nil {
+				t.Fatalf("append answer: %v", err)
+			}
+			for range tt.consume {
+				if _, err := g.ConsumeInterjections(sess.ID); err != nil {
+					t.Fatalf("prior consume: %v", err)
+				}
+			}
+
+			pending, err := g.PendingInterjections(sess.ID)
+			if err != nil {
+				t.Fatalf("pending: %v", err)
+			}
+			if got := interjectionTexts(pending); !slices.Equal(got, tt.want) {
+				t.Errorf("pending = %q, want %q", got, tt.want)
+			}
+			claimed, err := g.ConsumeInterjections(sess.ID)
+			if err != nil {
+				t.Fatalf("consume: %v", err)
+			}
+			if got := interjectionTexts(claimed); !slices.Equal(got, tt.want) {
+				t.Errorf("consumed = %q, want %q", got, tt.want)
+			}
+			again, err := g.ConsumeInterjections(sess.ID)
+			if err != nil {
+				t.Fatalf("second consume: %v", err)
+			}
+			if len(again) != 0 {
+				t.Errorf("second consume = %q, want nothing left", interjectionTexts(again))
+			}
+		})
+	}
+}
+
+// The cursor is a column, not runner memory, so a queue that outlives the process that
+// took the message is still delivered — once — by whatever store reads it next.
+func TestGrillInterjectionsSurviveReopen(t *testing.T) {
+	dir := t.TempDir()
+	db, err := hubdb.Open(dir)
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	g := NewGrill(db.SQL(), 0)
+	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, _, err := g.AppendMessage(sess.ID, NewGrillMessage{
+		Role: GrillRoleUser, Kind: GrillKindInterjection, Payload: `{"text":"use postgres"}`,
+	}); err != nil {
+		t.Fatalf("append interjection: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close hub db: %v", err)
+	}
+
+	reopened, err := hubdb.Open(dir)
+	if err != nil {
+		t.Fatalf("reopen hub db: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	g = NewGrill(reopened.SQL(), 0)
+
+	claimed, err := g.ConsumeInterjections(sess.ID)
+	if err != nil {
+		t.Fatalf("consume after reopen: %v", err)
+	}
+	if got := interjectionTexts(claimed); !slices.Equal(got, []string{"use postgres"}) {
+		t.Fatalf("consumed = %q, want the queued interjection", got)
+	}
+	again, err := g.ConsumeInterjections(sess.ID)
+	if err != nil {
+		t.Fatalf("second consume after reopen: %v", err)
+	}
+	if len(again) != 0 {
+		t.Errorf("second consume = %q, want nothing left", interjectionTexts(again))
+	}
+}
+
+func interjectionTexts(msgs []GrillMessage) []string {
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		var p struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal([]byte(m.Payload), &p)
+		out = append(out, p.Text)
+	}
+	return out
 }
 
 func TestGrillSetIssue(t *testing.T) {

@@ -159,6 +159,8 @@ function MessageRow({ message }: { message: GrillMessage }) {
       return (
         <UserBubble text={answerText(message)} auto={isAutoAnswer(message)} />
       );
+    case "interjection":
+      return <UserBubble text={answerText(message)} interjected />;
     // The seed idea of an authoring session rides as an info message; render it as
     // the user's opening turn so the conversation reads from the top. A system info
     // message is hub bookkeeping (a model switch), not a turn, so it reads as a
@@ -200,10 +202,12 @@ function AgentBubble({ children }: { children: React.ReactNode }) {
 function UserBubble({
   text,
   auto,
+  interjected,
   className,
 }: {
   text: string;
   auto?: boolean;
+  interjected?: boolean;
   className?: string;
 }) {
   return (
@@ -212,6 +216,7 @@ function UserBubble({
         <Eyebrow>
           you
           {auto && <AutoAcceptBadge />}
+          {interjected && <InterjectionBadge />}
         </Eyebrow>
         <Bubble variant="default" align="end" className={cn("max-w-[56ch]", className)}>
           <BubbleContent className="whitespace-pre-wrap">
@@ -220,6 +225,17 @@ function UserBubble({
         </Bubble>
       </MessageContent>
     </Message>
+  );
+}
+
+function InterjectionBadge() {
+  return (
+    <span
+      title="Interjected — sent while the agent was working, delivered at its next step"
+      className="inline-flex shrink-0 items-center rounded-full border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.65rem] uppercase tracking-wide text-muted-foreground"
+    >
+      interjected
+    </span>
   );
 }
 

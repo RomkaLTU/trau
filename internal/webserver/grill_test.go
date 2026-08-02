@@ -212,13 +212,6 @@ func TestGrillDetailAndAnswer(t *testing.T) {
 	sess := createGrill(t, ts, repo, "COD-1")
 	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
 
-	// Answering a running session (no question posed) is refused.
-	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/answer", GrillAnswerRequest{Text: "hi"})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("premature answer status = %d, want 409", res.StatusCode)
-	}
-
 	// Simulate the runner posing a question and parking on the answer.
 	if _, _, err := stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{Role: hubstore.GrillRoleAgent, Kind: hubstore.GrillKindQuestion, Payload: `{"text":"why?"}`}); err != nil {
 		t.Fatalf("post question: %v", err)
@@ -227,7 +220,7 @@ func TestGrillDetailAndAnswer(t *testing.T) {
 		t.Fatalf("pose question: %v", err)
 	}
 
-	res = postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/answer", GrillAnswerRequest{Text: "because"})
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/answer", GrillAnswerRequest{Text: "because"})
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("answer status = %d, want 200", res.StatusCode)
