@@ -11,6 +11,7 @@ import {
   ChevronsUp,
   ExternalLink,
   Info,
+  Layers,
   ListPlus,
   Play,
   Plus,
@@ -23,6 +24,11 @@ import {
 } from "lucide-react";
 import { parseAsString, useQueryState } from "nuqs";
 
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IssueDrawer } from "@/components/issue-drawer";
@@ -70,7 +76,14 @@ import {
 } from "@/lib/loop";
 import { loopTitle, usePageTitle, type LoopTitleState } from "@/lib/page-title";
 import {
+  batchDisplayName,
+  batchName,
+  batchSelectable,
+  batchStartBlocker,
+  batchSummary,
+  createBatch,
   dequeue,
+  dismissBatch,
   drain,
   enqueueFresh,
   moveQueueItem,
@@ -85,8 +98,12 @@ import {
   runNext as runNextRequest,
   runQueueItem,
   skipResumeApplies,
+  startBatch,
   stopQueue,
+  updateBatch,
+  type BatchSummary,
   type OnFault,
+  type QueueBatch,
   type QueueItem,
   type QueueResponse,
 } from "@/lib/queue";
@@ -299,6 +316,18 @@ function ProviderTag({ provider, pin }: { provider?: string; pin?: string }) {
   );
 }
 
+function BatchChip({ name }: { name: string }) {
+  return (
+    <span
+      title="batch"
+      className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-teal/40 bg-teal/10 px-1.5 py-0.5 font-mono text-[0.65rem] text-teal"
+    >
+      <Layers className="size-3" aria-hidden="true" />
+      {name}
+    </span>
+  );
+}
+
 // TicketIdButton is the drawer trigger: only the id text is clickable, so it
 // never competes with row-level links or the builder's reorder controls.
 function TicketIdButton({
@@ -416,6 +445,9 @@ function QueueBuilderRow({
   count,
   expanded,
   busy,
+  batch,
+  selected,
+  onSelect,
   onToggle,
   onMove,
   onRun,
@@ -427,6 +459,9 @@ function QueueBuilderRow({
   count: number;
   expanded: boolean;
   busy: boolean;
+  batch: string;
+  selected: boolean;
+  onSelect: () => void;
   onToggle: () => void;
   onMove: (dir: -1 | 1) => void;
   onRun: () => void;
@@ -446,6 +481,26 @@ function QueueBuilderRow({
   return (
     <li className="border-b border-border/60 last:border-0">
       <div className="flex items-center gap-3 px-3 py-2.5">
+        {batchSelectable(item) ? (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={`Select ${item.id} for a batch`}
+            onClick={onSelect}
+            className={cn(
+              "flex size-4 shrink-0 items-center justify-center rounded-sm border transition-colors",
+              selected
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border bg-input hover:border-primary/60",
+            )}
+          >
+            {selected ? <Check className="size-3" aria-hidden="true" /> : null}
+          </button>
+        ) : (
+          <span className="size-4 shrink-0" aria-hidden="true" />
+        )}
+
         <span className="w-5 shrink-0 text-right font-mono text-xs text-faint">
           {index + 1}
         </span>
@@ -478,6 +533,7 @@ function QueueBuilderRow({
         </span>
         <InternalTag source={item.source} />
         <ProviderTag provider={item.provider} pin={item.provider_pin} />
+        {batch ? <BatchChip name={batch} /> : null}
 
         {isEpic ? (
           <StatusPill state="info" label={`epic · ${done}/${total}`} />
@@ -562,6 +618,229 @@ function QueueBuilderRow({
   );
 }
 
+// NewBatchDialog files the picked rows under one batch. The name is optional —
+// an unnamed batch is shown by the date it was filed instead.
+function NewBatchDialog({
+  count,
+  pending,
+  error,
+  onOpenChange,
+  onCreate,
+}: {
+  count: number;
+  pending: boolean;
+  error: unknown;
+  onOpenChange: (open: boolean) => void;
+  onCreate: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+
+  return (
+    <AlertDialog open onOpenChange={onOpenChange}>
+      <AlertDialogContent
+        aria-describedby={undefined}
+        className="gap-0 overflow-hidden border-border bg-popover p-0 shadow-xl sm:max-w-sm"
+      >
+        <div className="flex items-center gap-3 border-b border-border px-4 py-2.5">
+          <div className="flex items-center gap-1.5" aria-hidden="true">
+            <span className="size-2.5 rounded-full bg-fail" />
+            <span className="size-2.5 rounded-full bg-warn" />
+            <span className="size-2.5 rounded-full bg-done" />
+          </div>
+          <AlertDialogTitle asChild>
+            <span className="font-mono text-xs font-normal text-muted-foreground">
+              new-batch
+            </span>
+          </AlertDialogTitle>
+        </div>
+        <form
+          className="flex flex-col gap-3 px-4 py-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onCreate(name.trim());
+          }}
+        >
+          <label
+            htmlFor="batch-name"
+            className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground"
+          >
+            name · optional
+          </label>
+          <Input
+            id="batch-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="API polish"
+            autoComplete="off"
+            spellCheck={false}
+            className="h-auto px-2.5 py-1.5 font-mono text-sm placeholder:text-muted-foreground/60"
+          />
+          <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+            {count} {count === 1 ? "item joins" : "items join"} the batch. Start
+            batch runs its members in queue order, then the loop stops — the rest
+            of the queue stays where it is.
+          </p>
+          {error ? (
+            <p className="font-mono text-xs text-fail" role="alert">
+              {actionError(error)}
+            </p>
+          ) : null}
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="font-mono"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              className="font-mono"
+              disabled={pending}
+            >
+              {pending ? "Filing…" : "Create batch"}
+            </Button>
+          </div>
+        </form>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function batchCounts(summary: BatchSummary): string {
+  const held = `${summary.members} ${summary.members === 1 ? "item" : "items"}`;
+  const outcomes = summary.tally.map((t) => `${t.count} ${t.status}`);
+  return [held, ...outcomes].join(" · ");
+}
+
+// BatchCard's Start is a scoped Start — it runs the batch's members and stops at
+// the batch boundary — and says why whenever it cannot.
+function BatchCard({
+  batch,
+  summary,
+  blocker,
+  busy,
+  starting,
+  error,
+  onStart,
+  onRename,
+  onDismiss,
+}: {
+  batch: QueueBatch;
+  summary: BatchSummary;
+  blocker: string;
+  busy: boolean;
+  starting: boolean;
+  error: unknown;
+  onStart: () => void;
+  onRename: (name: string) => void;
+  onDismiss: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const save = (name: string) => {
+    onRename(name.trim());
+    setDraft(null);
+  };
+
+  return (
+    <div className="flex flex-col gap-2 rounded-md border border-border bg-secondary/20 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {draft === null ? (
+          <>
+            <span className="inline-flex items-center gap-1.5 font-mono text-sm text-foreground">
+              <Layers className="size-3.5 text-teal" aria-hidden="true" />
+              {batchDisplayName(batch)}
+            </span>
+            <span className="font-mono text-xs text-muted-foreground">
+              · {batchCounts(summary)}
+            </span>
+          </>
+        ) : (
+          <div className="flex flex-1 flex-wrap items-center gap-2">
+            <Input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setDraft(null);
+                if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  save(draft);
+                }
+              }}
+              aria-label={`Rename ${batchDisplayName(batch)}`}
+              placeholder="API polish"
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              className="h-auto w-48 px-2.5 py-1 font-mono text-sm placeholder:text-muted-foreground/60"
+            />
+            <Button
+              type="button"
+              size="sm"
+              className="font-mono"
+              onClick={() => save(draft)}
+            >
+              Save
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="font-mono"
+              onClick={() => setDraft(null)}
+            >
+              Cancel
+            </Button>
+          </div>
+        )}
+
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            className="font-mono"
+            onClick={onStart}
+            disabled={blocker !== "" || busy}
+            title={blocker || "Run this batch's members, then stop"}
+          >
+            <Play className="size-3.5" aria-hidden="true" />
+            {starting ? "Starting…" : "Start batch"}
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="font-mono"
+            onClick={() => setDraft(batch.name)}
+            disabled={draft !== null}
+          >
+            Rename
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="font-mono"
+            onClick={onDismiss}
+          >
+            Dismiss
+          </Button>
+        </div>
+      </div>
+      {error ? (
+        <p className="font-mono text-xs text-fail" role="alert">
+          {actionError(error)}
+        </p>
+      ) : blocker ? (
+        <p className="font-mono text-xs text-muted-foreground">{blocker}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function LaunchQueueCard({
   repo,
   freshness,
@@ -588,6 +867,15 @@ function LaunchQueueCard({
   const [removeId, setRemoveId] = useState<string | null>(null);
   const [skipResume, setSkipResume] = useState(false);
   const [onFault, setOnFault] = useState<OnFault>("halt");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [dismissId, setDismissId] = useState<string | null>(null);
+
+  const batches = queue.data?.batches ?? [];
+  // Selection is held by id and read back through what is still selectable, so a
+  // row that gets batched or settles drops out of the pick on its own.
+  const selectable = new Set(items.filter(batchSelectable).map((it) => it.id));
+  const picked = selected.filter((id) => selectable.has(id));
 
   const config = useQuery(configQueryOptions(repo));
   const providers = [NO_OVERRIDE, ...(config.data?.providers ?? [])];
@@ -612,6 +900,7 @@ function LaunchQueueCard({
 
   useEffect(() => {
     resetAdd();
+    setSelected([]);
   }, [repo]);
 
   const add = useMutation({
@@ -689,6 +978,48 @@ function LaunchQueueCard({
     onSuccess: setQueue,
   });
 
+  const newBatch = useMutation({
+    mutationFn: (name: string) => createBatch(repo, picked, name || undefined),
+    onSuccess: (res) => {
+      setQueue(res);
+      setSelected([]);
+      setBatchOpen(false);
+    },
+  });
+
+  const launchBatch = useMutation({
+    mutationFn: (id: string) =>
+      startBatch(repo, id, {
+        no_resume: skipResume && skipResumeShown,
+        on_fault: onFault,
+      }),
+    onSuccess: setQueue,
+  });
+
+  const rename = useMutation({
+    mutationFn: (vars: { id: string; name: string }) =>
+      updateBatch(repo, vars.id, { name: vars.name }),
+    onSuccess: setQueue,
+  });
+
+  const dismiss = useMutation({
+    mutationFn: (id: string) => dismissBatch(repo, id),
+    onSuccess: (res) => {
+      setQueue(res);
+      setDismissId(null);
+    },
+  });
+  const dismissTarget = batches.find((b) => b.id === dismissId);
+
+  // Every batch gesture answers on the card that asked for it, so a refusal
+  // lands where the user pressed.
+  const batchError = (id: string): unknown => {
+    if (launchBatch.variables === id) return launchBatch.error;
+    if (rename.variables?.id === id) return rename.error;
+    if (dismiss.variables === id) return dismiss.error;
+    return null;
+  };
+
   const executable = queueExecutable(builder.queue);
   const runnable = queueRunnable(builder.queue);
 
@@ -698,7 +1029,10 @@ function LaunchQueueCard({
     runOne.isPending ||
     add.isPending ||
     addAll.isPending ||
-    runNext.isPending;
+    runNext.isPending ||
+    launchBatch.isPending ||
+    rename.isPending ||
+    dismiss.isPending;
 
   // The ticket is fetched for confirmation the moment the user commits an id —
   // on Enter or on blur — so there's no extra "fetch" click to reach the confirm.
@@ -710,6 +1044,11 @@ function LaunchQueueCard({
   const toggleExpand = (id: string) =>
     setExpandedIds((prev) =>
       prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id],
+    );
+
+  const toggleSelect = (id: string) =>
+    setSelected((prev) =>
+      prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id],
     );
 
   return (
@@ -1025,6 +1364,36 @@ function LaunchQueueCard({
               </div>
             )}
 
+            {batches.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+                  batches
+                </span>
+                {batches.map((b) => (
+                  <BatchCard
+                    key={b.id}
+                    batch={b}
+                    summary={batchSummary(items, b.id)}
+                    blocker={
+                      queue.data ? batchStartBlocker(queue.data, b.id) : ""
+                    }
+                    busy={busy}
+                    starting={
+                      launchBatch.isPending && launchBatch.variables === b.id
+                    }
+                    error={batchError(b.id)}
+                    onStart={() => launchBatch.mutate(b.id)}
+                    onRename={(name) => rename.mutate({ id: b.id, name })}
+                    onDismiss={() => setDismissId(b.id)}
+                  />
+                ))}
+                <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                  A batch runs its members in queue order and stops there — the
+                  on-fault and skip-resume settings below apply to it too.
+                </p>
+              </div>
+            ) : null}
+
             {builder.queue.length === 0 ? (
               <EmptyState
                 message="Queue is empty — add a ticket or epic above to build your run."
@@ -1052,6 +1421,9 @@ function LaunchQueueCard({
                       count={builder.queue.length}
                       expanded={expandedIds.includes(item.id)}
                       busy={busy}
+                      batch={batchName(batches, item.batch ?? "")}
+                      selected={picked.includes(item.id)}
+                      onSelect={() => toggleSelect(item.id)}
                       onToggle={() => toggleExpand(item.id)}
                       onMove={(dir) => move.mutate({ id: item.id, dir })}
                       onRun={() => runOne.mutate(item.id)}
@@ -1060,9 +1432,27 @@ function LaunchQueueCard({
                     />
                   ))}
                 </ul>
-                <div className="border-t border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-muted-foreground">
-                  {builder.queue.length} queued · {executable} executable{" "}
-                  {executable === 1 ? "ticket" : "tickets"} · runs top to bottom
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-muted-foreground">
+                  <span>
+                    {builder.queue.length} queued · {executable} executable{" "}
+                    {executable === 1 ? "ticket" : "tickets"} · runs top to
+                    bottom
+                  </span>
+                  {picked.length > 0 ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="font-mono"
+                      onClick={() => {
+                        newBatch.reset();
+                        setBatchOpen(true);
+                      }}
+                    >
+                      <Layers className="size-4" aria-hidden="true" />
+                      New batch ({picked.length})
+                    </Button>
+                  ) : null}
                 </div>
               </div>
             )}
@@ -1116,6 +1506,32 @@ function LaunchQueueCard({
             setRemoveId(null);
           }}
         />
+
+        {batchOpen ? (
+          <NewBatchDialog
+            count={picked.length}
+            pending={newBatch.isPending}
+            error={newBatch.error}
+            onOpenChange={(open) => {
+              if (!open) setBatchOpen(false);
+            }}
+            onCreate={(name) => newBatch.mutate(name)}
+          />
+        ) : null}
+
+        {dismissTarget ? (
+          <ConfirmDialog
+            open
+            onOpenChange={(open) => {
+              if (!open) setDismissId(null);
+            }}
+            windowTitle="dismiss batch"
+            title={`Dismiss ${batchDisplayName(dismissTarget)}?`}
+            description="The grouping goes and its card with it. Every item stays queued exactly where it is, and a run in flight is untouched."
+            confirmLabel="Dismiss"
+            onConfirm={() => dismiss.mutate(dismissTarget.id)}
+          />
+        ) : null}
       </TerminalCard>
 
       {builder.settled.length > 0 ? (
@@ -1754,16 +2170,17 @@ function PendingEpicGroup({
   );
 }
 
-function drainStep(timeline: Timeline): string {
+function drainStep(timeline: Timeline, batch: string): string {
+  const draining = batch ? `draining batch ${batch}` : "draining";
   if (timeline.running) {
     return (
       stepName(
         timeline.running.activity,
         timeline.running.phase ?? "",
-      ).toLowerCase() || "draining"
+      ).toLowerCase() || draining
     );
   }
-  return timeline.finalize ? "releasing" : "draining";
+  return timeline.finalize ? "releasing" : draining;
 }
 
 function RunningQueueView({
@@ -1824,6 +2241,7 @@ function RunningQueueView({
   const runningItem = running
     ? itemsById.get(running.epicId ?? running.id)
     : undefined;
+  const batch = batchName(queue.batches, queue.draining_batch ?? "");
   // The releasing epic's own finalize is the one run the gate lets through, so
   // the wait reads as a wait only while nothing is in flight.
   const gate = running || timeline.finalize ? "" : releaseGateLabel(queue);
@@ -1835,12 +2253,15 @@ function RunningQueueView({
       <TerminalCard title="loop" className="max-w-page">
         <div className="flex flex-col gap-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="font-mono text-sm text-muted-foreground">
-              <span className="text-foreground">
-                {timeline.done}/{timeline.total}
-              </span>{" "}
-              tickets done
-            </span>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-mono text-sm text-muted-foreground">
+                <span className="text-foreground">
+                  {timeline.done}/{timeline.total}
+                </span>{" "}
+                tickets done
+              </span>
+              {batch ? <BatchChip name={batch} /> : null}
+            </div>
             <div className="flex items-center gap-4">
               {timeline.elapsedAnchor ? (
                 <span className="font-mono text-xs text-muted-foreground">
@@ -1852,7 +2273,7 @@ function RunningQueueView({
               ) : null}
               <StatusPill
                 state={gate ? "warn" : "active"}
-                label={gate || drainStep(timeline)}
+                label={gate || drainStep(timeline, batch)}
               />
             </div>
           </div>
@@ -2273,6 +2694,7 @@ function loopTitleState(
   halt: LoopHalt | null,
   view: LoopView,
   timeline: Timeline | null,
+  batch: string,
 ): LoopTitleState {
   if (!canRun) return { kind: "idle" };
   if (halt) return { kind: "halted", halt: halt.kind, ticket: halt.ticket };
@@ -2282,7 +2704,7 @@ function loopTitleState(
       done: timeline.done,
       total: timeline.total,
       ticket: timeline.running?.id ?? timeline.finalize?.epicId ?? "",
-      step: drainStep(timeline),
+      step: drainStep(timeline, batch),
     };
   }
   if (timeline && timeline.total > 0 && timeline.done === timeline.total) {
@@ -2321,7 +2743,13 @@ export function Loop() {
     runs: runs.data?.runs ?? [],
     instance: liveInstance,
   });
-  usePageTitle(loopTitle(loopTitleState(canRun, halt, view, timeline)));
+  const drainingBatch = batchName(
+    queue.data?.batches,
+    queue.data?.draining_batch ?? "",
+  );
+  usePageTitle(
+    loopTitle(loopTitleState(canRun, halt, view, timeline, drainingBatch)),
+  );
 
   const stop = useMutation({
     mutationFn: () => stopQueue(repo),

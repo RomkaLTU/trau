@@ -108,6 +108,24 @@ describe('projectLoopState', () => {
     expect(state.timeline?.total).toBe(2)
   })
 
+  it('scopes the timeline to the batch the drain is running', () => {
+    const state = projectLoopState({
+      queue: {
+        ...queue(
+          [
+            item({ id: 'COD-1', batch: 'api-polish' }),
+            item({ id: 'COD-2', position: 2 }),
+          ],
+          true,
+        ),
+        draining_batch: 'api-polish',
+      },
+      runs: [],
+    })
+    expect(state.timeline?.total).toBe(1)
+    expect(state.timeline?.pending).toHaveLength(1)
+  })
+
   it('has nothing to project before the queue loads', () => {
     const state = projectLoopState({ runs: [] })
     expect(state).toEqual({ view: 'builder', timeline: null, halt: null })
