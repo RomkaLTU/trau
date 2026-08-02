@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -123,6 +125,13 @@ func TestReloadRefusedWhenHubRunsElsewhere(t *testing.T) {
 	}
 	if got := s.selfReloadPending(); got != "" {
 		t.Fatalf("pending repo = %q, want nothing pending", got)
+	}
+	msgs := reloadEvents(t, s, root)
+	if len(msgs) != 1 || !strings.Contains(msgs[0], "not running from acme's own binary") {
+		t.Fatalf("hub_reload events = %q, want one naming the repo", msgs)
+	}
+	if strings.Contains(msgs[0], "/") {
+		t.Errorf("event msg = %q, want the refusal to carry no filesystem path", msgs[0])
 	}
 }
 
@@ -300,5 +309,42 @@ func TestUpdateStatusCarriesPendingReload(t *testing.T) {
 	}
 	if payload.Running != "2.1.0" || payload.SelfReloadPending != root {
 		t.Fatalf("update = %+v, want the running version and %s pending", payload, root)
+	}
+}
+
+func reloadEvents(t *testing.T, s *Server, root string) []string {
+	t.Helper()
+	return eventMsgs(t, s, root, event.KindHubReload)
+}
+
+// TestReloadOutcomeIsRecorded pins the instrumentation the shipflock stall
+// needed: a drain that holds on a pending reload — or holds on nothing because
+// the request was refused and never landed — is only diagnosable if the answer to
+// "was a reload pending?" outlives the child that asked.
+func TestReloadOutcomeIsRecorded(t *testing.T) {
+	tests := []struct {
+		name       string
+		selfReload bool
+		want       string
+	}{
+		{name: "accepted", selfReload: true, want: "self-reload accepted — pending the next hub-wide idle gap"},
+		{name: "refused", selfReload: false, want: "self-reload refused — self-reload is off for acme"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, ts, root := reloadServer(t, tc.selfReload)
+			s.EnableRestart(func(string) {})
+
+			res := postReload(t, ts, root)
+			_ = res.Body.Close()
+
+			msgs := reloadEvents(t, s, root)
+			if len(msgs) != 1 {
+				t.Fatalf("hub_reload events = %d, want the outcome recorded once", len(msgs))
+			}
+			if !strings.HasPrefix(msgs[0], tc.want) {
+				t.Errorf("event msg = %q, want it to start with %q", msgs[0], tc.want)
+			}
+		})
 	}
 }

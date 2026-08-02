@@ -68,7 +68,9 @@ type QueueItemView struct {
 // holds the queue, so a drain that starts nothing reads as waiting on that release
 // rather than as idle. Batches lists the repo's batches and DrainingBatch names the
 // one the drain in flight is scoped to — empty when it is draining the whole queue
-// — so a client can label the run.
+// — so a client can label the run. Held reports that the drain is armed and
+// starting nothing anyway, with HeldReason naming the gate that holds it, so a
+// wait is never operationally indistinguishable from a hang.
 type QueueResponse struct {
 	Repo          string          `json:"repo"`
 	Draining      bool            `json:"draining"`
@@ -76,6 +78,9 @@ type QueueResponse struct {
 	DrainingBatch string          `json:"draining_batch"`
 	Stopping      bool            `json:"stopping"`
 	ReleasingEpic string          `json:"releasing_epic,omitempty"`
+	Held          bool            `json:"held"`
+	HeldReason    string          `json:"held_reason,omitempty"`
+	HeldSince     string          `json:"held_since,omitempty"`
 	Batches       []BatchView     `json:"batches"`
 	Items         []QueueItemView `json:"items"`
 }
@@ -476,6 +481,14 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 	if !meta.DrainingSince.IsZero() {
 		drainingSince = meta.DrainingSince.UTC().Format(time.RFC3339)
 	}
+	hold := drainHold{}
+	if meta.Draining {
+		hold = s.drain.spawnHold(root, meta.DrainingSince)
+	}
+	heldSince := ""
+	if !hold.since.IsZero() {
+		heldSince = hold.since.UTC().Format(time.RFC3339)
+	}
 	return QueueResponse{
 		Repo:          filepath.Base(root),
 		Draining:      meta.Draining,
@@ -483,6 +496,9 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		DrainingBatch: meta.Batch,
 		Stopping:      s.isStopping(root),
 		ReleasingEpic: s.releasingEpic(root),
+		Held:          hold.gate != "",
+		HeldReason:    hold.reason,
+		HeldSince:     heldSince,
 		Batches:       batchViews(batches),
 		Items:         queueItemViews(items, pins, blockers, s.removingItems(root)),
 	}, nil

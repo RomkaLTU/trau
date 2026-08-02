@@ -55,6 +55,7 @@ type drainer struct {
 	mu      sync.Mutex
 	active  map[string]context.CancelFunc
 	resumes map[string]autoResume
+	watch   map[string]drainWatch
 }
 
 func newDrainer(s *Server) *drainer {
@@ -67,6 +68,7 @@ func newDrainer(s *Server) *drainer {
 		prState: ghPRState,
 		active:  map[string]context.CancelFunc{},
 		resumes: map[string]autoResume{},
+		watch:   map[string]drainWatch{},
 	}
 	d.repoLive = d.repoHasLiveInstance
 	d.outcome = d.checkpointOutcome
@@ -84,6 +86,7 @@ func (d *drainer) ensure(ctx context.Context, root string) {
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
 	d.active[root] = cancel
+	d.stampTick(root)
 	go d.run(loopCtx, root)
 }
 
@@ -109,7 +112,16 @@ func (d *drainer) run(ctx context.Context, root string) {
 	}
 }
 
-// tick advances a repo's queue by one decision: it launches the next runnable
+// tick takes one drain decision and files what it held on, so a repo that starts
+// nothing while runnable work waits can be asked why — on the queue API and, once
+// per hold episode, in the feed.
+func (d *drainer) tick(root string) (drainAction, error) {
+	act, hold, err := d.decide(root)
+	d.recordHold(root, hold)
+	return act, err
+}
+
+// decide advances a repo's queue by one decision: it launches the next runnable
 // item no open blocker holds back, settles a finished one per the failure
 // taxonomy — pausing the drain on a fault or provider pause, but leaving a row
 // whose removal is in flight to the removal, which drops it rather than parking
@@ -119,65 +131,70 @@ func (d *drainer) run(ctx context.Context, root string) {
 // drain once the queue has nothing left to run so a completed — or armed but
 // empty — queue reads stopped instead of idling armed. A tick that finds a
 // running epic first advances its sub-issue rows onto what their checkpoints
-// already say, so the queue's count moves as children settle. It is the whole
-// drain policy, pure enough to table-test.
-func (d *drainer) tick(root string) (drainAction, error) {
+// already say, so the queue's count moves as children settle. Every wait it
+// returns names the gate it stopped at. It is the whole drain policy, pure enough
+// to table-test.
+func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
 	if err != nil {
-		return drainWait, err
+		return heldByErr(holdQueueError, "the repo's queue could not be read", fmt.Errorf("read queue: %w", err))
 	}
 	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
 		d.advanceSubIssues(root, running)
 		if d.alive(running.PID) || d.srv.isRemoving(root, running.ID) {
-			return drainWait, nil
+			return drainWait, drainHold{}, nil
 		}
 		class, reason := d.reconcileOutcome(root, running)
 		if status, pause := classifyDrainOutcome(class, meta.OnFault); pause {
 			if err := store.Pause(running.ID, reason); err != nil {
-				return drainWait, err
+				return heldByErr(holdQueueError, fmt.Sprintf("%s could not be parked", running.ID),
+					fmt.Errorf("park %s: %w", running.ID, err))
 			}
 			d.planAutoResume(root, running, class)
 		} else {
 			if err := store.Finish(running.ID, status, reason); err != nil {
-				return drainWait, err
+				return heldByErr(holdQueueError, fmt.Sprintf("%s could not be settled", running.ID),
+					fmt.Errorf("settle %s: %w", running.ID, err))
 			}
 			d.srv.clearQueued(d.srv.drainCtx, root, running)
 			d.forgetAutoResume(root, running.ID)
 		}
-		return drainReconcile, nil
+		return drainReconcile, drainHold{}, nil
 	}
 	if !meta.Draining {
 		if d.holdForAutoResume(root) {
-			return drainWait, nil
+			return drainWait, drainHold{}, nil
 		}
-		return drainStop, nil
+		return drainStop, drainHold{}, nil
 	}
 	next, ok, err := d.firstUnblocked(root, items, meta.Batch)
 	if err != nil {
-		return drainWait, err
+		return heldByErr(holdQueueError, "the queue's blockers could not be read", fmt.Errorf("read blockers: %w", err))
 	}
 	if !ok {
 		finished, err := store.FinishDraining()
 		if err != nil {
-			return drainWait, err
+			return heldByErr(holdQueueError, "the drain could not be disarmed", fmt.Errorf("disarm drain: %w", err))
 		}
 		if finished {
 			d.srv.emitQueueBatchFinished(root, meta.Batch, items)
-			return drainStop, nil
+			return drainStop, drainHold{}, nil
 		}
-		return drainWait, nil
+		return heldBy(holdBlocked, blockedReason(items, meta.Batch))
 	}
-	if d.srv.selfReloadArmed() {
-		return drainWait, nil
+	if repo := d.srv.selfReloadPending(); repo != "" {
+		return heldBy(holdSelfReload, fmt.Sprintf(
+			"a self-reload onto %s is waiting for the hub to fall idle", filepath.Base(repo)))
 	}
 	if d.repoLive(root) {
-		return drainWait, nil
+		return heldBy(holdRepoBusy, "a loop is already running in this repo")
 	}
 	if epic, held := d.srv.heldByRelease(root, next.ID); held {
 		finalize, queued := runnableItem(items, epic)
 		if !queued {
-			return drainWait, nil
+			return heldBy(holdRelease, fmt.Sprintf(
+				"%s is releasing and its own finalize is not queued to finish it", epic))
 		}
 		next = finalize
 	}
@@ -185,20 +202,23 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	// is skipped, not run twice. First occurrence wins.
 	if reason, dup := duplicateReason(items, next); dup {
 		if err := store.MarkSkipped(next.ID, reason); err != nil {
-			return drainWait, err
+			return heldByErr(holdQueueError, fmt.Sprintf("%s could not be marked skipped", next.ID),
+				fmt.Errorf("skip %s: %w", next.ID, err))
 		}
-		return drainReconcile, nil
+		return drainReconcile, drainHold{}, nil
 	}
 	_ = d.srv.stores.DrainOutcomes().Remove(root, next.ID)
 	pid, err := d.srv.sup.Spawn(d.spec(root, next, meta.NoResume))
 	if err != nil {
-		return drainWait, err
+		return heldByErr(holdLaunchFailed, fmt.Sprintf("%s could not be launched", next.ID),
+			fmt.Errorf("spawn %s: %w", next.ID, err))
 	}
 	if err := store.MarkRunning(next.ID, pid); err != nil {
-		return drainWait, err
+		return heldByErr(holdQueueError, fmt.Sprintf("%s could not be marked running", next.ID),
+			fmt.Errorf("mark %s running: %w", next.ID, err))
 	}
 	d.srv.clearQueuedIssue(d.srv.drainCtx, root, next.ID)
-	return drainSpawn, nil
+	return drainSpawn, drainHold{}, nil
 }
 
 // classUnknown marks a child that exited without leaving a drain report and
@@ -441,8 +461,8 @@ func (s *Server) emitQueueReconciled(root string, it queue.Item, evidence string
 		map[string]any{"ticket": it.ID, "kind": string(it.Kind), "evidence": evidence})
 }
 
-// emitQueueEvent appends a hub-authored queue event and pushes it to the live
-// feed, the shared tail of every settle the queue makes with no run behind it.
+// emitQueueEvent appends a hub-authored event and pushes it to the live feed,
+// the shared tail of every move the hub makes on a queue with no run behind it.
 func (s *Server) emitQueueEvent(root, kind, msg string, fields map[string]any) {
 	rows, err := s.stores.Events().Append(root, []hubstore.NewEvent{{
 		TS:     time.Now().UTC().Format(time.RFC3339),

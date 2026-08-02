@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
 )
 
@@ -61,29 +64,49 @@ func (s *Server) handleHubReload(w http.ResponseWriter, r *http.Request) {
 	projectPath, userPath := s.repoConfigPaths(repo)
 	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load repo config: " + err.Error()})
+		logger.Verbosef("self-reload %s: load config: %v", repo.Name, err)
+		s.refuseReload(w, repo.Root, http.StatusInternalServerError,
+			fmt.Sprintf("%s's own config could not be read", repo.Name))
 		return
 	}
 	if !cfg.HubSelfReload {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": fmt.Sprintf("self-reload is off for %s; set HUB_SELF_RELOAD=1 in its .trau.ini to allow it", repo.Name),
-		})
+		s.refuseReload(w, repo.Root, http.StatusForbidden,
+			fmt.Sprintf("self-reload is off for %s; set HUB_SELF_RELOAD=1 in its .trau.ini to allow it", repo.Name))
 		return
 	}
 	exe, err := s.executable()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resolve hub executable: " + err.Error()})
+		logger.Verbosef("self-reload %s: resolve hub executable: %v", repo.Name, err)
+		s.refuseReload(w, repo.Root, http.StatusInternalServerError, "the hub could not resolve its own binary")
 		return
 	}
 	if !withinRoot(repo.Root, exe) {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("hub is not running from this repo's binary (%s)", exe),
-		})
+		logger.Verbosef("self-reload %s: hub runs from %s", repo.Name, exe)
+		s.refuseReload(w, repo.Root, http.StatusConflict,
+			fmt.Sprintf("hub is not running from %s's own binary", repo.Name))
 		return
 	}
 
 	s.requestSelfReload(repo.Root)
+	s.recordReload(repo.Root, "accepted — pending the next hub-wide idle gap")
 	writeJSON(w, http.StatusAccepted, ReloadAck{Pending: true, RepoRoot: repo.Root, Version: s.version})
+}
+
+// refuseReload answers a self-reload the hub will not perform and records why
+// against the repo that asked.
+func (s *Server) refuseReload(w http.ResponseWriter, root string, status int, reason string) {
+	s.recordReload(root, "refused — "+reason)
+	writeJSON(w, status, map[string]string{"error": reason})
+}
+
+// recordReload logs and persists what became of a self-reload request, so
+// "was a reload pending?" stays answerable long after the child that asked has
+// exited — the drain holds its next spawn on a pending one, and a request that
+// never landed leaves the same silence a hang does.
+func (s *Server) recordReload(root, outcome string) {
+	logger.Verbosef("self-reload %s: %s", filepath.Base(root), outcome)
+	s.emitQueueEvent(root, event.KindHubReload, "self-reload "+outcome,
+		map[string]any{"outcome": outcome})
 }
 
 // requestSelfReload marks a reload pending for root and starts the watcher that
@@ -105,11 +128,6 @@ func (s *Server) selfReloadPending() string {
 	s.selfReloadMu.Lock()
 	defer s.selfReloadMu.Unlock()
 	return s.selfReload
-}
-
-// selfReloadArmed reports whether a restart is waiting for the hub to fall idle.
-func (s *Server) selfReloadArmed() bool {
-	return s.selfReloadPending() != ""
 }
 
 // awaitReloadGap restarts the hub at the first moment nothing is running

@@ -98,6 +98,7 @@ import {
   runNext as runNextRequest,
   runQueueItem,
   skipResumeApplies,
+  spawnHoldReason,
   startBatch,
   stopQueue,
   updateBatch,
@@ -2245,10 +2246,17 @@ function RunningQueueView({
   // The releasing epic's own finalize is the one run the gate lets through, so
   // the wait reads as a wait only while nothing is in flight.
   const gate = running || timeline.finalize ? "" : releaseGateLabel(queue);
+  const held = spawnHoldReason(queue);
 
   return (
     <div className="flex flex-col gap-6">
-      <LoopBanner repo={repo} takeover={takeover} halt={halt} />
+      <LoopBanner
+        repo={repo}
+        takeover={takeover}
+        halt={halt}
+        held={held}
+        heldSince={queue.held_since}
+      />
 
       <TerminalCard title="loop" className="max-w-page">
         <div className="flex flex-col gap-6">
@@ -2272,8 +2280,8 @@ function RunningQueueView({
                 </span>
               ) : null}
               <StatusPill
-                state={gate ? "warn" : "active"}
-                label={gate || drainStep(timeline, batch)}
+                state={gate || held ? "warn" : "active"}
+                label={gate || (held ? "spawn held" : drainStep(timeline, batch))}
               />
             </div>
           </div>
@@ -2302,6 +2310,10 @@ function RunningQueueView({
               <p className="font-sans text-sm text-muted-foreground">
                 Nothing new starts while {queue.releasing_epic} is releasing —
                 the queue picks up once its release lands or is handed off.
+              </p>
+            ) : held ? (
+              <p className="font-sans text-sm text-muted-foreground">
+                Nothing new starts while the drain is held.
               </p>
             ) : (
               <p className="font-sans text-sm text-muted-foreground">
@@ -2615,20 +2627,52 @@ const HALT_TONE: Record<
   fail: { border: "border-fail/40", bg: "bg-fail/10", text: "text-fail" },
 };
 
-// LoopBanner is the page's single headline slot: a live takeover owns it, and a
-// halt stored behind one is history rather than a second, contradicting banner.
+// LoopBanner is the page's single headline slot, and the live states own it: a
+// takeover first, then a drain holding its next spawn. A halt stored behind
+// either is history rather than a second, contradicting banner.
 function LoopBanner({
   repo,
   takeover,
   halt,
+  held,
+  heldSince,
 }: {
   repo: string;
   takeover?: Instance;
   halt: LoopHalt | null;
+  held: string;
+  heldSince?: string;
 }) {
   if (takeover) return <TakeoverBanner repo={repo} ticket={takeover.ticket} />;
+  if (held) return <HeldBanner reason={held} since={heldSince} />;
   if (halt) return <HaltBanner repo={repo} halt={halt} />;
   return null;
+}
+
+// HeldBanner names what an armed drain is waiting on and how long it has waited,
+// so a queue that starts nothing reads as a wait with a reason rather than as a
+// hang nobody can tell from a crash.
+function HeldBanner({ reason, since }: { reason: string; since?: string }) {
+  const now = useNow(30_000);
+  return (
+    <div
+      role="status"
+      className="flex max-w-page items-start gap-2.5 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3"
+    >
+      <TriangleAlert
+        className="mt-0.5 size-4 shrink-0 text-warn"
+        aria-hidden="true"
+      />
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-sm text-warn">
+          Spawn held{since ? ` for ${elapsedSince(since, now)}` : ""}
+        </span>
+        <p className="font-sans text-sm leading-relaxed text-foreground">
+          The queue is draining but nothing new is starting — {reason}.
+        </p>
+      </div>
+    </div>
+  );
 }
 
 function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
@@ -2802,7 +2846,13 @@ export function Loop() {
 
   return (
     <div className="flex flex-col gap-6">
-      <LoopBanner repo={repo} takeover={takeoverInstance} halt={halt} />
+      <LoopBanner
+        repo={repo}
+        takeover={takeoverInstance}
+        halt={halt}
+        held={spawnHoldReason(queue.data)}
+        heldSince={queue.data?.held_since}
+      />
       <LaunchQueueCard
         repo={repo}
         freshness={repos.find((r) => r.name === repo)?.freshness}

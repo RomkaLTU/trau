@@ -182,6 +182,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 		}
 	}
 	go s.sweepKnownRepos(ctx)
+	go s.drain.watchStalls(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 	go s.pruneRunData(ctx)
 	go s.pruneProofs(ctx)
