@@ -85,6 +85,15 @@ func liveLoopRefusal(name string) string {
 	return fmt.Sprintf("a loop is live in %q; stop it before removing the repo", name)
 }
 
+// nothingRemovedFailure words a removal that deleted no row. Both legitimate
+// reasons for a listed repo to have none — a SERVE_WORKSPACE seed and a live loop —
+// are refused before a removal reaches the store, so a zero-row delete is a store
+// the hub cannot account for, and the repo is still listed on the next poll.
+// Reporting it as success is what let the reported row survive forever.
+func nothingRemovedFailure(repo registry.Repo) string {
+	return fmt.Sprintf("removal left %q listed: no registration or known-repos row matched %s", repo.Name, repo.Root)
+}
+
 // registerRepo makes a repo startable from the hub by persisting its root to the
 // hub-owned registration store. It is fail-closed on exposure: on a non-loopback
 // bind registration is refused unless SERVE_ALLOW_REGISTER is set, so a leaked
@@ -174,7 +183,7 @@ func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	registered, _ := s.stores.Registrations().Registered()
-	root, ok := matchRoot(registered, name)
+	root, ok := matchRoot(normalizeRoots(registered), name)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
 		return
@@ -221,8 +230,13 @@ func (s *Server) forgetRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": liveLoopRefusal(repo.Name)})
 		return
 	}
-	if err := s.stores.Registrations().Forget(repo.Root); err != nil {
+	removed, err := s.stores.Registrations().Forget(repo.Root)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to remove repo: " + err.Error()})
+		return
+	}
+	if !removed {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": nothingRemovedFailure(repo)})
 		return
 	}
 	if err := s.stores.Projects().ForgetRoot(repo.Root); err != nil {

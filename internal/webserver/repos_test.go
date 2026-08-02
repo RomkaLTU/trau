@@ -643,6 +643,70 @@ func TestForgetByRootRemovesTheRightNamesake(t *testing.T) {
 	}
 }
 
+// TestForgetRepoWithANonCanonicalStoredRoot covers the row the hub served forever:
+// a known-repos root recorded as the loop resolved it rather than cleaned, where
+// the removal reported success over a DELETE that matched nothing.
+func TestForgetRepoWithANonCanonicalStoredRoot(t *testing.T) {
+	cases := []struct {
+		name  string
+		spell func(root string) string
+	}{
+		{
+			name:  "trailing separator",
+			spell: func(root string) string { return root + string(filepath.Separator) },
+		},
+		{
+			name:  "forward slashes as git reports them on windows",
+			spell: filepath.ToSlash,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			stored := tc.spell(gitRepo(t, t.TempDir(), "observed", "dir"))
+			if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{workspaceRepo(stored)}); err != nil {
+				t.Fatalf("seed known repo: %v", err)
+			}
+
+			_, ts := controlServer(t, home, nil)
+			res, body := deleteReq(t, ts, APIPrefix+"/repos/"+url.PathEscape(stored)+"?forget=1")
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("DELETE by stored root = %d, want 200 (%s)", res.StatusCode, body)
+			}
+			if roots := listedRepoRoots(t, ts); len(roots) != 0 {
+				t.Errorf("removed repo is still listed: %v", roots)
+			}
+			if known, _ := testStoresAt(t, home).Registrations().Known(); len(known) != 0 {
+				t.Errorf("known set still holds the removed repo: %v", known)
+			}
+		})
+	}
+}
+
+// TestUnregisterRepoWithANonCanonicalRegisteredRoot covers Make observe-only on a
+// registration a legacy import left uncleaned, which used to 404 on a byte compare
+// against the stored root.
+func TestUnregisterRepoWithANonCanonicalRegisteredRoot(t *testing.T) {
+	home := t.TempDir()
+	stored := gitRepo(t, t.TempDir(), "acme", "dir") + string(filepath.Separator)
+	if err := testStoresAt(t, home).Registrations().Register(stored); err != nil {
+		t.Fatalf("seed registration: %v", err)
+	}
+
+	_, ts := controlServer(t, home, nil)
+	res, body := deleteReq(t, ts, APIPrefix+"/repos/"+url.PathEscape(stored))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("unregister = %d, want 200 (%s)", res.StatusCode, body)
+	}
+	if roots, _ := testStoresAt(t, home).Registrations().Registered(); len(roots) != 0 {
+		t.Errorf("registration store still lists %v", roots)
+	}
+	if allowedRepoNames(t, ts)["acme"] {
+		t.Error("repo still allowed after unregister, want observe-only")
+	}
+}
+
 func allowedRepoNames(t *testing.T, ts *httptest.Server) map[string]bool {
 	t.Helper()
 	repos := listRepos(t, ts)

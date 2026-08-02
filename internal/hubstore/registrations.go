@@ -53,19 +53,33 @@ func (r *Registrations) Known() (repos []registry.Repo, err error) {
 }
 
 // Remember folds repos into the known set, leaving any already-known repo
-// untouched. New repos are added; it never overwrites an existing row.
+// untouched. New repos are added; it never overwrites an existing row. A repo
+// whose root canonicalizes to one already known is skipped rather than inserted
+// under its own spelling: the ON CONFLICT clause only catches a byte-identical
+// root, and a second row for the same directory is a row every later lookup and
+// removal has to reconcile.
 func (r *Registrations) Remember(repos []registry.Repo) error {
 	if len(repos) == 0 {
 		return nil
+	}
+	known, err := r.Known()
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(known)+len(repos))
+	for _, repo := range known {
+		seen[filepath.Clean(repo.Root)] = true
 	}
 	tx, err := r.db.Begin()
 	if err != nil {
 		return err
 	}
 	for _, repo := range repos {
-		if repo.Root == "" {
+		canonical := filepath.Clean(repo.Root)
+		if repo.Root == "" || seen[canonical] {
 			continue
 		}
+		seen[canonical] = true
 		if _, err := tx.Exec(
 			`INSERT INTO known_repos(root, name, runs_dir) VALUES(?, ?, ?) ON CONFLICT(root) DO NOTHING`,
 			repo.Root, repo.Name, repo.RunsDir,
@@ -106,31 +120,68 @@ func (r *Registrations) Register(root string) error {
 
 // Unregister removes root from the startable set, reporting whether it was
 // present.
-func (r *Registrations) Unregister(root string) (bool, error) {
-	res, err := r.db.Exec(`DELETE FROM registered_repos WHERE root = ?`, root)
+func (r *Registrations) Unregister(root string) (removed bool, err error) {
+	tx, err := r.db.Begin()
 	if err != nil {
 		return false, err
 	}
-	n, err := res.RowsAffected()
-	return n > 0, err
+	removed, err = deleteRootsMatching(tx, "registered_repos", root)
+	if err != nil {
+		return false, errors.Join(err, tx.Rollback())
+	}
+	return removed, tx.Commit()
 }
 
 // Forget drops root from both the known set and the startable set, so a repo the
-// hub only ever observed can leave the list instead of lingering forever.
-func (r *Registrations) Forget(root string) error {
+// hub only ever observed can leave the list instead of lingering forever. It
+// reports whether any row went: a removal that matched nothing left the repo
+// listed, and the caller must not report that as success.
+func (r *Registrations) Forget(root string) (removed bool, err error) {
 	tx, err := r.db.Begin()
 	if err != nil {
-		return err
+		return false, err
 	}
-	for _, stmt := range []string{
-		`DELETE FROM known_repos WHERE root = ?`,
-		`DELETE FROM registered_repos WHERE root = ?`,
-	} {
-		if _, err := tx.Exec(stmt, root); err != nil {
-			return errors.Join(err, tx.Rollback())
+	for _, table := range []string{"known_repos", "registered_repos"} {
+		went, err := deleteRootsMatching(tx, table, root)
+		if err != nil {
+			return false, errors.Join(err, tx.Rollback())
+		}
+		removed = removed || went
+	}
+	return removed, tx.Commit()
+}
+
+// deleteRootsMatching drops every row of table whose stored root canonicalizes to
+// root, reporting whether any did. A root is stored exactly as the loop resolved
+// it — `git rev-parse` hands back forward slashes on Windows — so a byte-equal
+// DELETE misses the very row it was aimed at, and a store holding both spellings
+// of one directory needs both gone in the same pass. The matches are collected
+// before the first delete because the transaction holds a single connection.
+func deleteRootsMatching(tx *sql.Tx, table, root string) (bool, error) {
+	rows, err := tx.Query(`SELECT root FROM ` + table)
+	if err != nil {
+		return false, err
+	}
+	cleaned := filepath.Clean(root)
+	var matches []string
+	for rows.Next() {
+		var stored string
+		if err := rows.Scan(&stored); err != nil {
+			return false, errors.Join(err, rows.Close())
+		}
+		if filepath.Clean(stored) == cleaned {
+			matches = append(matches, stored)
 		}
 	}
-	return tx.Commit()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return false, err
+	}
+	for _, stored := range matches {
+		if _, err := tx.Exec(`DELETE FROM `+table+` WHERE root = ?`, stored); err != nil {
+			return false, err
+		}
+	}
+	return len(matches) > 0, nil
 }
 
 // ImportLegacy backfills the store from any repos.json / workspace.json left by

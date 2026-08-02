@@ -203,10 +203,13 @@ func (s *Server) liveInstances() []registry.Entry {
 
 // repoIsLive reports whether any loop is registered in root right now, idle
 // dashboards included, matching what the repos list flags as live. The presence
-// sweep remembers every live loop's repo, so removing one would not stick.
+// sweep remembers every live loop's repo, so removing one would not stick. An
+// entry's root and the stored row's can spell the same directory differently, and
+// the refusal has to fire on either spelling.
 func (s *Server) repoIsLive(root string) bool {
+	cleaned := filepath.Clean(root)
 	return slices.ContainsFunc(s.liveInstances(), func(e registry.Entry) bool {
-		return e.RepoRoot == root
+		return filepath.Clean(e.RepoRoot) == cleaned
 	})
 }
 

@@ -259,7 +259,10 @@ func (s *Server) findRepo(ident string) (registry.Repo, bool) {
 // matchListedRepo resolves ident against the same union findRepo does, but under
 // matchRoot's rule that an ambiguous base name matches nothing. Removal is the one
 // lookup that must not fall back to an arbitrary namesake, so it takes a root or a
-// name only one listed repo answers to.
+// name only one listed repo answers to. The stored repo comes back with its root
+// verbatim: matchRoot answers with a cleaned path, and a row stored under another
+// spelling of it is the row a removal has to address. Only a root with no stored
+// row at all — a seed-only or live-only repo — falls through to a synthesized view.
 func (s *Server) matchListedRepo(ident string) (registry.Repo, bool) {
 	known := s.knownRepos(s.liveInstances())
 	roots := make([]string, 0, len(known))
@@ -271,7 +274,7 @@ func (s *Server) matchListedRepo(ident string) (registry.Repo, bool) {
 		return registry.Repo{}, false
 	}
 	for _, repo := range known {
-		if repo.Root == root {
+		if filepath.Clean(repo.Root) == root {
 			return repo, true
 		}
 	}
