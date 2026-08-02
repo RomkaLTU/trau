@@ -91,6 +91,7 @@ func (c *KimiInteractive) Run(ctx context.Context, prompt, label string) (Result
 	defer closeTranscript()
 
 	start := c.clock()
+	since := usageSince(resultPath, start)
 	sess, err := starter(ctx, c.Bin, c.Dir, c.args(), cols, rows)
 	if err != nil {
 		res := Result{IsError: true, Model: c.Model}
@@ -148,7 +149,7 @@ func (c *KimiInteractive) Run(ctx context.Context, prompt, label string) (Result
 			c.emit(label, res, c.clock().Sub(start), err, false)
 			return res, fmt.Errorf("kimi interactive run (%s): read result: %w", label, err)
 		} else if ok {
-			stats, usageOK := c.awaitUsage(ctx, start)
+			stats, usageOK := c.awaitUsage(ctx, since)
 			_ = sess.Kill()
 			res := c.enrich(Result{Final: final}, stats, usageOK)
 			dur := c.clock().Sub(start)
@@ -160,7 +161,7 @@ func (c *KimiInteractive) Run(ctx context.Context, prompt, label string) (Result
 		select {
 		case err := <-wait:
 			final, ok, readErr := readResultFile(resultPath)
-			stats, usageOK := c.sessionStats(start)
+			stats, usageOK := c.sessionStats(since)
 			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, stats, usageOK)
 			dur := c.clock().Sub(start)
 			c.emit(label, res, dur, err, usageOK)

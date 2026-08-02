@@ -3,14 +3,14 @@ package hubstore
 import (
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
 func testDrainOutcomes(t *testing.T) *DrainOutcomes {
 	t.Helper()
 	home := t.TempDir()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

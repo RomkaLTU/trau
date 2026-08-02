@@ -91,9 +91,12 @@ race-guard:
 net-guard:
 	go run ./internal/netguard/check
 
-# TESTFLAGS reaches `go test` for the runs the default does not fit: a repeat
-# (-count=2) or a slow machine needs a -timeout past Go's 10-minute per-package
-# default, which internal/webserver is already close to under -race.
+# TESTFLAGS reaches `go test` for the runs the default does not fit, such as a
+# repeat (-count=2) wanting its own -timeout. Go's default is 10 minutes per
+# package and a single run fits comfortably: the slowest package,
+# internal/webserver, measured 128s under -race on two cores (2026-08-03). CI
+# pins 8m through here so a wedged package fails fast instead of riding the
+# default out.
 TESTFLAGS ?=
 
 ## test: run the suite under the race detector

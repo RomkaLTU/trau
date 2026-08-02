@@ -8,12 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 func testGrill(t *testing.T, retention int) (*Grill, *sql.DB) {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -330,7 +330,7 @@ func TestGrillInterjectionQueue(t *testing.T) {
 // took the message is still delivered — once — by whatever store reads it next.
 func TestGrillInterjectionsSurviveReopen(t *testing.T) {
 	dir := t.TempDir()
-	db, err := hubdb.Open(dir)
+	db, err := hubdbtest.Open(dir)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestGrillInterjectionsSurviveReopen(t *testing.T) {
 		t.Fatalf("close hub db: %v", err)
 	}
 
-	reopened, err := hubdb.Open(dir)
+	reopened, err := hubdbtest.Open(dir)
 	if err != nil {
 		t.Fatalf("reopen hub db: %v", err)
 	}

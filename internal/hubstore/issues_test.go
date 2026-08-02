@@ -7,12 +7,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 func testIssues(t *testing.T) *Issues {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

@@ -6,13 +6,13 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 func testProjects(t *testing.T, home string) *Projects {
 	t.Helper()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestRenameKeepsIdentifierAndMembers(t *testing.T) {
 
 func TestDeleteDropsGroupingOnly(t *testing.T) {
 	home := t.TempDir()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestEnsureRootsLeavesGroupedRepoWhereItIs(t *testing.T) {
 
 func TestEnsureProjectsCoversTheReposTheHubTracks(t *testing.T) {
 	home := t.TempDir()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

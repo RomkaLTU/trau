@@ -4,12 +4,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 func testAtlas(t *testing.T) *AtlasDocuments {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
