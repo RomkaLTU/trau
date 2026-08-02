@@ -237,6 +237,11 @@ type GitHub interface {
 	// through the draft PR an earlier run's exit hygiene left behind.
 	MarkPRReady(ctx context.Context, pr string) error
 
+	// UpdatePRBody replaces a PR's description. A Folder repo run rewrites every
+	// body once all its PRs exist, which is the only way the first one opened can
+	// name a sibling whose URL did not exist yet.
+	UpdatePRBody(ctx context.Context, pr, body string) error
+
 	PRState(ctx context.Context, pr string) (string, error)
 
 	Checks(ctx context.Context, pr string) ([]Check, error)
@@ -668,13 +673,15 @@ type Pipeline struct {
 	// since missing proofs never fail or pause a run. Nil disables harvest.
 	UploadProofs func(ctx context.Context, ticket, traceDir string, shots []hubclient.ProofScreenshot) error
 
-	// PublishProofs pushes a run's stored verify screenshots to the target repo's
-	// trau-proofs orphan branch and reports how the delivered PR body should
-	// reference them. It is called once during PR creation; a repo with no remote
-	// or a run with no proofs yields an empty publication, and a push failure
-	// returns an error the caller logs before delivering the PR without the QA
-	// section. Nil disables proof publishing.
-	PublishProofs func(ctx context.Context, ticket string) (proofsbranch.Publication, error)
+	// PublishProofs pushes a run's stored verify screenshots to repoDir's trau-proofs
+	// orphan branch and reports how the delivered PR body should reference them.
+	// repoDir is the target repo on a plain Repo and the run's first changed Child
+	// repo in a Folder repo, whose PR bodies all link the one branch it lands on. It
+	// is called once during PR creation; a repo with no remote or a run with no
+	// proofs yields an empty publication, and a push failure returns an error the
+	// caller logs before delivering the PR without the QA section. Nil disables
+	// proof publishing.
+	PublishProofs func(ctx context.Context, repoDir, ticket string) (proofsbranch.Publication, error)
 
 	// HubSelfReload gates the post-ship hub reload (config HUB_SELF_RELOAD): once
 	// a full unit of work merges to the base, the binary is rebuilt from it with
@@ -737,11 +744,15 @@ type Pipeline struct {
 	// changed, and a fingerprint of the uncommitted work it already carried — and
 	// are always filled as a pair; sliceChecks is the verify library the changed
 	// children resolved to. All are resolved per run, the sweep from the checkpoint
-	// when the run is a resume (see startFolderRun).
-	children    []folderrepo.Child
-	offLimits   map[string]string
-	startDirt   map[string]string
-	sliceChecks []checks.Check
+	// when the run is a resume (see startFolderRun). folderResumed is that resume
+	// flag, held because ship also has to know: only a resume may read what an
+	// earlier attempt left in a child — its branch, its recorded ship set — as this
+	// run's own work.
+	children      []folderrepo.Child
+	offLimits     map[string]string
+	startDirt     map[string]string
+	sliceChecks   []checks.Check
+	folderResumed bool
 
 	// buildProvider/buildSkills capture, from the last build agent call, which
 	// provider ran and which skills its session loaded — the inputs to the
@@ -2606,7 +2617,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		} else if err := p.assertPRBaseCurrent(ctx, p.Git, prBase, p.prBasePin(id)); err != nil {
 			return fmt.Errorf("commit %s: %w", id, err)
 		}
-		body := p.prBody(ctx, id, p.proofsSection(ctx, id))
+		body := p.prBody(ctx, id, p.proofsSection(ctx, id, p.RepoRoot))
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
@@ -5934,6 +5945,14 @@ func (g ExecGitHub) CreatePR(ctx context.Context, base, head, title, body string
 func (g ExecGitHub) MarkPRReady(ctx context.Context, pr string) error {
 	if _, err := g.output(ctx, "pr", "ready", pr); err != nil {
 		return fmt.Errorf("gh pr ready: %w", err)
+	}
+	return nil
+}
+
+// UpdatePRBody replaces pr's description with body.
+func (g ExecGitHub) UpdatePRBody(ctx context.Context, pr, body string) error {
+	if _, err := g.output(ctx, "pr", "edit", pr, "--body", body); err != nil {
+		return fmt.Errorf("gh pr edit: %w", err)
 	}
 	return nil
 }

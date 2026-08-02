@@ -30,7 +30,12 @@ import {
 } from '@/lib/ledger'
 import { boardPill } from '@/lib/overview'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
-import { runsQueryOptions, teamRunsQueryOptions, type Run } from '@/lib/runs'
+import {
+  runsQueryOptions,
+  teamRunsQueryOptions,
+  type Run,
+  type RunShip,
+} from '@/lib/runs'
 import { checkpointSteps, liveSteps, type Step } from '@/lib/steps'
 import { cn } from '@/lib/utils'
 
@@ -92,6 +97,18 @@ function RepoChip({ repo }: { repo: string }) {
   return (
     <span className="rounded border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground">
       {repo}
+    </span>
+  )
+}
+
+// ShipsChip says a run delivered across several Child repos, which nothing else on
+// the row can: PR and pr_url name only the first of them. A run with one target
+// reads as any other row.
+function ShipsChip({ ships }: { ships?: RunShip[] }) {
+  if (!ships || ships.length < 2) return null
+  return (
+    <span className="shrink-0 rounded border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground">
+      {ships.length} repos
     </span>
   )
 }
@@ -164,6 +181,7 @@ function RowItem({
           {showAuthor && <AuthorChip run={run} />}
           <PhaseStepper compact steps={steps} subLabel={label} />
           <StatusPill state={pill.state} label={pill.label} />
+          <ShipsChip ships={run.ships} />
           <PRStatusBadge status={run.pr_status} />
           <span className="w-16 text-right font-mono text-[0.7rem] text-foreground">
             {rowCost(run)}

@@ -131,6 +131,10 @@ func (s *Server) runDiffFor(ctx context.Context, repo registry.Repo, row hubstor
 func (s *Server) folderRunDiff(ctx context.Context, repo registry.Repo, children []folderrepo.Child, row hubstore.CheckpointRow) (RunDiff, error) {
 	merged := RunDiff{Source: "committed", Branch: row.Branch, Files: []RunDiffFile{}}
 	targets, shipped := folderDiffChildren(ctx, children, row)
+	// A folder holds as many bases as it has repositories and each advances on its
+	// own while a long run works the others, so every child is anchored at its own
+	// recorded pin instead of the single BASE_SHA a plain Repo's run records.
+	pins := childValues(row.Data, "FORK_POINTS")
 	// A folder run cuts each child's branch at ship time, so until then its work is
 	// still loose in the children's trees and the worktree is the only place it can
 	// be read — there is no ref for rawRunDiff to find.
@@ -144,6 +148,7 @@ func (s *Server) folderRunDiff(ctx context.Context, repo registry.Repo, children
 		if !ok {
 			continue
 		}
+		anchor.Pin = pins[c.Name]
 		diff, err := childDiff(ctx, c.Path, anchor, row.Branch)
 		if errors.Is(err, errNoDiffSource) {
 			continue
