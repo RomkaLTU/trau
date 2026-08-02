@@ -147,6 +147,7 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"push_repair", "push_repair", PushRepairData{ID: goldenID, HookOutput: "hook line one\nhook line two", NotesNote: " NOTES-NOTE.", CodeStyle: codeStyle}},
 		{"push_repair_nostyle", "push_repair", PushRepairData{ID: goldenID, HookOutput: "hook line one\nhook line two", NotesNote: " NOTES-NOTE."}},
 		{"resolve_conflicts", "resolve_conflicts", ResolveConflictsData{ID: goldenID, Base: "main", Branch: goldenBranch}},
+		{"ci_repair", "ci_repair", CIRepairData{ID: goldenID, PRURL: "https://github.com/o/r/pull/5", Branch: goldenBranch}},
 		{"epic_repair", "epic_repair", EpicRepairData{EpicID: "COD-100", PRURL: "https://github.com/o/r/pull/5", Branch: "epic/COD-100"}},
 		{"cleanup_notes", "cleanup", CleanupData{ID: goldenID, NotesNote: " NOTES-NOTE."}},
 		{"cleanup_empty", "cleanup", CleanupData{ID: goldenID}},
@@ -209,8 +210,8 @@ func TestRenderTestEffortGoldens(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	cat := Catalog()
-	if len(cat) != 24 {
-		t.Fatalf("catalog has %d prompts, want 24", len(cat))
+	if len(cat) != 25 {
+		t.Fatalf("catalog has %d prompts, want 25", len(cat))
 	}
 	seen := map[string]bool{}
 	for _, p := range cat {

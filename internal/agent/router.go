@@ -22,12 +22,19 @@ const (
 // Phases lists the routable phase keys in pipeline order (loop-level "pick" last).
 var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePick}
 
+// ciRepairPrefix labels the merge gate's bounded CI repair calls (ci-repair1).
+// They are repair work under another name, so they route, strip MCP and steer as
+// repair despite not carrying that prefix.
+const ciRepairPrefix = "ci-repair"
+
 // RouteKey normalizes a per-call label (the tag passed to Run) to its routable
 // phase. The pipeline emits dynamic labels — "verify-retry2", "repair1" — and the
 // tracker emits the loop-level Linear labels; all collapse to one of [Phases].
 // Anything unrecognized buckets under "pick" (the cheap MCP-only calls).
 func RouteKey(label string) string {
 	switch {
+	case strings.HasPrefix(label, ciRepairPrefix):
+		return PhaseRepair
 	case strings.HasPrefix(label, PhaseBuild):
 		return PhaseBuild
 	case strings.HasPrefix(label, PhaseHandoff):
@@ -50,12 +57,12 @@ func RouteKey(label string) string {
 }
 
 // mechanicalPhasePrefixes name the phases that never read the tracker — cleanup,
-// commit, repair, bugfix, and push-repair work purely from the code, the
-// verdict/brief files, and the prompt, and the hub's suggest classifier reads
-// nothing at all. They are matched by raw-label prefix (not RouteKey) so
-// push-repair and suggest, which RouteKey buckets under pick, are classified as
-// mechanical without dragging the tracker-reading pick along with it.
-var mechanicalPhasePrefixes = []string{PhaseCleanup, PhaseCommit, PhaseRepair, PhaseBugfix, "push-repair", "suggest"}
+// commit, repair (ci-repair included), bugfix, and push-repair work purely from
+// the code, the verdict/brief files, and the prompt, and the hub's suggest
+// classifier reads nothing at all. They are matched by raw-label prefix (not
+// RouteKey) so push-repair and suggest, which RouteKey buckets under pick, are
+// classified as mechanical without dragging the tracker-reading pick along with it.
+var mechanicalPhasePrefixes = []string{PhaseCleanup, PhaseCommit, PhaseRepair, ciRepairPrefix, PhaseBugfix, "push-repair", "suggest"}
 
 // MechanicalPhase reports whether label names a mechanical phase — one a backend
 // may launch with its tracker MCP servers stripped, since it consults only the
@@ -73,7 +80,7 @@ func MechanicalPhase(label string) bool {
 // steerablePhasePrefixes is deliberately an allow-list rather than the inverse of
 // MechanicalPhase: repair and bugfix are mechanical in the MCP-stripping sense
 // yet are exactly where a mid-run correction lands.
-var steerablePhasePrefixes = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix}
+var steerablePhasePrefixes = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, ciRepairPrefix, PhaseBugfix}
 
 // SteerablePhase reports whether label names a phase that takes operator steer
 // notes. Prefix-matched on the raw label, so repair2, verify-retry1, and a verify

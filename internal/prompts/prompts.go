@@ -130,6 +130,13 @@ type ResolveConflictsData struct {
 	Branch string
 }
 
+// CIRepairData feeds the ci_repair prompt.
+type CIRepairData struct {
+	ID     string
+	PRURL  string
+	Branch string
+}
+
 // EpicRepairData feeds the epic_repair prompt.
 type EpicRepairData struct {
 	EpicID string

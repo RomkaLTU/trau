@@ -2819,10 +2819,12 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return ErrAlreadyDone
 	}
 
-	p.setActivity(id, activity.CIWait, "")
-	if err := p.pollCI(ctx, pr, p.prBase(ctx)); err != nil {
-		p.logf("  ✗ CI: %v", err)
-		return p.giveUp(ctx, id, "CI not green")
+	green, repairs, err := p.ciGate(ctx, id, pr, p.prBase(ctx), "CI")
+	if err != nil {
+		return err
+	}
+	if !green {
+		return p.giveUp(ctx, id, withRepairs("CI not green", "after", repairs))
 	}
 	if !p.AutoMerge {
 		return p.awaitManualMerge(ctx, id, pr)
@@ -3060,10 +3062,12 @@ func (p *Pipeline) recoverUnmergeablePR(ctx context.Context, id, pr string, merg
 	if !synced {
 		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and the conflicts could not be auto-resolved — resolve manually", pr, base))
 	}
-	p.setActivity(id, activity.CIWait, "")
-	if err := p.pollCI(ctx, pr, base); err != nil {
-		p.logf("  ✗ CI after conflict sync: %v", err)
-		return p.giveUp(ctx, id, "CI not green after syncing the PR with "+base)
+	green, repairs, err := p.ciGate(ctx, id, pr, base, "CI after conflict sync")
+	if err != nil {
+		return err
+	}
+	if !green {
+		return p.giveUp(ctx, id, withRepairs("CI not green after syncing the PR with "+base, "and", repairs))
 	}
 	// The sync just pushed a new PR head and GitHub recomputes mergeability
 	// asynchronously, so a stale "not mergeable" right after the push gets a few
@@ -3181,6 +3185,63 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	p.recordTimelog(ctx, id)
 	p.logf(logFmt+" — marked %s", id, p.deliveredStateName())
 	return nil
+}
+
+// ciGate waits on CI for a slice PR, named by gate in the log, and drives a bounded
+// ci-repair agent loop on the slice branch before conceding. It reports whether CI
+// ended green and how many attempts it spent, so a conceding caller can name the
+// count in its give-up reason; an agent fault inside the loop comes back as the
+// error instead, leaving the run resumable rather than reading as a CI verdict. A
+// timeout is never repaired: nothing failed for an agent to read, and MaxRepairs
+// more CI_TIMEOUT waits would stall the loop for hours.
+func (p *Pipeline) ciGate(ctx context.Context, id, pr, base, gate string) (bool, int, error) {
+	for repair := 0; ; {
+		p.setActivity(id, activity.CIWait, "")
+		err := p.pollCI(ctx, pr, base)
+		if err == nil {
+			return true, repair, nil
+		}
+		p.logf("  ✗ %s: %v", gate, err)
+		if !errors.Is(err, ErrCIFailed) || repair >= p.MaxRepairs {
+			return false, repair, nil
+		}
+		branch := p.State.Get(id, "BRANCH")
+		if branch == "" {
+			branch, _ = p.Git.FindFeatureBranch(ctx, id)
+		}
+		if branch == "" {
+			return false, repair, nil
+		}
+		if err := p.checkoutExisting(ctx, branch); err != nil {
+			p.logf("  ⚠ cannot repair CI — checkout %s failed: %v", branch, err)
+			return false, repair, nil
+		}
+		repair++
+		p.logf("  ⚠ CI red — repair attempt %d/%d", repair, p.MaxRepairs)
+		p.setActivity(id, activity.Merge, fmt.Sprintf("ci-repair%d/%d", repair, p.MaxRepairs))
+		resolver := p.skillResolver()
+		changed, _ := p.sliceChangedFiles(ctx)
+		delivery := p.resolveSkills(resolver.Repair(agent.SkillContext{Changed: changed}), resolver.Installed(), agent.PhaseRepair)
+		p.recordPhaseSkills(id, "repair", delivery)
+		prompt := ciRepairInstruction(p.prompts, id, p.State.Get(id, "PR_URL"), branch)
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("ci-repair%d", repair), injectInto(delivery.injection, prompt)); err != nil {
+			return false, repair, err
+		}
+		if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+			p.logf("  push ci repair error (continuing): %v", err)
+		}
+	}
+}
+
+// withRepairs names the repair attempts a CI gate spent in its give-up reason,
+// joined by conj since the post-sync gate's reason already reads "after syncing
+// …". A gate that never repaired (MAX_REPAIRS=0, or a timeout) keeps the bare
+// pre-repair reason.
+func withRepairs(reason, conj string, repairs int) string {
+	if repairs == 0 {
+		return reason
+	}
+	return fmt.Sprintf("%s %s %d repair attempt(s)", reason, conj, repairs)
 }
 
 // noChecksGrace bounds how long the gate waits for a PR's first check to appear
@@ -3954,10 +4015,10 @@ func providerOf(err error) string {
 // writer, two displays: the TUI stepper and the web read the same signal. detail
 // carries the raw call label (e.g. repair2), empty when there is none; a bounded
 // loop whose display names the attempt counter appends its bound to that label
-// (epic-sync1/2), leaving the call label recoverable as the prefix. The epic's CI
-// repair loop rides on Merge (epic-repair1/2) rather than on Repair: it is part of
-// the ship gate, and Repair maps to Verify, which would walk the stepper backwards
-// mid-ship. Checkpoint phases are untouched; Activity is its own
+// (epic-sync1/2), leaving the call label recoverable as the prefix. The CI repair
+// loops ride on Merge (epic-repair1/2, ci-repair1/2) rather than on Repair: they
+// are part of the ship gate, and Repair maps to Verify, which would walk the
+// stepper backwards mid-ship. Checkpoint phases are untouched; Activity is its own
 // signal.
 func (p *Pipeline) setActivity(id string, act activity.Activity, detail string) {
 	if p.Renderer != nil {
@@ -4767,6 +4828,10 @@ func pushRepairInstruction(r prompts.Renderer, id, hookOutput, notesNote, codeSt
 		NotesNote:  notesNote,
 		CodeStyle:  codeStyle,
 	})
+}
+
+func ciRepairInstruction(r prompts.Renderer, id, prURL, branch string) string {
+	return r.Render("ci_repair", prompts.CIRepairData{ID: id, PRURL: prURL, Branch: branch})
 }
 
 type verdict struct {

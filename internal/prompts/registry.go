@@ -24,6 +24,8 @@ const pushRepairDefault = "{{.ID}}'s commit is on the feature branch but `git pu
 
 const resolveConflictsDefault = "The branch {{.Branch}} is mid-merge with {{.Base}} and has conflicts. Resolve EVERY conflicted file so the branch combines its own work with the latest {{.Base}}: run `git diff --name-only --diff-filter=U` to list them, edit each to keep BOTH sides' intent (never drop this branch's feature work, and never drop {{.Base}}'s newer changes; when both sides carry the SAME change — e.g. {{.Base}} already received it as a squash-merge — keep exactly one copy), then `git add` each resolved file. Run the relevant tests to confirm the combined result builds. Do NOT run `git commit`, `git merge --continue`, push, or open a PR — leave the resolved merge staged for the loop to finalize. Refs: {{.ID}}."
 
+const ciRepairDefault = `The CI checks on the PR {{.PRURL}} (branch {{.Branch}}) are failing. You are on {{.Branch}} with this slice's work committed. Investigate the failing checks, find the root cause, and fix it with minimal, targeted changes within this slice's scope so the checks pass; run the relevant tests locally to confirm. Commit the fix with a Conventional Commit ('fix(scope): <subject>', imperative mood, no 'Co-authored-by'/AI-authorship trailers) but do NOT push or open a PR — the loop pushes. Refs: {{.ID}}.`
+
 const epicRepairDefault = `The CI checks on the epic PR {{.PRURL}} (branch {{.Branch}}) are failing. You are on {{.Branch}} with the full epic integrated against the base. Investigate the failing checks, find the root cause, and fix it with minimal, targeted changes anywhere in the epic's code so the whole suite passes; run the relevant tests locally to confirm. Commit the fix with a Conventional Commit ('fix(scope): <subject>', imperative mood, no 'Co-authored-by'/AI-authorship trailers) but do NOT push or merge — the loop pushes and merges. Refs: {{.EpicID}}.`
 
 const cleanupDefault = "Before the QA verify step for {{.ID}}, clean up the code this slice added or changed (uncommitted on the current branch) so it reads as if a senior engineer on this project wrote it. Review only the diff for this slice against the base branch. Remove: explanatory or narrating comments (anything that restates what the code does), section-banner comments, ticket IDs left in comments, commented-out code, and dead or unreachable code the slice introduced. Simplify AI tells: over-defensive guards for cases that cannot occur, redundant nil/error checks the surrounding codebase does not itself use, and belt-and-suspenders boilerplate a human wouldn't bother to write. Keep a comment only where a genuinely non-obvious decision needs one, matching the file's existing comment density. This is behavior-preserving housekeeping: do NOT change program logic, rename public APIs, or touch code outside this slice's diff. Leave load-bearing code alone. Make the edits directly: do NOT list, count, or justify what you left unchanged, and do NOT emit a JSON or prose report. Leave the result uncommitted on disk — do NOT commit, push, open a PR, or touch the issue tracker. End with exactly one line: `trimmed N comments/lines across M files` or `no changes needed`.{{.NotesNote}}"
@@ -307,6 +309,17 @@ var registry = []Prompt{
 			{Field: "Branch", Description: "branch mid-merge", Required: true, Sample: "feature/sample-slice"},
 		},
 		Default: resolveConflictsDefault,
+	},
+	{
+		Name:        "ci_repair",
+		Title:       "CI repair",
+		Description: "Fix prompt for red CI on the slice PR at the merge gate.",
+		Placeholders: []Placeholder{
+			{Field: "ID", Description: "ticket id", Required: true, Sample: "COD-4242"},
+			{Field: "PRURL", Description: "slice PR URL", Required: true, Sample: "https://github.com/acme/widgets/pull/17"},
+			{Field: "Branch", Description: "slice feature branch", Required: true, Sample: "feature/sample-slice"},
+		},
+		Default: ciRepairDefault,
 	},
 	{
 		Name:        "epic_repair",
