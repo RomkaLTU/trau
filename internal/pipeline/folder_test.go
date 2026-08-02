@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/proofsbranch"
 )
 
 // childGit is one Child repo's git in the fan-out tests: it reports what the
@@ -16,6 +18,8 @@ type childGit struct {
 	fakeGit
 	status        string
 	head          string
+	sha           string // what HEAD resolves to, the fork point for a freshly created branch
+	forkedAt      string // the merge base MergeBase reports, for a branch that already exists
 	branch        string
 	commits       []string
 	pushed        []string
@@ -24,12 +28,32 @@ type childGit struct {
 	checkedOut    []string
 	forced        []string // the checkouts that were allowed to discard the tree
 	cleaned       int
-	hasBranch     bool // whether the ticket's branch already exists here
-	baseBehind    bool // this child's remote base is missing the local base tip
-	pushFixes     bool // whether pushing the base brings the remote current
+	hasBranch     bool   // whether the ticket's branch already exists here
+	baseBehind    bool   // this child's remote base is missing the local base tip
+	pushFixes     bool   // whether pushing the base brings the remote current
+	remote        string // the origin URL, which is what says where this child is hosted
+	remoteBase    string // the branch this child's own remote calls default
+	cutFrom       string // the ref CreateBranch was asked to cut at
+}
+
+func (g *childGit) RemoteURL(context.Context, string) string {
+	if g.remote == "" {
+		return "git@github.com:acme/child.git"
+	}
+	return g.remote
+}
+
+func (g *childGit) RemoteDefaultBranch(context.Context, string) string {
+	return g.remoteBase
 }
 
 func (g *childGit) WorktreeStatus(context.Context) (string, error) { return g.status, nil }
+
+func (g *childGit) HeadSHA(context.Context) (string, error) { return g.sha, nil }
+
+func (g *childGit) MergeBase(context.Context, string, string) (string, error) {
+	return g.forkedAt, nil
+}
 
 func (g *childGit) CurrentBranch(ctx context.Context) (string, error) {
 	if g.head != "" {
@@ -38,8 +62,8 @@ func (g *childGit) CurrentBranch(ctx context.Context) (string, error) {
 	return g.fakeGit.CurrentBranch(ctx)
 }
 
-func (g *childGit) CreateBranch(_ context.Context, branch, _ string) error {
-	g.branch = branch
+func (g *childGit) CreateBranch(_ context.Context, branch, base string) error {
+	g.branch, g.cutFrom = branch, base
 	return nil
 }
 
@@ -92,10 +116,85 @@ func (g *childGit) IsAncestor(context.Context, string, string) (bool, error) {
 	return !g.baseBehind, nil
 }
 
+// TestFolderShipsEachChildToItsOwnBase holds the three facts a folder run has to
+// read per child off that child's own remote: api-orders ships to master and
+// api-web to main, so a folder that is mostly one branch no longer makes the odd
+// one out unshippable; api-web is standing on a spike branch and is moved back
+// onto its base rather than skipped for it; and api-legacy is on Azure DevOps,
+// where trau opens no pull requests, so it is named off limits before the build
+// runs instead of dying at PR time.
+func TestFolderShipsEachChildToItsOwnBase(t *testing.T) {
+	id := "COD-93020"
+	branch := "feature/COD-93020-own-base"
+	root := t.TempDir()
+	gits := map[string]*childGit{
+		"api-legacy": {remote: "https://dev.azure.com/acme/platform/_git/api-legacy"},
+		"api-orders": {remoteBase: "master"},
+		"api-web":    {remoteBase: "main", head: "spike/redesign"},
+	}
+	ghs := map[string]*epicGitHub{
+		"api-legacy": {},
+		"api-orders": {createURL: "https://github.com/acme/api-orders/pull/11"},
+		"api-web":    {createURL: "https://github.com/acme/api-web/pull/4"},
+	}
+	for name := range gits {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.FolderRepo = true
+	p.RepoRoot = root
+	p.Remote = "origin"
+	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
+	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	if err := p.State.Set(id, "BRANCH", branch); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := p.EnsureCleanBase(ctx); err != nil {
+		t.Fatalf("EnsureCleanBase: %v", err)
+	}
+	p.startFolderRun(ctx, id, false)
+	gits["api-orders"].status = " M orders.go"
+	gits["api-web"].status = "?? web/panel.tsx"
+
+	if !slices.Contains(gits["api-web"].checkedOut, "main") {
+		t.Errorf("api-web checkouts = %v, want it moved onto its own base before the build", gits["api-web"].checkedOut)
+	}
+	if reason := p.folderOffLimits(ctx)["api-legacy"]; !strings.Contains(reason, "Azure DevOps") {
+		t.Errorf("api-legacy off-limits reason = %q, want its forge named", reason)
+	}
+
+	if err := p.CommitAndPR(ctx, id); err != nil {
+		t.Fatalf("CommitAndPR: %v", err)
+	}
+
+	for name, wantBase := range map[string]string{"api-orders": "master", "api-web": "main"} {
+		if got := gits[name].cutFrom; got != wantBase {
+			t.Errorf("%s branch cut from %q, want %q", name, got, wantBase)
+		}
+		if got := ghs[name].base; got != wantBase {
+			t.Errorf("%s PR base = %q, want %q", name, got, wantBase)
+		}
+	}
+	if got := p.State.Get(id, childBaseKey); !strings.Contains(got, "api-orders=master") || !strings.Contains(got, "api-web=main") {
+		t.Errorf("%s = %q, want each child's own base recorded for a resume", childBaseKey, got)
+	}
+	if ghs["api-legacy"].createCalls > 0 {
+		t.Errorf("api-legacy opened %d PRs, want none — trau delivers to GitHub only", ghs["api-legacy"].createCalls)
+	}
+}
+
 // TestFolderShipFansOutToEveryChangedChild is the Folder repo delivery contract:
 // the ticket's branch is cut — with the same name — in each Child repo the build
 // changed and in no other, each gets its own PR, and the checkpoint records the
-// whole ship set.
+// whole ship set. api-billing carries everything an abandoned earlier attempt at
+// this ticket left: the branch, a recorded ship target and its PR. Branch names and
+// checkpoint keys belong to the ticket, not to the attempt, so a fresh run must
+// read none of it as its own work.
 func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 	id := "COD-93010"
 	branch := "feature/COD-93010-cross-repo-slice"
@@ -103,7 +202,7 @@ func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 	gits := map[string]*childGit{
 		"api-apigateway": {},
 		"api-companies":  {},
-		"api-billing":    {},
+		"api-billing":    {hasBranch: true},
 	}
 	ghs := map[string]*epicGitHub{
 		"api-apigateway": {createURL: "https://github.com/acme/api-apigateway/pull/7"},
@@ -122,8 +221,14 @@ func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
 	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
-	if err := p.State.Set(id, "BRANCH", branch); err != nil {
-		t.Fatal(err)
+	for key, value := range map[string]string{
+		"BRANCH":       branch,
+		"SHIP_TARGETS": "api-billing",
+		"PR_URLS":      "api-billing=https://github.com/acme/api-billing/pull/5",
+	} {
+		if err := p.State.Set(id, key, value); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	ctx := context.Background()
@@ -152,9 +257,9 @@ func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 	}
 
 	untouched := gits["api-billing"]
-	if untouched.branch != "" || len(untouched.commits) > 0 || ghs["api-billing"].createCalls > 0 {
-		t.Errorf("api-billing was changed by nothing but got branch %q, commits %v, %d PRs",
-			untouched.branch, untouched.commits, ghs["api-billing"].createCalls)
+	if untouched.branch != "" || len(untouched.commits) > 0 || len(untouched.pushed) > 0 || ghs["api-billing"].createCalls > 0 {
+		t.Errorf("api-billing was changed by nothing but got branch %q, commits %v, pushes %v, %d PRs",
+			untouched.branch, untouched.commits, untouched.pushed, ghs["api-billing"].createCalls)
 	}
 
 	if got := p.State.Get(id, "SHIP_TARGETS"); got != "api-apigateway,api-companies" {
@@ -333,17 +438,175 @@ func TestFolderResumeKeepsTheStartOfRunSweep(t *testing.T) {
 	}
 }
 
+// TestFolderShipResumesEveryChildAnInterruptedRunLeftBehind is the crash-safety
+// contract of the fan-out: a run killed mid-ship left api-companies committed and
+// recorded, api-billing committed before its stamp landed, and api-users still
+// carrying loose work. The resumed run ships all three — the recorded set, the
+// branch probe and the dirty tree each name one of them — commits nothing twice,
+// and gives every one of them its own fork point: the recorded pin where there is
+// one, and the branch's merge base for the child whose stamp never landed.
+func TestFolderShipResumesEveryChildAnInterruptedRunLeftBehind(t *testing.T) {
+	id := "COD-93017"
+	branch := "feature/COD-93017-cross-repo-slice"
+	root := t.TempDir()
+	gits := map[string]*childGit{
+		"api-billing":   {hasBranch: true, forkedAt: "billing-cut-at"},
+		"api-companies": {hasBranch: true, forkedAt: "companies-drifted-to"},
+		"api-idle":      {},
+		"api-users":     {status: " M users.go", sha: "users-cut-at"},
+	}
+	ghs := map[string]*epicGitHub{
+		"api-billing":   {createURL: "https://github.com/acme/api-billing/pull/5"},
+		"api-companies": {createURL: "https://github.com/acme/api-companies/pull/3"},
+		"api-idle":      {},
+		"api-users":     {createURL: "https://github.com/acme/api-users/pull/8"},
+	}
+	for name := range gits {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.FolderRepo = true
+	p.RepoRoot = root
+	p.Remote = "origin"
+	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
+	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	for key, value := range map[string]string{
+		"BRANCH":       branch,
+		"SHIP_TARGETS": "api-companies",
+		"FORK_POINTS":  "api-companies=companies-cut-at",
+	} {
+		if err := p.State.Set(id, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx := context.Background()
+	p.startFolderRun(ctx, id, true)
+
+	if err := p.CommitAndPR(ctx, id); err != nil {
+		t.Fatalf("CommitAndPR after resume: %v", err)
+	}
+
+	if got := p.State.Get(id, "SHIP_TARGETS"); got != "api-billing,api-companies,api-users" {
+		t.Errorf("SHIP_TARGETS = %q, want every child the interrupted run left work in", got)
+	}
+	want := "api-billing=billing-cut-at,api-companies=companies-cut-at,api-users=users-cut-at"
+	if got := p.State.Get(id, "FORK_POINTS"); got != want {
+		t.Errorf("FORK_POINTS = %q, want every shipped child pinned: %q", got, want)
+	}
+	for _, name := range []string{"api-billing", "api-companies"} {
+		if g := gits[name]; len(g.commits) > 0 {
+			t.Errorf("%s committed %v, want nothing — its work was already on the branch", name, g.commits)
+		}
+	}
+	if g := gits["api-users"]; len(g.commits) != 1 || g.branch != branch {
+		t.Errorf("api-users committed %v on branch %q, want one commit on %s", g.commits, g.branch, branch)
+	}
+	for _, name := range []string{"api-billing", "api-companies", "api-users"} {
+		if ghs[name].createCalls != 1 {
+			t.Errorf("%s opened %d PRs, want 1", name, ghs[name].createCalls)
+		}
+	}
+	idle := gits["api-idle"]
+	if idle.branch != "" || len(idle.commits) > 0 || ghs["api-idle"].createCalls > 0 {
+		t.Errorf("api-idle held none of the run's work but got branch %q, commits %v, %d PRs",
+			idle.branch, idle.commits, ghs["api-idle"].createCalls)
+	}
+}
+
+// TestFolderShipCrossLinksEveryPRAndPublishesProofs is the reviewability contract:
+// the verify proofs land in the first changed child and every PR body embeds that
+// one gallery, then a second pass rewrites each body with the siblings' URLs —
+// which no first pass can carry, since a PR's URL exists only once gh created it.
+func TestFolderShipCrossLinksEveryPRAndPublishesProofs(t *testing.T) {
+	id := "COD-93018"
+	branch := "feature/COD-93018-cross-repo-slice"
+	root := t.TempDir()
+	gits := map[string]*childGit{
+		"api-companies": {},
+		"api-users":     {},
+	}
+	ghs := map[string]*epicGitHub{
+		"api-companies": {createURL: "https://github.com/acme/api-companies/pull/3"},
+		"api-users":     {createURL: "https://github.com/acme/api-users/pull/8"},
+	}
+	for name := range gits {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.FolderRepo = true
+	p.RepoRoot = root
+	p.Remote = "origin"
+	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
+	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	publishedTo := ""
+	p.PublishProofs = func(_ context.Context, repoDir, _ string) (proofsbranch.Publication, error) {
+		publishedTo = repoDir
+		return proofsbranch.Publication{
+			Owner:  "acme",
+			Repo:   "api-companies",
+			Branch: proofsbranch.Branch,
+			Files:  []proofsbranch.File{{Path: id + "/proof-1.png", Caption: "home"}},
+		}, nil
+	}
+	if err := p.State.Set(id, "BRANCH", branch); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	p.startFolderRun(ctx, id, false)
+	gits["api-companies"].status = " M companies.go"
+	gits["api-users"].status = " M users.go"
+
+	if err := p.CommitAndPR(ctx, id); err != nil {
+		t.Fatalf("CommitAndPR: %v", err)
+	}
+
+	if want := filepath.Join(root, "api-companies"); publishedTo != want {
+		t.Errorf("proofs published to %q, want the first changed child %q", publishedTo, want)
+	}
+	for name, gh := range ghs {
+		if !strings.Contains(gh.body, "### QA proofs") {
+			t.Errorf("%s PR body carries no QA proofs section:\n%s", name, gh.body)
+		}
+	}
+	links := map[string]string{
+		"3": "api-users: " + ghs["api-users"].createURL,
+		"8": "api-companies: " + ghs["api-companies"].createURL,
+	}
+	for name, gh := range ghs {
+		pr := prNumber(gh.createURL)
+		edited, ok := gh.bodyEdits[pr]
+		if !ok {
+			t.Fatalf("%s PR #%s body was never rewritten with its siblings", name, pr)
+		}
+		if !strings.Contains(edited, links[pr]) {
+			t.Errorf("%s PR body must name its sibling %q:\n%s", name, links[pr], edited)
+		}
+		if strings.Contains(edited, "- "+name+":") {
+			t.Errorf("%s PR body lists itself among its siblings:\n%s", name, edited)
+		}
+	}
+}
+
 // TestFolderResetDropsShipTargetsAndSparesUnrelatedWIP is the Folder repo undo
 // contract: every recorded ship target loses its branch on both sides and its
 // working tree, and a child the run never shipped to is left exactly as it was
 // found — whether its work was already there when the run started or an operator
-// added it while the run was in flight.
+// added it while the run was in flight. api-companies ships to master, so the undo
+// puts it back on its own base rather than on the folder's.
 func TestFolderResetDropsShipTargetsAndSparesUnrelatedWIP(t *testing.T) {
 	id := "COD-93014"
 	branch := "feature/COD-93014-cross-repo-slice"
 	root := t.TempDir()
 	gits := map[string]*childGit{
-		"api-companies": {hasBranch: true},
+		"api-companies": {hasBranch: true, remoteBase: "master"},
 		"api-billing":   {status: " M billing.go"},
 		"api-users":     {},
 	}
@@ -375,8 +638,8 @@ func TestFolderResetDropsShipTargetsAndSparesUnrelatedWIP(t *testing.T) {
 	if !slices.Contains(shipped.deleted, branch) || !slices.Contains(shipped.deletedRemote, branch) {
 		t.Errorf("api-companies deleted %v locally and %v on the remote, want %s in both", shipped.deleted, shipped.deletedRemote, branch)
 	}
-	if !slices.Contains(shipped.checkedOut, p.Base) || shipped.cleaned == 0 {
-		t.Errorf("api-companies checked out %v and cleaned %d times, want it back on %s with its loose work gone", shipped.checkedOut, shipped.cleaned, p.Base)
+	if !slices.Contains(shipped.checkedOut, "master") || slices.Contains(shipped.checkedOut, p.Base) || shipped.cleaned == 0 {
+		t.Errorf("api-companies checked out %v and cleaned %d times, want it back on its own base master, never on the folder's %s", shipped.checkedOut, shipped.cleaned, p.Base)
 	}
 	wip := gits["api-billing"]
 	if len(wip.deleted) > 0 || len(wip.checkedOut) > 0 || wip.cleaned > 0 {

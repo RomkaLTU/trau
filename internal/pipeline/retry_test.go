@@ -127,7 +127,8 @@ func (f *fakeGitHub) CreatePR(context.Context, string, string, string, string, b
 	return f.createURL, nil
 }
 
-func (f *fakeGitHub) MarkPRReady(context.Context, string) error { return nil }
+func (f *fakeGitHub) MarkPRReady(context.Context, string) error          { return nil }
+func (f *fakeGitHub) UpdatePRBody(context.Context, string, string) error { return nil }
 
 func (f *fakeGitHub) MergedPRURL(context.Context, string) (string, error) {
 	return f.mergedURL, nil

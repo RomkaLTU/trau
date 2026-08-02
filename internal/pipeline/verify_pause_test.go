@@ -121,6 +121,14 @@ func (fakeGit) Unmerged(context.Context) (string, error)                  { retu
 func (fakeGit) ContinueMerge(context.Context) error                       { return nil }
 func (fakeGit) RemoteExists(context.Context, string) (bool, error)        { return true, nil }
 func (fakeGit) SquashMerge(context.Context, string, string) error         { return nil }
+
+// The fake repo is on GitHub with nothing recorded about its default branch, so
+// a run resolves the forge it can deliver to and falls back to its own base.
+func (fakeGit) RemoteURL(context.Context, string) string {
+	return "git@github.com:acme/repo.git"
+}
+func (fakeGit) RemoteDefaultBranch(context.Context, string) string { return "" }
+
 func (fakeGit) RemoteBranchExists(context.Context, string, string) (bool, error) {
 	return false, nil
 }

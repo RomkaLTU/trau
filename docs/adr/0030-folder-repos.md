@@ -39,7 +39,9 @@ a PR in each Child repo it changed.**
   --porcelain` plus `rev-parse --abbrev-ref HEAD`, which across fifty children
   costs milliseconds where fifty fetches and checkouts would cost minutes and
   would trample checkouts the ticket never goes near.
-- **A dirty or off-base child does not abort the run.** It is recorded by the
+- **A dirty or off-base child does not abort the run.** (The off-base half is
+  withdrawn by ADR 0032: each child ships to its own base and a clean one parked
+  elsewhere is checked out onto it.) It is recorded by the
   sweep and named to the build agent as off limits. The run gives up only if a
   change actually lands in one of them, because that change is entangled with
   work trau does not own.
@@ -141,3 +143,45 @@ and merges the results into one flat `files[]`, each path rooted under the child
 name and each entry carrying `repo`. `head_sha` and `base_sha` are empty for a
 folder run — N repositories have N of each — while `base` and `branch` stay as
 they are, one of each shared by every child.
+
+## Amendment (2026-08-02): the fan-out is crash-safe and reviewable
+
+TRAU-23 keeps the fan-out as it is and closes what a killed run and a reviewer
+each ran into.
+
+- **Proofs are published, to the first changed child in sorted order.** The
+  consequence above ("Verify proofs are not published for a Folder repo run") is
+  superseded. A folder has no remote of its own, but its ship set does, and one of
+  them is as good a host as any as long as the choice is deterministic — every PR
+  body links that one branch. Picking a host is strictly better than dropping the
+  QA gallery from a cross-repo change.
+- **The ship set is stamped incrementally, and a resume unions three readings.**
+  `SHIP_TARGETS`, `PR_URLS` and the new `FORK_POINTS` are written after each child
+  rather than after the loop, so a run killed mid-fan-out leaves nothing it cut or
+  opened outside the checkpoint. A resumed run then ships the children still
+  carrying loose work ∪ the recorded set ∪ every child holding the ticket's branch:
+  a child committed just before the death reads clean again, and dropping it is how
+  half a cross-repo change ships. The last two readings are a resume's alone — a
+  fresh run ships only what its own build changed. Both a branch name and the
+  checkpoint keys belong to the ticket rather than to the attempt, so what an
+  abandoned earlier run of the same ticket left in a child must never be branched,
+  pushed and PR'd by a run that never touched that child.
+- **Sibling links are a second pass.** A PR's URL exists only after `gh pr create`
+  returns, so the first body written cannot carry the last one's link. Once every
+  PR exists each body is rewritten through `UpdatePRBody` (`gh pr edit --body`) with
+  a **Ships with** list. A rewrite gh refuses warns and does not fail the run — it
+  is cosmetic, and stranding a green cross-repo change over a body edit is worse.
+- **Fork points are per child.** Each child's branch pins the commit it was cut at
+  at commit time — the merge base with the base branch when the branch was already
+  there and the attempt that cut it never got as far as recording a pin — so every
+  shipped child has one. The diff pane resolves that child's pin instead of the
+  single `BASE_SHA` a plain Repo's run records. A folder holds as many bases as
+  repositories and each advances on its own while a long run works the others, so a
+  shared pin would report a sibling's merges as this run's work in most panes.
+- **Settling asks about every PR.** The hub's reconcile sweep read the singular `PR`
+  and ran `gh` in the repo root, which for a folder is not a git repository at all.
+  It now walks `PR_URLS`, asks in each child, and settles the item only when all of
+  them merged — one merged sibling must not close a queue item over PRs still open.
+- **The Runs ledger carries the plural set.** `RunView` gained `ships[]`, one entry
+  per changed child with its PR, projected off the checkpoint the same way
+  `pr_status` and `release` are. `pr`/`pr_url` still name the first target.

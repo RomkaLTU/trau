@@ -347,8 +347,19 @@ func (d *drainer) trackerDone(root, id string) bool {
 // prMerged reports whether the PR the item's checkpoint recorded has since been
 // merged. It is the evidence that outlives a child killed after its merge landed
 // but before the phase reached merged, and the one an epic whose finalize never
-// ran leaves behind.
+// ran leaves behind. A Folder repo run has one PR per changed Child repo, each
+// asked about in that child — a folder root is not a git repository, so gh has
+// nothing to answer from there — and it settles only when every one of them
+// merged: a single merged sibling would close the item over PRs still open.
 func (d *drainer) prMerged(root string, row hubstore.CheckpointRow) bool {
+	if ships := shipsFromCheckpoint(row.Data); len(ships) > 0 {
+		for _, s := range ships {
+			if s.PR == "" || d.prState(filepath.Join(root, s.Repo), s.PR) != "MERGED" {
+				return false
+			}
+		}
+		return true
+	}
 	pr := checkpointField(row.Data, "PR")
 	if pr == "" {
 		return false

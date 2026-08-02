@@ -34,6 +34,16 @@ export function firstChangedLine(patch: string): number | undefined {
   return hunk ? Number(hunk[1]) : undefined
 }
 
+// childRepos names the Child repos a folder run's diff spans, in first-seen order.
+// A plain Repo's files carry no repo and yield none, so nothing on that pane changes.
+export function childRepos(files: RunDiffFile[]): string[] {
+  const seen: string[] = []
+  for (const file of files) {
+    if (file.repo && !seen.includes(file.repo)) seen.push(file.repo)
+  }
+  return seen
+}
+
 export class RunDiffError extends Error {
   status: number
 

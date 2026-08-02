@@ -15,6 +15,7 @@ import { useRepoRoot } from '@/lib/instances'
 import type { ResolvedTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import {
+  childRepos,
   firstChangedLine,
   loadDiffLayout,
   loadDiffTreeOpen,
@@ -59,6 +60,14 @@ function fileLang(path: string): string {
   return LANGS[ext] ?? 'plaintext'
 }
 
+// diffScope states what the pane is showing: the run's branch against its base,
+// and — for a folder run, whose files come from several Child repos — how wide
+// across them the change reaches.
+function diffScope(branch: string, base: string, children: string[]): string {
+  const range = `${branch} ↔ ${base}`
+  return children.length > 1 ? `${range} · ${children.length} repos` : range
+}
+
 // useInRange reports whether a node has come within a screen of the viewport, so a
 // run touching dozens of files only pays to highlight the ones being looked at.
 function useInRange() {
@@ -82,17 +91,21 @@ function useInRange() {
 }
 
 // An empty root means the file on disk cannot be trusted to match the diff, and
-// the card drops its editor link.
+// the card drops its editor link. showRepo is the same reading diffScope makes:
+// naming the child a file came from is only worth a chip when the run spans more
+// than one of them.
 const DiffFileView = memo(function DiffFileView({
   file,
   layout,
   theme,
   root,
+  showRepo,
 }: {
   file: RunDiffFile
   layout: DiffLayout
   theme: ResolvedTheme
   root: string
+  showRepo: boolean
 }) {
   const lang = fileLang(file.path)
   const [ref, inRange] = useInRange()
@@ -105,6 +118,11 @@ const DiffFileView = memo(function DiffFileView({
     >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
         <span className="flex min-w-0 items-center gap-2 font-mono text-xs">
+          {showRepo && (
+            <span className="shrink-0 rounded-md border border-border bg-muted/60 px-2 py-0.5 text-[0.65rem] text-muted-foreground">
+              {file.repo}
+            </span>
+          )}
           <span className="truncate text-foreground">{file.path}</span>
           {file.old_path && (
             <span className="shrink-0 text-faint">← {file.old_path}</span>
@@ -188,6 +206,7 @@ export function RunDiff({
 
   const notFound = error instanceof RunDiffError && error.status === 404
   const files = error ? [] : (data?.files ?? [])
+  const children = childRepos(files)
 
   return (
     <div className="flex flex-col gap-2">
@@ -219,7 +238,7 @@ export function RunDiff({
               ? ''
               : sync
                 ? `merge resolution in progress · ${data.base} → ${data.branch}`
-                : `${data.branch} ↔ ${data.base}`}
+                : diffScope(data.branch, data.base, children)}
           </span>
         </span>
         <SegmentedControl
@@ -268,6 +287,7 @@ export function RunDiff({
                 layout={layout}
                 theme={theme}
                 root={root}
+                showRepo={children.length > 1}
               />
             ))}
           </div>

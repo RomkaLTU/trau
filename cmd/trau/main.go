@@ -550,7 +550,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	} else if p.FolderRepo && epicID != "" {
-		con.Logf("  %s is a folder of repositories — building %s off %s, not on %s's branch", repoName(repoRoot), forcedID, cfg.BaseBranch, epicID)
+		con.Logf("  %s is a folder of repositories — building %s off each child's own base, not on %s's branch", repoName(repoRoot), forcedID, epicID)
 		epicID, parentSuffix = "", ""
 	}
 	p.EpicID = epicID
@@ -1271,11 +1271,13 @@ func newHubReloader(cfg config.Config, repoRoot string) func(context.Context) (h
 }
 
 // newProofsPublisher fetches a run's stored screenshots back from the serve hub
-// and publishes them to the target repo's trau-proofs orphan branch, so the
-// delivered PR can embed the visual QA proof (ADR 0008 keeps the child DB-free).
-func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context, string) (proofsbranch.Publication, error) {
+// and publishes them to repoDir's trau-proofs orphan branch, so the delivered PR
+// can embed the visual QA proof (ADR 0008 keeps the child DB-free). The proofs are
+// always the registered repo's, so a Folder repo run reads them under the folder
+// and lands them in whichever child it hands down.
+func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context, string, string) (proofsbranch.Publication, error) {
 	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
-	return func(ctx context.Context, ticket string) (proofsbranch.Publication, error) {
+	return func(ctx context.Context, repoDir, ticket string) (proofsbranch.Publication, error) {
 		shots, err := hub.RunProofs(ctx, repoName(repoRoot), ticket)
 		if err != nil {
 			return proofsbranch.Publication{}, err
@@ -1295,7 +1297,7 @@ func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context
 		if len(proofs) == 0 {
 			return proofsbranch.Publication{}, nil
 		}
-		return proofsbranch.Publish(ctx, proofsbranch.Config{RepoDir: repoRoot, Remote: cfg.Remote}, ticket, proofs)
+		return proofsbranch.Publish(ctx, proofsbranch.Config{RepoDir: repoDir, Remote: cfg.Remote}, ticket, proofs)
 	}
 }
 
@@ -1511,6 +1513,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		RunsDir:              cfg.RunsDir,
 		Base:                 cfg.BaseBranch,
 		Remote:               cfg.Remote,
+		Forge:                cfg.Forge,
 		Prefix:               cfg.IssuePrefix,
 		TrackerProvider:      cfg.EffectiveTrackerProvider(),
 		InternalPrefix:       config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(repoRoot)),

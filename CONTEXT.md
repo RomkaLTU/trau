@@ -14,8 +14,12 @@ A registered folder that is not itself a git repository — the git repositories
 _Avoid_: monorepo (the children are separate repositories), project (that's the tracker binding), parent repo, umbrella repo, workspace
 
 **Child repo**:
-A git repository inside a Folder repo, found by a bounded scan of the folder at run time rather than registered. It is a ship target: a run that changes it cuts the ticket's branch there and opens its pull request there, and one that leaves it alone never touches it. A Child repo that was dirty or off its base branch when the run started is named to the build agent as off limits, and a change landing in one anyway aborts the run.
+A git repository inside a Folder repo, found by a bounded scan of the folder at run time rather than registered. It is a ship target: a run that changes it cuts the ticket's branch there and opens its pull request there, and one that leaves it alone never touches it. Each Child repo has its own Forge and its own base branch, both read from its own remote (ADR 0032). A Child repo that was dirty, unreadable, or on a Forge trau cannot deliver to when the run started is named to the build agent as off limits, and a change landing in one anyway aborts the run; a clean one merely standing off its base is moved onto it instead.
 _Avoid_: member (that's a Project's registered repo), submodule, sub-repo, nested repo, workspace
+
+**Forge**:
+The code host a repository's own git remote points at — who would receive a push and open the pull request. Identified per Repo and per Child repo from that repository's remote, never from the tracker and never assumed; the `FORGE` key overrides it for a host trau does not recognize. Delivery is GitHub-only, so any other Forge is named and left alone before a run spends anything (ADR 0032).
+_Avoid_: tracker (that's where tickets live), remote (that's the ref name, `origin`), host, provider (that's the AI backend), git server
 
 **Project**:
 The tracker (Linear/Jira) project a Repo is bound to via the `PROJECT` config key — it scopes the ready queue and guards cross-project runs. May be empty; never use it to identify which Repo trau is operating on.

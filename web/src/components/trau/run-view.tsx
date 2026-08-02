@@ -381,18 +381,36 @@ function Recap({
           >
             {phaseLabel(run.phase)}
           </RecapRow>
-          {run.pr && run.pr_url && (
-            <RecapRow label="pr">
-              <a
-                href={run.pr_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-teal underline-offset-4 hover:underline"
-              >
-                #{run.pr}
-              </a>
-            </RecapRow>
-          )}
+          {run.ships && run.ships.length > 1
+            ? run.ships.map((ship) => (
+                <RecapRow key={ship.repo} label={ship.repo}>
+                  {ship.url ? (
+                    <a
+                      href={ship.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-teal underline-offset-4 hover:underline"
+                    >
+                      #{ship.pr}
+                    </a>
+                  ) : (
+                    "branch pushed, no pr yet"
+                  )}
+                </RecapRow>
+              ))
+            : run.pr &&
+              run.pr_url && (
+                <RecapRow label="pr">
+                  <a
+                    href={run.pr_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-teal underline-offset-4 hover:underline"
+                  >
+                    #{run.pr}
+                  </a>
+                </RecapRow>
+              )}
           {failed && run.failure_reason && (
             <RecapRow label="failure reason" valueClassName="text-fail">
               {run.failure_reason}

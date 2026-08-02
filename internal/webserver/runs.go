@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -44,6 +45,18 @@ type RunView struct {
 	// fields that actually travelled. It is never present on this machine's own
 	// runs, which the ledger marks "Me".
 	Shared *SharedRun `json:"shared,omitempty"`
+	// Ships is a Folder repo run's plural delivery: one entry per Child repo it
+	// changed, in ship order. A plain Repo's run has none, and PR/PRURL keep naming
+	// the first of them either way.
+	Ships []RunShip `json:"ships,omitempty"`
+}
+
+// RunShip is one Child repo a Folder repo run shipped to and the pull request the
+// branch it cut there carries. PR is empty until that child's PR is opened.
+type RunShip struct {
+	Repo string `json:"repo"`
+	PR   string `json:"pr,omitempty"`
+	URL  string `json:"url,omitempty"`
 }
 
 // Handback is a ticket's pending hand-back choice (ADR 0018): a takeover
@@ -305,7 +318,35 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 		CostUSD:       tc.CostUSD,
 		UpdatedAt:     tc.UpdatedAt,
 		Handback:      handbackFor(tc),
+		Ships:         shipsFromCheckpoint(tc.Data),
 	}
+}
+
+// shipsFromCheckpoint reads a Folder repo run's ship set off its checkpoint: every
+// Child repo it committed in, in the order ship recorded them, each with the PR
+// that child's branch carries. A child recorded before its PR was opened — the
+// window a killed run leaves behind — comes through with no PR rather than absent.
+func shipsFromCheckpoint(data string) []RunShip {
+	names := checkpointField(data, "SHIP_TARGETS")
+	if names == "" {
+		return nil
+	}
+	urls := childValues(data, "PR_URLS")
+	ships := []RunShip{}
+	for _, name := range strings.Split(names, ",") {
+		ships = append(ships, RunShip{Repo: name, PR: prNumberFromURL(urls[name]), URL: urls[name]})
+	}
+	return ships
+}
+
+// prNumberFromURL is the PR number a pull-request URL ends in, empty when it names
+// none.
+func prNumberFromURL(url string) string {
+	i := strings.LastIndex(url, "/")
+	if i < 0 {
+		return ""
+	}
+	return url[i+1:]
 }
 
 // handbackFor reads a checkpoint's pending hand-back choice; a ticket no
@@ -320,6 +361,20 @@ func handbackFor(tc hubstore.TicketCheckpoint) *Handback {
 		Phase:   checkpointField(tc.Data, "SESSION_PHASE"),
 		Advance: state.AdvancedPhase(tc.Phase),
 	}
+}
+
+// childValues reads one of a folder run's per-child keys — the PR each shipped
+// child's branch carries, the commit each one was cut at — off its checkpoint. They
+// are recorded as a comma-joined name=value list, a separator neither a PR URL nor
+// a commit sha carries.
+func childValues(data, key string) map[string]string {
+	values := map[string]string{}
+	for _, pair := range strings.Split(checkpointField(data, key), ",") {
+		if name, value, ok := strings.Cut(pair, "="); ok {
+			values[name] = value
+		}
+	}
+	return values
 }
 
 // checkpointField pulls one raw state key out of a checkpoint's JSON data blob,

@@ -2,7 +2,13 @@ import { useState } from 'react'
 import { ArrowRight, Plus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import type { FindingState, InspectChild, MemberRepo } from '@/lib/onboarding'
+import {
+  forgeDelivers,
+  forgeLabel,
+  type FindingState,
+  type InspectChild,
+  type MemberRepo,
+} from '@/lib/onboarding'
 import { cn } from '@/lib/utils'
 import { Callout, FieldLabel, Hint } from './ui'
 
@@ -15,28 +21,30 @@ const FINDING: Record<FindingState, { glyph: string; color: string }> = {
 }
 
 // The per-child rows of a Folder repo, listed rather than folded into findings so
-// a branch outlier stays visible without tripping the sync-would-break callout.
+// each child's own base and forge stay visible without tripping the
+// sync-would-break callout.
 function ChildRepos({ items, base }: { items: InspectChild[]; base: string }) {
   return (
     <div className="flex flex-col gap-2">
       <FieldLabel>child repositories</FieldLabel>
       <ul className="divide-y divide-border overflow-hidden rounded-md border border-border">
         {items.map((c) => {
-          const outlier = c.default_branch !== '' && c.default_branch !== base
+          const parked = c.current_branch && c.current_branch !== c.default_branch
           return (
             <li key={c.name} className="flex items-baseline gap-2 px-3 py-1.5">
               <span className="w-44 shrink-0 truncate font-mono text-xs text-foreground">
                 {c.name}
               </span>
-              <span
-                className={cn(
-                  'truncate font-mono text-xs',
-                  outlier ? 'text-fail' : 'text-muted-foreground',
-                )}
-              >
-                {c.default_branch || 'branch unreadable'}
+              <span className="truncate font-mono text-xs text-muted-foreground">
+                {c.default_branch || 'base unreadable'}
+                {parked && ` · parked on ${c.current_branch}`}
               </span>
-              {!c.has_remote && (
+              {!forgeDelivers(c.forge) && (
+                <span className="ml-auto shrink-0 font-mono text-[0.65rem] uppercase tracking-[0.15em] text-fail">
+                  {forgeLabel(c.forge)}
+                </span>
+              )}
+              {forgeDelivers(c.forge) && !c.has_remote && (
                 <span className="ml-auto shrink-0 font-mono text-[0.65rem] uppercase tracking-[0.15em] text-warn">
                   no remote
                 </span>
@@ -46,7 +54,9 @@ function ChildRepos({ items, base }: { items: InspectChild[]; base: string }) {
         })}
       </ul>
       <Hint>
-        A run bases every child on {base}. Children on another branch are off limits to it.
+        Each child ships to its own base — {base} is only the one most of them use. A child
+        parked elsewhere is checked out onto its base before the build; one hosted off GitHub
+        is left alone, because that is where trau opens pull requests.
       </Hint>
     </div>
   )

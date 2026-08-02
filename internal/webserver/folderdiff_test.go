@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,61 @@ func TestRunDiffFolderShowsLooseWorkBeforeShip(t *testing.T) {
 			t.Errorf("%s = repo %q, %d additions, patch %q, want its uncommitted change", f.Path, f.Repo, f.Additions, f.Patch)
 		}
 	}
+}
+
+// TestRunDiffFolderAnchorsEachChildAtItsOwnForkPoint is the diff-fidelity contract
+// of a fan-out: api-billing's main was rebuilt on another line of history while the
+// run worked its siblings, so its merge-base collapses to the root commit and the
+// pane would claim legacy.go — work the child already carried — as this run's. Only
+// that child's own pin bounds it, and a folder has as many bases as repositories,
+// so there is no single BASE_SHA to lean on.
+func TestRunDiffFolderAnchorsEachChildAtItsOwnForkPoint(t *testing.T) {
+	ts, s, root, git := folderDiffFixture(t)
+	children := []string{"api-companies", "api-billing"}
+	forks := map[string]string{}
+	for _, child := range children {
+		writeRepoFile(t, filepath.Join(root, child), "legacy.go", "package main\n\nfunc Legacy() {}\n")
+		git(child, "add", "-A")
+		git(child, "commit", "-m", "legacy")
+		forks[child] = childHead(t, root, child)
+		git(child, "checkout", "-b", "feature/COD-4-x")
+		writeRepoFile(t, filepath.Join(root, child), "service.go", "package main\n\nfunc New() {}\n")
+		git(child, "commit", "-am", "slice")
+		git(child, "checkout", "main")
+	}
+	git("api-billing", "reset", "--hard", "main~1")
+	writeRepoFile(t, filepath.Join(root, "api-billing"), "rebuilt.go", "package main\n")
+	git("api-billing", "add", "-A")
+	git("api-billing", "commit", "-m", "main rebuilt on another line")
+
+	seedDiffCheckpoint(t, s, root, "COD-4", map[string]string{
+		"BRANCH":       "feature/COD-4-x",
+		"BASE":         "main",
+		"SHIP_TARGETS": "api-companies,api-billing",
+		"FORK_POINTS":  "api-companies=" + forks["api-companies"] + ",api-billing=" + forks["api-billing"],
+	})
+
+	status, diff := getRunDiff(t, ts, "COD-4")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	for _, child := range children {
+		diffFileFor(t, diff, child+"/service.go")
+	}
+	for _, f := range diff.Files {
+		if f.Path == "api-billing/legacy.go" {
+			t.Errorf("the pane carries %s, which the child already held when its branch was cut", f.Path)
+		}
+	}
+}
+
+func childHead(t *testing.T, root, child string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", filepath.Join(root, child), "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse HEAD in %s: %v", child, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // TestRunDiffFolderMergesEveryShippedChild is the Folder repo diff contract: one
