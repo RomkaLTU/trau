@@ -81,7 +81,8 @@ type SubIssue struct {
 // otherwise the tracker provider — resolved once at enqueue so the queue still
 // reports it when the store no longer holds the issue. Provider is an ephemeral
 // per-run override of the configured routing — it applies only to this item's
-// child and never persists to config; empty means the config default.
+// child and never persists to config; empty means the config default. Batch is
+// the batch the item belongs to, empty for none; an item belongs to at most one.
 type Item struct {
 	Kind      Kind       `json:"kind"`
 	ID        string     `json:"id"`
@@ -91,6 +92,7 @@ type Item struct {
 	Status    string     `json:"status"`
 	Reason    string     `json:"reason,omitempty"`
 	PID       int        `json:"pid,omitempty"`
+	Batch     string     `json:"batch,omitempty"`
 	SubIssues []SubIssue `json:"sub_issues,omitempty"`
 	QueuedAt  time.Time  `json:"queued_at"`
 }
@@ -98,12 +100,14 @@ type Item struct {
 // Meta is the queue's run-level configuration, read alongside its items to drive
 // the drain: whether the hub is draining it and since when, whether to ignore
 // stored checkpoints, and what a fault does. DrainingSince is zero unless the
-// queue is draining.
+// queue is draining. Batch is the scope the drain was armed with — the batch
+// whose members it runs, empty for the whole queue.
 type Meta struct {
 	Draining      bool
 	DrainingSince time.Time
 	NoResume      bool
 	OnFault       string
+	Batch         string
 }
 
 var (
@@ -122,6 +126,15 @@ var (
 	// nothing pending or paused, so an empty or fully settled queue stays idle
 	// instead of arming over work that does not exist.
 	ErrNoRunnableItems = errors.New("the queue has no runnable items — add or resume an item before starting it")
+	// ErrBatchNotFound is returned when an edit, dismiss, or start names a batch
+	// the repo does not hold.
+	ErrBatchNotFound = errors.New("batch not found")
+	// ErrAlreadyBatched is returned when a batch would take in an item another
+	// batch already holds, so an item belongs to at most one.
+	ErrAlreadyBatched = errors.New("already in another batch")
+	// ErrNotBatchable is returned when a batch would take in an item that has
+	// already settled, so a batch only ever groups work a drain could still run.
+	ErrNotBatchable = errors.New("only a pending or paused item can be batched")
 )
 
 // DrainReport is how a headless queue-member child reports to the hub drainer how
