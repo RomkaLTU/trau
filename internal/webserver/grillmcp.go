@@ -158,6 +158,14 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		respondRPCJSON(w, rpcID, mcpToolError("question is required and must not be empty"))
 		return
 	}
+	// A queued interjection outranks the question, auto-accept included: the user has
+	// already moved the conversation on. The question is neither stored nor posed, so
+	// nothing later mistakes it for one the session is waiting on.
+	if steer := s.grillTakeInterjections(sid); len(steer) > 0 {
+		frame := s.grillPastedAnswer(r.Context(), sid, grillSteerFrame(steer))
+		respondRPCJSON(w, rpcID, grillAnswerResult(frame))
+		return
+	}
 	allowFreeText := true
 	if a.AllowFreeText != nil {
 		allowFreeText = *a.AllowFreeText
@@ -310,7 +318,7 @@ func (s *Server) grillAutoAnswer(w http.ResponseWriter, sid int64, rpcID json.Ra
 	answer, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleUser,
 		Kind:    hubstore.GrillKindAnswer,
-		Payload: grillAnswerPayload(recommended, true),
+		Payload: grillAnswerPayload(recommended, true, false),
 	})
 	if err != nil {
 		respondRPCError(w, rpcID, rpcInternalError, "store auto-accepted answer: "+err.Error())
@@ -322,8 +330,14 @@ func (s *Server) grillAutoAnswer(w http.ResponseWriter, sid int64, rpcID json.Ra
 
 // grillFinishSession validates the proposed outcome, stores it as an outcome
 // message, and moves the session to finished for the user to review. Validation
-// failures come back as a tool error the agent can correct, not a protocol error.
+// failures come back as a tool error the agent can correct, not a protocol error. A
+// queued interjection refuses the finish once — the proposal in hand never saw it —
+// and is consumed by that refusal, so finishing again goes through.
 func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, args json.RawMessage) {
+	if steer := s.grillTakeInterjections(sid); len(steer) > 0 {
+		respondRPCJSON(w, rpcID, mcpToolError(grillFinishRefusal(steer)))
+		return
+	}
 	var a struct {
 		Disposition         string          `json:"disposition"`
 		Title               string          `json:"title"`

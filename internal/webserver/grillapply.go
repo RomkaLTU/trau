@@ -1055,13 +1055,24 @@ func grillMessageRecommended(payload string) string {
 	return strings.TrimSpace(p.Recommended)
 }
 
+// grillMessageSteer reads the "steer" field of an answer payload: the message that
+// redirects an agent whose turn the user stopped mid-flight.
+func grillMessageSteer(payload string) bool {
+	var p struct {
+		Steer bool `json:"steer"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	return p.Steer
+}
+
 // grillAnswerPayload builds an answer message payload. auto flags one the hub took
-// from the agent's recommendation, so the transcript still shows who chose; a typed
-// answer carries no flag at all.
-func grillAnswerPayload(text string, auto bool) string {
+// from the agent's recommendation, so the transcript still shows who chose, and steer
+// one sent to redirect a stopped turn; an ordinary typed answer carries no flag.
+func grillAnswerPayload(text string, auto, steer bool) string {
 	payload, _ := json.Marshal(struct {
-		Text string `json:"text"`
-		Auto bool   `json:"auto,omitempty"`
-	}{Text: text, Auto: auto})
+		Text  string `json:"text"`
+		Auto  bool   `json:"auto,omitempty"`
+		Steer bool   `json:"steer,omitempty"`
+	}{Text: text, Auto: auto, Steer: steer})
 	return string(payload)
 }

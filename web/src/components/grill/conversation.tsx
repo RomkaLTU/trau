@@ -24,6 +24,7 @@ import {
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  stopGrill,
   type GrillActivity,
   type GrillAppliedOutcome,
   type GrillDelta,
@@ -142,12 +143,25 @@ export function GrillConversation({
       answerGrill(session.id, text),
     onSuccess: (res) => {
       dispatch({ type: "message", message: res.message });
-      dispatch({ type: "state", session: res.session });
+      // An interjection leaves the turn running, so replaying its state frame would
+      // only reset the reply the thread is still streaming.
+      if (res.message.kind !== "interjection")
+        dispatch({ type: "state", session: res.session });
       dropAwaiting(queryClient, session.id);
     },
     onError: (_err, { id, text }) =>
       dispatch({ type: "send-failed", id, text }),
   });
+
+  // The hub publishes the park it made on the session's own state frames, so the
+  // reply is left undispatched: it is a snapshot of the moment the stop landed, and
+  // replaying it would roll the thread back over whatever frame arrived since.
+  const stop = useMutation({ mutationFn: () => stopGrill(session.id) });
+
+  // A refused stop belongs to the turn it was aimed at; the next turn starts clean.
+  useEffect(() => {
+    if (session.state !== "running") stop.reset();
+  }, [session.state]);
 
   useEffect(() => {
     onStatus?.({ stream: status, session, messages });
@@ -183,6 +197,14 @@ export function GrillConversation({
     canCompose(session.state) || (stalled !== null && resume === "");
   const freeText = question?.allow_free_text ?? true;
   const sending = answer.isPending;
+  // A running turn takes typing as steering, not as an answer, so it reads its
+  // prompt off the state rather than off the question.
+  const placeholder =
+    !answering || session.state === "running"
+      ? composerPlaceholder(session.state)
+      : freeText
+        ? "Type your answer…"
+        : "Pick one of the answers above…";
 
   return (
     <>
@@ -196,9 +218,12 @@ export function GrillConversation({
           activity && activityShown ? state.activity.items : NO_ACTIVITY.items
         }
         stalled={stalled}
+        stopping={stop.isPending}
+        stopError={stop.error?.message}
         onRetry={retry}
         onDiscard={(id) => dispatch({ type: "send-discard", id })}
         onResume={resume === "" ? undefined : () => send(resume)}
+        onStop={() => stop.mutate()}
       />
 
       <div className="flex flex-col gap-3 border-t p-4">
@@ -240,13 +265,7 @@ export function GrillConversation({
             )}
             <Composer
               repo={repo}
-              placeholder={
-                !answering
-                  ? composerPlaceholder(session.state)
-                  : freeText
-                    ? "Type your answer…"
-                    : "Pick one of the answers above…"
-              }
+              placeholder={placeholder}
               disabled={!answering || !freeText || sending}
               submitting={sending}
               onSend={send}

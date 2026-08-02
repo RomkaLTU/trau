@@ -38,6 +38,7 @@ import {
   setGrillAutoAccept,
   sortAwaiting,
   startGrillSession,
+  stopGrill,
   upsertMessage,
   type DiffLine,
   type GrillActivity,
@@ -84,6 +85,10 @@ function question(id: string, over: Partial<GrillMessage['payload']> = {}) {
 
 function answer(id: string, text = 'A') {
   return msg({ id, role: 'user', kind: 'answer', payload: { text } })
+}
+
+function interjection(id: string, text = 'A') {
+  return msg({ id, role: 'user', kind: 'interjection', payload: { text } })
 }
 
 describe('label gating', () => {
@@ -733,6 +738,19 @@ describe('streaming deltas', () => {
     expect(next.streaming).toEqual(NO_REPLY)
     expect(next.messages.map((m) => m.id)).toEqual(['1'])
   })
+
+  // The user typing mid-turn settles nothing: the reply beside it is still being
+  // written, so the preview has to survive the bubble landing in the thread.
+  it('an interjection joins the thread without ending the reply', () => {
+    const streamed = stream(initial, { seq: 1, text: 'Let me ' })
+    const next = grillReducer(streamed, {
+      type: 'message',
+      message: interjection('7', 'skip the schema'),
+    })
+    expect(next.streaming).toEqual({ seq: 1, text: 'Let me ', holed: false })
+    expect(next.messages.map((m) => m.id)).toEqual(['7'])
+    expect(stream(next, { seq: 2, text: 'push back.' }).streaming.text).toBe('Let me push back.')
+  })
 })
 
 describe('streaming activity', () => {
@@ -821,6 +839,19 @@ describe('optimistic send', () => {
     const next = grillReducer(sent(), {
       type: 'message',
       message: answer('7', 'A'),
+    })
+    expect(next.pending).toEqual([])
+    expect(next.messages.map((m) => m.id)).toEqual(['7'])
+  })
+
+  it('the echo of an interjection retires its twin too', () => {
+    const running = grillReducer(
+      { ...initial, session: session({ state: 'running' }) },
+      { type: 'send', id: 'p1', text: 'A' },
+    )
+    const next = grillReducer(running, {
+      type: 'message',
+      message: interjection('7', 'A'),
     })
     expect(next.pending).toEqual([])
     expect(next.messages.map((m) => m.id)).toEqual(['7'])
@@ -940,7 +971,6 @@ describe('composer gating', () => {
   it('takes typing only in the states that can accept an answer', () => {
     expect(canCompose('waiting')).toBe(true)
     expect(canCompose('parked')).toBe(true)
-    expect(canCompose('running')).toBe(false)
     expect(canCompose('finished')).toBe(false)
   })
 
@@ -950,8 +980,11 @@ describe('composer gating', () => {
     expect(composerPlaceholder('stalled')).toBe('Session stalled — resume to keep answering…')
   })
 
-  it('explains a disabled box while the agent is thinking', () => {
-    expect(composerPlaceholder('running')).toBe('Agent is thinking…')
+  it('takes typing mid-turn as steering rather than as an answer', () => {
+    expect(canCompose('running')).toBe(true)
+    expect(composerPlaceholder('running')).toBe(
+      'Steer the agent — it will see this at its next step…',
+    )
   })
 })
 
@@ -1176,6 +1209,43 @@ describe('setGrillAutoAccept', () => {
     expect(url).toBe('/api/v1/grill/7/auto-accept')
     expect(init.method).toBe('POST')
     expect(JSON.parse(init.body as string)).toEqual({ enabled: true })
+  })
+})
+
+describe('stopGrill', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('parks the running session and hands back the stopped view', async () => {
+    const parked = session({
+      id: '4',
+      state: 'parked',
+      parked_reason: 'you stopped the agent — your next message steers the conversation',
+    })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => parked } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await stopGrill('4')).toEqual(parked)
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/grill/4/stop')
+    expect(init.method).toBe('POST')
+  })
+
+  it('raises the hub refusal when the session has no turn to stop', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: async () => ({ error: 'no turn is running' }),
+      } as Response),
+    )
+
+    await expect(stopGrill('4')).rejects.toThrow('no turn is running')
   })
 })
 

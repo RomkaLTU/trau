@@ -36,6 +36,9 @@ const (
 	GrillKindAnswer   = "answer"
 	GrillKindInfo     = "info"
 	GrillKindOutcome  = "outcome"
+	// An interjection steers a turn already in flight; it carries its own kind so
+	// nothing mistakes it for the answer to a pending question.
+	GrillKindInterjection = "interjection"
 )
 
 var (
@@ -259,6 +262,57 @@ func (g *Grill) Messages(sessionID, after int64) (out []GrillMessage, err error)
 	if err != nil {
 		return nil, err
 	}
+	return scanGrillMessages(q)
+}
+
+const grillPendingInterjectionSelect = `SELECT id, session_id, role, kind, payload, created_at
+	 FROM grill_messages
+	 WHERE session_id = ? AND kind = '` + GrillKindInterjection + `'
+	   AND id > (SELECT interjection_cursor FROM grill_sessions WHERE id = ?)
+	 ORDER BY id`
+
+// PendingInterjections returns the interjections queued for a session that no turn has
+// delivered yet, without claiming them.
+func (g *Grill) PendingInterjections(sessionID int64) ([]GrillMessage, error) {
+	q, err := g.db.Query(grillPendingInterjectionSelect, sessionID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return scanGrillMessages(q)
+}
+
+// ConsumeInterjections returns the session's undelivered interjections in order and
+// advances its delivery cursor past them in the same transaction, so a queue two turns
+// reach for is delivered exactly once.
+func (g *Grill) ConsumeInterjections(sessionID int64) ([]GrillMessage, error) {
+	tx, err := g.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	q, err := tx.Query(grillPendingInterjectionSelect, sessionID, sessionID)
+	if err != nil {
+		return nil, errors.Join(err, tx.Rollback())
+	}
+	out, err := scanGrillMessages(q)
+	if err != nil {
+		return nil, errors.Join(err, tx.Rollback())
+	}
+	if len(out) == 0 {
+		return out, tx.Rollback()
+	}
+	if _, err := tx.Exec(
+		`UPDATE grill_sessions SET interjection_cursor = ? WHERE id = ?`,
+		out[len(out)-1].ID, sessionID,
+	); err != nil {
+		return nil, errors.Join(err, tx.Rollback())
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func scanGrillMessages(q *sql.Rows) (out []GrillMessage, err error) {
 	defer func() { err = errors.Join(err, q.Close()) }()
 	out = []GrillMessage{}
 	for q.Next() {

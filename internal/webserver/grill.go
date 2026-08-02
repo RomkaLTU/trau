@@ -331,20 +331,11 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	sid, ok := parseSID(w, r)
+	sess, ok := s.loadGrillSession(w, r)
 	if !ok {
 		return
 	}
-	sess, found, err := s.stores.Grill().Session(sid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
-		return
-	}
-	msgs, err := s.stores.Grill().Messages(sid, 0)
+	msgs, err := s.stores.Grill().Messages(sess.ID, 0)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -355,28 +346,21 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGrillAnswer appends a user's answer and resumes the session (POST). A
-// session that cannot take an answer is refused.
+// handleGrillAnswer appends a user's message and resumes the session (POST). A running
+// session queues it as an interjection instead — the turn keeps working and the agent
+// reads it at its next tool call. A session that can take neither is refused.
 func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	sid, ok := parseSID(w, r)
+	sess, ok := s.loadGrillSession(w, r)
 	if !ok {
 		return
 	}
-	sess, found, err := s.stores.Grill().Session(sid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
-		return
-	}
-	if !grillAcceptsAnswer(sess.State) {
+	interjecting := sess.State == hubstore.GrillRunning
+	if !interjecting && !grillAcceptsAnswer(sess.State) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is not awaiting an answer"})
 		return
 	}
@@ -388,6 +372,18 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "answer text is required"})
+		return
+	}
+	if interjecting {
+		msg, err := s.grillInterject(sess.ID, text)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store interjection: " + err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, GrillAnswerResponse{
+			Session: s.grillSessionView("", sess),
+			Message: grillMessageView(msg),
+		})
 		return
 	}
 	msg, resumed, err := s.grillSubmitAnswer(r.Context(), sess, text, false)
@@ -403,7 +399,9 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 
 // grillSubmitAnswer stores text as the session's answer and puts it back to running,
 // spawning the resume turn a session whose child has gone needs. auto marks an answer
-// the hub took from the agent's own recommendation rather than from the user.
+// the hub took from the agent's own recommendation rather than from the user; the
+// answer that picks a stopped session back up is marked as steering, so the resume
+// turn reaches the agent as a redirect.
 func (s *Server) grillSubmitAnswer(
 	ctx context.Context,
 	sess hubstore.GrillSession,
@@ -413,7 +411,7 @@ func (s *Server) grillSubmitAnswer(
 	msg, _, err := s.stores.Grill().AppendMessage(sess.ID, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleUser,
 		Kind:    hubstore.GrillKindAnswer,
-		Payload: grillAnswerPayload(text, auto),
+		Payload: grillAnswerPayload(text, auto, grillStopped(sess)),
 	})
 	if err != nil {
 		return hubstore.GrillMessage{}, sess, fmt.Errorf("store answer: %w", err)
@@ -430,7 +428,8 @@ func (s *Server) grillSubmitAnswer(
 	return msg, resumed, nil
 }
 
-// handleGrillAbandon settles a session as abandoned (POST). It is idempotent on an
+// handleGrillAbandon settles a session as abandoned (POST), killing any turn still in
+// flight rather than letting it burn until its next tool call. It is idempotent on an
 // already-abandoned session and refuses one already applied.
 func (s *Server) handleGrillAbandon(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -438,17 +437,8 @@ func (s *Server) handleGrillAbandon(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	sid, ok := parseSID(w, r)
+	sess, ok := s.loadGrillSession(w, r)
 	if !ok {
-		return
-	}
-	sess, found, err := s.stores.Grill().Session(sid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
 		return
 	}
 	switch sess.State {
@@ -459,13 +449,129 @@ func (s *Server) handleGrillAbandon(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is already applied"})
 		return
 	}
-	abandoned, err := s.stores.Grill().Transition(sid, hubstore.GrillAbandoned, "")
+	abandoned, err := s.stores.Grill().Transition(sess.ID, hubstore.GrillAbandoned, "")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	s.publishGrillState(abandoned)
+	s.stopGrillChild(sess.ID)
 	writeJSON(w, http.StatusOK, s.grillSessionView("", abandoned))
+}
+
+// handleGrillStop kills a session's in-flight turn and parks it for the user to steer
+// (POST). The park lands before the child dies so the runner's reconcile, which leaves
+// a stopped session alone, never reads the kill as a crash or a wall. An ended session
+// is refused, as is one with no turn to stop.
+func (s *Server) handleGrillStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sess, ok := s.loadGrillSession(w, r)
+	if !ok {
+		return
+	}
+	sid := sess.ID
+	switch sess.State {
+	case hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session no longer accepts a stop"})
+		return
+	}
+	live := s.grillTurnActive != nil && s.grillTurnActive(sid)
+	// Two clicks on Stop are one gesture: while the first is still landing — its guard
+	// held, or the turn it killed still winding down — the second answers with the
+	// session it parked rather than parking and noticing that session twice.
+	if (grillStopped(sess) && live) || !s.beginGrillStop(sid) {
+		if latest, ok := s.loadGrillSession(w, r); ok {
+			writeJSON(w, http.StatusOK, s.grillSessionView("", latest))
+		}
+		return
+	}
+	defer s.endGrillStop(sid)
+
+	if sess.State != hubstore.GrillRunning && !live {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no turn is running"})
+		return
+	}
+	stopped := sess
+	// A session that idled into parked while its child kept working is already where
+	// the stop lands, and the store has no parked-to-parked move: only its child dies.
+	if sess.State != hubstore.GrillParked {
+		parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, grillStoppedReason)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		stopped = parked
+		s.publishGrillState(stopped)
+	}
+	if stopped.AutoAccept {
+		updated, found, err := s.stores.Grill().SetAutoAccept(sid, false)
+		switch {
+		case err != nil:
+			logger.Verbosef("grill %d: stop auto-accept: %v", sid, err)
+		case found:
+			stopped = updated
+			s.appendGrillNotice(sid, "Auto-accept recommendations turned off")
+			s.publishGrillState(stopped)
+		}
+	}
+	s.appendGrillNotice(sid, "You stopped the agent mid-turn.")
+	s.stopGrillChild(sid)
+	writeJSON(w, http.StatusOK, s.grillSessionView("", stopped))
+}
+
+// beginGrillStop / endGrillStop flag which sessions have a stop in flight, so two
+// requests racing out of one double click cannot both park and notice the session.
+// The flag lives no longer than the request that takes it; the park it leaves behind
+// is what refuses every later stop.
+func (s *Server) beginGrillStop(sid int64) bool {
+	s.grillStopMu.Lock()
+	defer s.grillStopMu.Unlock()
+	if s.grillStopping[sid] {
+		return false
+	}
+	s.grillStopping[sid] = true
+	return true
+}
+
+func (s *Server) endGrillStop(sid int64) {
+	s.grillStopMu.Lock()
+	delete(s.grillStopping, sid)
+	s.grillStopMu.Unlock()
+}
+
+// grillStopped reports whether sess is parked because the user stopped its turn — the
+// hand-back the runner must not re-settle and the next answer steers from.
+func grillStopped(sess hubstore.GrillSession) bool {
+	return sess.State == hubstore.GrillParked && sess.ParkedReason == grillStoppedReason
+}
+
+// appendGrillNotice records a system notice in the transcript and puts it on the live
+// stream. It is bookkeeping the conversation explains itself with, so a failure is
+// logged rather than raised.
+func (s *Server) appendGrillNotice(sid int64, text string) {
+	payload, _ := json.Marshal(struct {
+		Text string `json:"text"`
+	}{Text: text})
+	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleSystem,
+		Kind:    hubstore.GrillKindInfo,
+		Payload: string(payload),
+	})
+	if err != nil {
+		logger.Verbosef("grill %d: notice: %v", sid, err)
+		return
+	}
+	s.publishGrillMessage(msg)
+}
+
+func (s *Server) stopGrillChild(sid int64) {
+	if s.stopGrillTurn != nil {
+		s.stopGrillTurn(sid)
+	}
 }
 
 // handleGrillModel switches the Claude model a session's next turn spawns with
@@ -479,19 +585,11 @@ func (s *Server) handleGrillModel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	sid, ok := parseSID(w, r)
+	sess, ok := s.loadGrillSession(w, r)
 	if !ok {
 		return
 	}
-	sess, found, err := s.stores.Grill().Session(sid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
-		return
-	}
+	sid := sess.ID
 	switch sess.State {
 	case hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session no longer accepts a model switch"})
@@ -545,19 +643,11 @@ func (s *Server) handleGrillAutoAccept(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	sid, ok := parseSID(w, r)
+	sess, ok := s.loadGrillSession(w, r)
 	if !ok {
 		return
 	}
-	sess, found, err := s.stores.Grill().Session(sid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
-		return
-	}
+	sid := sess.ID
 	switch sess.State {
 	case hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session no longer accepts an auto-accept switch"})
@@ -638,19 +728,11 @@ func (s *Server) handleGrillStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	sid, ok := parseSID(w, r)
+	sess, ok := s.loadGrillSession(w, r)
 	if !ok {
 		return
 	}
-	sess, found, err := s.stores.Grill().Session(sid)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if !found {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
-		return
-	}
+	sid := sess.ID
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
@@ -798,6 +880,26 @@ func (s *Server) grillResumeSpawns(sid int64, state string) bool {
 	default:
 		return false
 	}
+}
+
+// loadGrillSession reads the session a request names, answering the client itself on
+// an unusable id, an unreadable store or an unknown session, and reporting whether
+// the handler may carry on.
+func (s *Server) loadGrillSession(w http.ResponseWriter, r *http.Request) (hubstore.GrillSession, bool) {
+	sid, ok := parseSID(w, r)
+	if !ok {
+		return hubstore.GrillSession{}, false
+	}
+	sess, found, err := s.stores.Grill().Session(sid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return hubstore.GrillSession{}, false
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
+		return hubstore.GrillSession{}, false
+	}
+	return sess, true
 }
 
 // parseSID reads the {sid} path segment as a session id, answering 400 on a
