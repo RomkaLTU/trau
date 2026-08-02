@@ -42,7 +42,26 @@ type queueState struct {
 	drainingSince time.Time
 	noResume      bool
 	onFault       string
+	batch         string
 	items         []queue.Item
+}
+
+// covers reports whether the armed scope includes it: every item when the drain
+// was armed over the whole queue, only the batch's members otherwise.
+func (st *queueState) covers(it queue.Item) bool {
+	return st.batch == "" || it.Batch == st.batch
+}
+
+// hasRunnable reports whether the armed scope still holds work a drain could
+// launch. A batch scope answers for its members alone, so a batch that ran dry
+// reads empty even while the rest of the queue waits.
+func (st *queueState) hasRunnable() bool {
+	for _, it := range st.items {
+		if queue.Runnable(it.Status) && st.covers(it) {
+			return true
+		}
+	}
+	return false
 }
 
 // disarm stops the drain and drops its stamp, so a queue that is not draining
@@ -62,11 +81,12 @@ func (st *queueState) arm() {
 	st.drainingSince = time.Now().UTC()
 }
 
-// restart returns every item that is not currently running to pending with its
-// reason and child pid cleared, so the next drain runs from the top.
+// restart returns every item the armed scope covers that is not currently
+// running to pending with its reason and child pid cleared, so the next drain
+// runs from the top. A batch start leaves the queue outside its scope alone.
 func (st *queueState) restart() {
 	for i := range st.items {
-		if st.items[i].Status == queue.StatusRunning {
+		if st.items[i].Status == queue.StatusRunning || !st.covers(st.items[i]) {
 			continue
 		}
 		st.items[i].Status = queue.StatusPending
@@ -103,6 +123,7 @@ func (q *Queue) Snapshot() ([]queue.Item, queue.Meta, error) {
 		DrainingSince: st.drainingSince,
 		NoResume:      st.noResume,
 		OnFault:       st.onFault,
+		Batch:         st.batch,
 	}, nil
 }
 
@@ -294,7 +315,8 @@ func (q *Queue) Promote(item queue.Item, ids []string) ([]queue.Item, error) {
 // share one lock and one persist, so a concurrent enqueue or settlement can
 // neither slip past the check nor observe a half-armed queue. Arming an
 // already-draining queue keeps its stamp, so a re-arm mid-run never restarts the
-// clock.
+// clock. A whole-queue start is batch-blind: it clears any batch scope a previous
+// start left behind, so the run covers every item again.
 func (q *Queue) Arm(noResume bool, onFault string) error {
 	queueMu.Lock()
 	defer queueMu.Unlock()
@@ -305,6 +327,7 @@ func (q *Queue) Arm(noResume bool, onFault string) error {
 	if !queue.HasRunnable(st.items) {
 		return queue.ErrNoRunnableItems
 	}
+	st.batch = ""
 	if noResume {
 		st.restart()
 	}
@@ -318,7 +341,9 @@ func (q *Queue) Arm(noResume bool, onFault string) error {
 // with. It is Arm without the reset: a re-attempt of one parked item must leave
 // the items that already settled alone, which replaying a no-resume arm would
 // not — that returns every settled item to pending and runs shipped work again.
-// A queue with nothing runnable left reports queue.ErrNoRunnableItems.
+// A scope with nothing runnable left reports queue.ErrNoRunnableItems. It
+// preserves the batch scope, so a re-attempt of a parked member continues the
+// batch it belongs to rather than widening the run to the whole queue.
 func (q *Queue) Rearm() error {
 	queueMu.Lock()
 	defer queueMu.Unlock()
@@ -326,20 +351,23 @@ func (q *Queue) Rearm() error {
 	if err != nil {
 		return err
 	}
-	if !queue.HasRunnable(st.items) {
+	if !st.hasRunnable() {
 		return queue.ErrNoRunnableItems
 	}
 	st.arm()
 	return q.persist(st)
 }
 
-// FinishDraining clears the draining flag once the queue has nothing left to run
-// — no pending, paused, or running item — and reports whether it did, so a
-// completed queue reads stopped instead of idling armed. An empty or fully
-// settled queue disarms the same way, which self-heals a row persisted armed
-// before a start required runnable work. The check and the write share one lock,
-// so an item queued after the drain's last snapshot keeps the queue armed rather
-// than being stranded.
+// FinishDraining clears the draining flag once the armed scope has nothing left
+// to run — no pending, paused, or running item in it — and reports whether it
+// did, so a completed queue reads stopped instead of idling armed. An empty or
+// fully settled queue disarms the same way, which self-heals a row persisted
+// armed before a start required runnable work. A batch scope is judged on its
+// members alone and is cleared along with the flag, so a batch that ran dry stops
+// the drain even while the rest of the queue waits and the next start is a fresh
+// choice of scope. The check and the write share one lock, so an item queued
+// after the drain's last snapshot keeps the queue armed rather than being
+// stranded.
 func (q *Queue) FinishDraining() (bool, error) {
 	queueMu.Lock()
 	defer queueMu.Unlock()
@@ -351,11 +379,15 @@ func (q *Queue) FinishDraining() (bool, error) {
 		return false, nil
 	}
 	for _, it := range st.items {
+		if !st.covers(it) {
+			continue
+		}
 		if queue.Runnable(it.Status) || it.Status == queue.StatusRunning {
 			return false, nil
 		}
 	}
 	st.disarm()
+	st.batch = ""
 	if err := q.persist(st); err != nil {
 		return false, err
 	}
@@ -410,6 +442,7 @@ func (q *Queue) MarkSkipped(id, reason string) error {
 // Pause parks a running item back at the front as paused, records the surfaced
 // reason, and stops the drain — all in one write, so a reader never catches the
 // item paused while the queue still reads as draining. A resume re-attempts it.
+// The batch scope survives the park, so resuming picks the same batch back up.
 func (q *Queue) Pause(id, reason string) error {
 	queueMu.Lock()
 	defer queueMu.Unlock()
@@ -623,8 +656,8 @@ func (q *Queue) load() (st queueState, err error) {
 	var draining, noResume int
 	var drainingSince string
 	err = q.db.QueryRow(
-		`SELECT draining, no_resume, on_fault, draining_since FROM queue_repos WHERE root = ?`, q.root,
-	).Scan(&draining, &noResume, &st.onFault, &drainingSince)
+		`SELECT draining, no_resume, on_fault, draining_since, batch FROM queue_repos WHERE root = ?`, q.root,
+	).Scan(&draining, &noResume, &st.onFault, &drainingSince, &st.batch)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return queueState{}, err
 	}
@@ -644,7 +677,7 @@ func (q *Queue) load() (st queueState, err error) {
 	}
 
 	rows, err := q.db.Query(
-		`SELECT id, kind, title, source, provider, status, reason, pid, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
+		`SELECT id, kind, title, source, provider, status, reason, pid, batch, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
 		q.root,
 	)
 	if err != nil {
@@ -654,7 +687,7 @@ func (q *Queue) load() (st queueState, err error) {
 	for rows.Next() {
 		var it queue.Item
 		var kind, queuedAt string
-		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Source, &it.Provider, &it.Status, &it.Reason, &it.PID, &queuedAt); scanErr != nil {
+		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Source, &it.Provider, &it.Status, &it.Reason, &it.PID, &it.Batch, &queuedAt); scanErr != nil {
 			return queueState{}, scanErr
 		}
 		it.Kind = queue.Kind(kind)
@@ -702,9 +735,9 @@ func (q *Queue) persist(st queueState) error {
 		drainingSince = st.drainingSince.UTC().Format(time.RFC3339Nano)
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO queue_repos(root, draining, no_resume, on_fault, draining_since) VALUES(?, ?, ?, ?, ?)
-		 ON CONFLICT(root) DO UPDATE SET draining = excluded.draining, no_resume = excluded.no_resume, on_fault = excluded.on_fault, draining_since = excluded.draining_since`,
-		q.root, boolToInt(st.draining), boolToInt(st.noResume), st.onFault, drainingSince,
+		`INSERT INTO queue_repos(root, draining, no_resume, on_fault, draining_since, batch) VALUES(?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(root) DO UPDATE SET draining = excluded.draining, no_resume = excluded.no_resume, on_fault = excluded.on_fault, draining_since = excluded.draining_since, batch = excluded.batch`,
+		q.root, boolToInt(st.draining), boolToInt(st.noResume), st.onFault, drainingSince, st.batch,
 	); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}
@@ -720,9 +753,9 @@ func (q *Queue) persist(st queueState) error {
 			queuedAt = it.QueuedAt.UTC().Format(time.RFC3339Nano)
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO queue_items(root, position, id, kind, title, source, provider, status, reason, pid, queued_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.root, pos, it.ID, string(it.Kind), it.Title, it.Source, it.Provider, it.Status, it.Reason, it.PID, queuedAt,
+			`INSERT INTO queue_items(root, position, id, kind, title, source, provider, status, reason, pid, batch, queued_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			q.root, pos, it.ID, string(it.Kind), it.Title, it.Source, it.Provider, it.Status, it.Reason, it.PID, it.Batch, queuedAt,
 		); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}

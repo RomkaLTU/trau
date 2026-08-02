@@ -1767,3 +1767,243 @@ func TestDrainStartsTheReleasingEpicItself(t *testing.T) {
 		})
 	}
 }
+
+// seedBatch files queued ids under a batch through the store, the only writer of
+// the membership column, and returns its identifier.
+func seedBatch(t *testing.T, s *Server, root, name string, ids ...string) string {
+	t.Helper()
+	bid, err := s.stores.Queue(root).CreateBatch(name, ids)
+	if err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	return bid
+}
+
+func armBatch(t *testing.T, s *Server, root, bid string) {
+	t.Helper()
+	if err := s.stores.Queue(root).ArmBatch(bid, false, queue.OnFaultHalt); err != nil {
+		t.Fatalf("arm batch %s: %v", bid, err)
+	}
+}
+
+func drainingBatchOf(t *testing.T, s *Server, root string) string {
+	t.Helper()
+	_, meta, err := s.stores.Queue(root).Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	return meta.Batch
+}
+
+// drainToStop drives ticks until the drain stops, settling each spawned child
+// clean, and returns the order the members ran in.
+func drainToStop(t *testing.T, s *Server, root string) []string {
+	t.Helper()
+	alive := map[int]bool{}
+	s.drain.alive = func(pid int) bool { return alive[pid] }
+	var order []string
+	for step := 0; step < 30; step++ {
+		act, err := s.drain.tick(root)
+		if err != nil {
+			t.Fatalf("tick: %v", err)
+		}
+		switch act {
+		case drainStop:
+			return order
+		case drainSpawn:
+			it, ok := runningItem(t, s, root)
+			if !ok {
+				t.Fatal("spawn reported but nothing is running")
+			}
+			order = append(order, it.ID)
+			alive[it.PID] = true
+		case drainWait:
+			it, ok := runningItem(t, s, root)
+			if !ok {
+				t.Fatalf("drain waiting with nothing running after %v", order)
+			}
+			alive[it.PID] = false
+			seedOutcome(t, s, root, it.ID, queue.DrainReport{})
+		}
+	}
+	t.Fatalf("drain never stopped, ran %v", order)
+	return nil
+}
+
+func eventFields(t *testing.T, s *Server, root, kind string) map[string]any {
+	t.Helper()
+	rows, err := s.stores.Events().Recent(root, 20, 0)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	for _, row := range rows {
+		if row.Kind != kind {
+			continue
+		}
+		fields := map[string]any{}
+		if err := json.Unmarshal([]byte(row.Fields), &fields); err != nil {
+			t.Fatalf("decode %s fields: %v", kind, err)
+		}
+		return fields
+	}
+	t.Fatalf("no %s event in the feed", kind)
+	return nil
+}
+
+// TestScopedDrainRunsItsMembersThenStops is the batch's whole promise on one
+// queue: the drain runs exactly the batch's members, in queue order, skipping
+// everything queued between them, and disarms at the batch's boundary with the
+// non-members still pending behind it.
+func TestScopedDrainRunsItsMembersThenStops(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, s, root, false,
+		queue.Item{ID: "COD-1"},
+		queue.Item{ID: "COD-2"},
+		queue.Item{ID: "COD-3"},
+		queue.Item{ID: "COD-4"},
+	)
+	bid := seedBatch(t, s, root, "wave one", "COD-2", "COD-4")
+	armBatch(t, s, root, bid)
+
+	order := drainToStop(t, s, root)
+	if len(order) != 2 || order[0] != "COD-2" || order[1] != "COD-4" {
+		t.Fatalf("run order = %v, want the members in queue order", order)
+	}
+	if len(fake.spawns) != 2 {
+		t.Fatalf("spawns = %d, want one per member", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-2", "--once", "--drain-report", "COD-2"})
+	for _, id := range []string{"COD-1", "COD-3"} {
+		if got := statusOf(t, s, root, id); got != queue.StatusPending {
+			t.Errorf("%s = %q, want a non-member left pending", id, got)
+		}
+	}
+	if drainingOf(t, s, root) {
+		t.Error("still draining after the batch ran dry")
+	}
+	if got := drainingBatchOf(t, s, root); got != "" {
+		t.Errorf("scope = %q, want it cleared with the flag", got)
+	}
+
+	fields := eventFields(t, s, root, event.KindQueueBatchFinished)
+	if fields["batch"] != bid {
+		t.Errorf("event batch = %v, want %q", fields["batch"], bid)
+	}
+	if fields["name"] != "wave one" {
+		t.Errorf("event name = %v, want the batch's name", fields["name"])
+	}
+	outcomes, ok := fields["outcomes"].(map[string]any)
+	if !ok || outcomes[queue.StatusDone] != float64(2) {
+		t.Errorf("event outcomes = %v, want both members tallied done", fields["outcomes"])
+	}
+}
+
+// TestScopedDrainParksAMemberAndKeepsTheScope proves a fault inside a batch parks
+// the member and disarms the drain like any other, and that the scope survives the
+// park so starting the batch again re-attempts it rather than draining the queue.
+func TestScopedDrainParksAMemberAndKeepsTheScope(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.outcome = func(string, queue.Item) (string, string) { return state.FailFaulted, "verify blew up" }
+	seedQueue(t, s, root, false,
+		queue.Item{ID: "COD-1"},
+		queue.Item{ID: "COD-2"},
+		queue.Item{ID: "COD-3"},
+	)
+	bid := seedBatch(t, s, root, "wave", "COD-2", "COD-3")
+	armBatch(t, s, root, bid)
+
+	if act, _ := s.drain.tick(root); act != drainSpawn {
+		t.Fatal("the batch's first member did not spawn")
+	}
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatal("the faulted child did not settle")
+	}
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusPaused {
+		t.Fatalf("COD-2 = %q, want it parked by the fault", got)
+	}
+	if drainingOf(t, s, root) {
+		t.Error("a fault must disarm the drain")
+	}
+	if got := drainingBatchOf(t, s, root); got != bid {
+		t.Fatalf("scope = %q, want %q kept across the park", got, bid)
+	}
+
+	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
+	armBatch(t, s, root, bid)
+	order := drainToStop(t, s, root)
+	if len(order) != 2 || order[0] != "COD-2" || order[1] != "COD-3" {
+		t.Fatalf("run order = %v, want the parked member re-attempted then the rest of the batch", order)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPending {
+		t.Errorf("COD-1 = %q, want the non-member untouched", got)
+	}
+	if len(fake.spawns) != 3 {
+		t.Errorf("spawns = %d, want the first attempt plus both members", len(fake.spawns))
+	}
+}
+
+// TestScopedDrainAutoResumeStopsAtTheBatchBoundary proves the opt-in re-attempt
+// continues the batch — Rearm preserves the scope — and that the drain still
+// stops where the batch ends rather than rolling on into the queue.
+func TestScopedDrainAutoResumeStopsAtTheBatchBoundary(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.autoTries = func(string) int { return 2 }
+	s.drain.backoff = 0
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+	bid := seedBatch(t, s, root, "wave", "COD-1")
+	armBatch(t, s, root, bid)
+	if err := s.stores.Queue(root).MarkRunning("COD-1", 7); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+
+	pauseRunningItem(t, s, root, "COD-1", state.FailPaused)
+	if got := drainingBatchOf(t, s, root); got != bid {
+		t.Fatalf("scope = %q, want %q kept across the blameless park", got, bid)
+	}
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatal("the drain did not hold for the planned re-attempt")
+	}
+	if got := drainingBatchOf(t, s, root); got != bid {
+		t.Fatalf("scope = %q after the auto re-arm, want %q", got, bid)
+	}
+
+	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
+	order := drainToStop(t, s, root)
+	if len(order) != 1 || order[0] != "COD-1" {
+		t.Fatalf("run order = %v, want the re-attempted member alone", order)
+	}
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusPending {
+		t.Errorf("COD-2 = %q, want the non-member left pending at the boundary", got)
+	}
+	if len(fake.spawns) != 1 {
+		t.Errorf("spawns = %d after the re-attempt, want 1", len(fake.spawns))
+	}
+}
+
+// TestScopedDrainSkipsDuplicateInsideABatch proves the dedup is still judged
+// against the whole queue: a batched ticket an epic outside the batch already
+// shipped is skipped rather than run a second time.
+func TestScopedDrainSkipsDuplicateInsideABatch(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusDone, SubIssues: []queue.SubIssue{{ID: "COD-2"}}},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-3"},
+	)
+	bid := seedBatch(t, s, root, "wave", "COD-2", "COD-3")
+	armBatch(t, s, root, bid)
+
+	order := drainToStop(t, s, root)
+	if len(order) != 1 || order[0] != "COD-3" {
+		t.Fatalf("run order = %v, want the duplicate skipped and the rest of the batch run", order)
+	}
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusSkipped {
+		t.Errorf("COD-2 = %q, want skipped as a duplicate", got)
+	}
+	if len(fake.spawns) != 1 {
+		t.Errorf("spawns = %d, want only the non-duplicate member", len(fake.spawns))
+	}
+}
