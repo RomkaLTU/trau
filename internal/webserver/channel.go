@@ -17,6 +17,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/update"
 )
 
 // The build channel a hub runs on, derived from where its executable sits: dev
@@ -41,7 +42,9 @@ const (
 // wedged build hold the switch open forever.
 const channelBuildTimeout = 15 * time.Minute
 
-// channelProbeTimeout bounds `--version` on the freshly built binary.
+// channelProbeTimeout bounds what one candidate binary gets to prove itself in:
+// `--version` and the startup preflight, which opens and migrates the hub
+// databases. It is per candidate, since each is a fresh chance at a usable build.
 const channelProbeTimeout = 30 * time.Second
 
 // channelTailLines is how much build output a failure keeps — enough for the
@@ -176,7 +179,8 @@ func (s *Server) startReleaseSwitch(ctx context.Context, w http.ResponseWriter) 
 
 // switchToDev rebuilds repo and arms a restart onto the binary that build left
 // behind. Nothing about the running hub changes until both the build and the
-// version probe succeed, so a tree that does not compile leaves it serving.
+// probes succeed, so a tree that does not compile — or compiles into a binary
+// that cannot open the hub databases — leaves it serving.
 func (s *Server) switchToDev(ctx context.Context, repo registry.Repo, cfg config.Config) {
 	buildCmd := strings.TrimSpace(cfg.HubReloadBuildCmd)
 	if buildCmd == "" {
@@ -219,23 +223,47 @@ func (s *Server) restartOnto(binary string) {
 	s.triggerRestartTo(binary)
 }
 
-// firstProbable takes the first candidate that prints its version, which is what
-// makes a binary safe to restart onto. One that cannot is never adopted — the
-// restart would take the hub down for good — so a set with nothing runnable in
-// it is refused, named by what it was meant to be.
+// firstProbable takes the first candidate that proves it could serve. One that
+// cannot is never adopted — the restart would take the hub down for good — so a
+// set with nothing runnable in it is refused, named by what it was meant to be.
+// Each candidate gets the full probe budget: it is a fresh chance at a usable
+// build, not a share of one the candidate before it may have spent hanging.
 func (s *Server) firstProbable(ctx context.Context, candidates []string, what string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, channelProbeTimeout)
-	defer cancel()
-
 	var lastErr error
 	for _, path := range candidates {
-		_, err := s.probeVersion(ctx, path)
+		probeCtx, cancel := context.WithTimeout(ctx, channelProbeTimeout)
+		err := s.probeCandidate(probeCtx, path)
+		cancel()
 		if err == nil {
 			return path, nil
 		}
 		lastErr = err
 	}
 	return "", fmt.Errorf("%s is unusable: %w", what, lastErr)
+}
+
+// probeCandidate asks the binary at path for both proofs that it could serve: it
+// prints its version, *and* it completes the hub's own startup preflight.
+//
+// The version probe alone is not that proof. It returns before `trau serve`
+// reaches the hub databases, so a build whose migrations collide passes it and
+// then exits at startup, leaving nothing behind to notice: the outgoing hub has
+// already handed the port to a detached successor and gone.
+//
+// A binary that has no preflight to run is held to the version probe alone.
+// Every release before the subcommand existed is one, including the install the
+// release direction goes back to, and condemning those would shut the only door
+// out of a dev build that cannot serve either.
+func (s *Server) probeCandidate(ctx context.Context, path string) error {
+	if _, err := s.probeVersion(ctx, path); err != nil {
+		return err
+	}
+	err := s.probePreflight(ctx, path)
+	if errors.Is(err, update.ErrPreflightUnsupported) {
+		logger.Verbosef("channel switch: %s predates hub preflight; its version is all it can prove", path)
+		return nil
+	}
+	return err
 }
 
 // releaseSwitchTarget is the binary the release direction restarts onto: the

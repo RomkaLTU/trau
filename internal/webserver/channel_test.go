@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RomkaLTU/trau/internal/update"
 )
 
 // releaseExe stands in for a binary no repo owns — a Homebrew install — so a
@@ -19,8 +21,8 @@ import (
 const releaseExe = "/opt/homebrew/bin/trau"
 
 // channelServer builds a hub allowlisting one repo, running from a release
-// binary, with the rebuild and the version probe injected so a switch exercises
-// the whole sequence without compiling anything.
+// binary, with the rebuild and both candidate probes injected so a switch
+// exercises the whole sequence without compiling anything.
 func channelServer(t *testing.T, selfReload bool) (*Server, *httptest.Server, string) {
 	t.Helper()
 	return newChannelServer(t, selfReload, "127.0.0.1", "", false)
@@ -37,6 +39,7 @@ func newChannelServer(t *testing.T, selfReload bool, bind, token string, allowRe
 	s.executable = func() (string, error) { return releaseExe, nil }
 	s.runBuild = func(context.Context, string, string) ([]byte, error) { return nil, nil }
 	s.probeVersion = func(context.Context, string) (string, error) { return "2.2.0-dev", nil }
+	s.probePreflight = func(context.Context, string) error { return nil }
 	s.pathBinaries = func() []string { return []string{releaseExe} }
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -172,6 +175,49 @@ func TestChannelSwitchUnusableBinaryIsNotAdopted(t *testing.T) {
 	got := awaitChannelState(t, s, switchFailed)
 	if !strings.Contains(got.Message, "unusable") {
 		t.Errorf("message = %q, want it to name the unusable binary", got.Message)
+	}
+}
+
+// TestChannelSwitchBinaryThatCannotServeIsNotAdopted covers the build that runs
+// but cannot open the hub databases — colliding migrations, say. It prints its
+// version happily, so only the preflight catches it, and it has to catch it here:
+// the successor is detached and the hub that armed the restart is gone.
+func TestChannelSwitchBinaryThatCannotServeIsNotAdopted(t *testing.T) {
+	s, ts, root := channelServer(t, true)
+	s.probePreflight = func(context.Context, string) error {
+		return errors.New("hub preflight: exit status 1\nmigrations 0054_a.sql and 0054_b.sql share version 54")
+	}
+	s.EnableRestart(func(string) { t.Error("a binary that cannot serve restarted the hub") })
+
+	res := postChannel(t, ts, channelDev, root)
+	_ = res.Body.Close()
+
+	got := awaitChannelState(t, s, switchFailed)
+	if !strings.Contains(got.Message, "share version 54") {
+		t.Errorf("message = %q, want the preflight's own reason", got.Message)
+	}
+}
+
+// TestChannelSwitchAdoptsABinaryWithoutThePreflight covers the release
+// direction against every trau shipped before the subcommand existed: it answers
+// the probe as an unknown one, which proves nothing about the build but condemns
+// nothing either. Refusing those would leave a bad dev build with no way back.
+func TestChannelSwitchAdoptsABinaryWithoutThePreflight(t *testing.T) {
+	s, ts, _ := channelServer(t, true)
+	s.probePreflight = func(_ context.Context, path string) error {
+		return fmt.Errorf("%s hub preflight: %w", path, update.ErrPreflightUnsupported)
+	}
+	successors := make(chan string, 1)
+	s.EnableRestart(func(binary string) { successors <- binary })
+
+	res := postChannel(t, ts, channelRelease, "")
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d (%s), want %d", res.StatusCode, errorOf(t, res), http.StatusAccepted)
+	}
+	if got := <-successors; got != releaseExe {
+		t.Fatalf("successor = %q, want %q", got, releaseExe)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/transcriptdb"
 	"github.com/RomkaLTU/trau/internal/update"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
@@ -45,6 +46,8 @@ func runHub(ctx context.Context, args []string, stdout io.Writer) error {
 		return runHubSupervise(ctx, args[1:], stdout)
 	case "unsupervise":
 		return runHubUnsupervise(args[1:], stdout)
+	case "preflight":
+		return runHubPreflight(args[1:], stdout)
 	default:
 		return usageError{fmt.Errorf("hub: unknown subcommand: %s", args[0])}
 	}
@@ -137,6 +140,46 @@ func runHubUnsupervise(args []string, stdout io.Writer) error {
 		return console.Actionable(err, "remove the hub's LaunchAgent", "check ~/Library/LaunchAgents")
 	}
 	_, _ = fmt.Fprintf(stdout, "hub supervision removed (%s); the hub stopped with it — `trau serve` or the next interactive session brings it back\n", launchd.Label)
+	return nil
+}
+
+// runHubPreflight does the startup work `trau serve` can still fail at once its
+// arguments parse — opening and migrating both hub databases — and then exits
+// without binding a port or starting anything. That makes it what a hub asks a
+// candidate build before it restarts onto it (ADR 0024 §2): a binary whose
+// migrations collide, or whose schema will not apply, says so here while the hub
+// that asked is still serving, instead of dying alone as the successor.
+//
+// The databases are the machine's real ones, opened against the same trau home
+// the successor would use. Migrations are forward-only and additive, so applying
+// them from the candidate is the same work adopting it would do a moment later.
+func runHubPreflight(args []string, stdout io.Writer) error {
+	if len(args) > 0 {
+		return usageError{fmt.Errorf("hub preflight: unknown arg: %s", args[0])}
+	}
+	home := registry.Home()
+	db, err := hubdb.Open(home)
+	if err != nil {
+		return console.Actionable(err, "open hub database",
+			"try a build that can open it before moving "+hubdb.Path(home)+" aside — it holds every run recorded here")
+	}
+
+	tdb, err := transcriptdb.Open(home)
+	if err != nil {
+		_ = db.Close()
+		return console.Actionable(err, "open transcript database",
+			fmt.Sprintf("delete %s and restart to recreate it empty (it holds only transcripts)", transcriptdb.Path(home)))
+	}
+
+	// The close carries the WAL checkpoint, so a preflight that reported success
+	// through a failed one would have proved nothing about the write path.
+	hubVersion, transcriptVersion := db.Version(), tdb.Version()
+	if err := errors.Join(db.Close(), tdb.Close()); err != nil {
+		return console.Actionable(err, "close the hub databases",
+			"check free space and write permissions under "+home)
+	}
+
+	_, _ = fmt.Fprintf(stdout, "trau %s can serve: hub schema v%d, transcripts v%d\n", version, hubVersion, transcriptVersion)
 	return nil
 }
 

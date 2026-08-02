@@ -44,8 +44,8 @@ the repo that owns the build.
 `POST /api/v1/hub/channel` runs the repo's own `HUB_RELOAD_BUILD_CMD` in its
 root, resolves what that produced through `HUB_DEV_BINARY` (default `bin/trau`,
 relative to the root; on Windows the `.exe` twin is tried too, per ADR 0023 §5),
-probes it with `--version`, and only then arms the existing restart machinery
-pointed at that path.
+proves it can serve, and only then arms the existing restart machinery pointed at
+that path.
 
 Three properties follow from doing it in that order:
 
@@ -57,6 +57,20 @@ Three properties follow from doing it in that order:
   already had, and the last ~20 lines of build output are kept for the UI. The same
   is true of a binary that cannot print its version: a restart onto it would end
   the hub for good, so an unprovable build is never adopted.
+- **Proving a build means running its startup, not its `--version`.** The
+  candidate is asked for `--version` *and* for `trau hub preflight`, which opens
+  and migrates both hub databases and then exits without binding anything. The
+  version probe returns before argument parsing is even finished, so on its own it
+  proves nothing about serving: a build whose migrations collide after a merge
+  prints its version, is adopted, and dies at startup — and by then the outgoing
+  hub has handed the port to a detached successor and exited, so nothing is left
+  alive to roll back. The preflight's own output is what the failed switch
+  reports, since the reason is the whole answer. It migrates the real databases,
+  which is the same forward-only work adopting the build would do a moment later.
+  A binary with no preflight to run — every release shipped before this — answers
+  the subcommand as an unknown one and is held to the version probe alone. Those
+  are exactly the installs §4 goes back to, so condemning them for missing a probe
+  they predate would shut the only door out of a dev build that cannot serve.
 - **The restart is the existing one.** The switch does not invent a shutdown
   path; it hands a successor path to `trau serve`'s respawn, which already
   replays the outgoing hub's `serve` flags. Everything that makes a restart safe
@@ -90,9 +104,9 @@ case this ADR exists for.
 registered repo root contains**. `exec.LookPath` stops at the first hit, which on
 a machine whose checkout is on PATH is the dev build itself, so the search
 continues past every entry a repo owns — restarting onto one of those would not
-leave the dev channel at all. The candidate is probed with `--version` before it
-is adopted, exactly as a fresh build is, and a machine with no release install is
-refused with that reason rather than restarted.
+leave the dev channel at all. The candidate proves itself before it is adopted,
+exactly as a fresh build does, and a machine with no release install is refused
+with that reason rather than restarted.
 
 Nothing is built, so no repo consents to this direction and `HUB_SELF_RELOAD`
 does not apply: no repo provides the binary. The bind gate stays — the hub still

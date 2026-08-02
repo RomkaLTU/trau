@@ -1,6 +1,7 @@
 package update
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -51,6 +52,37 @@ func TestResolveBinaryWithoutAnyBinary(t *testing.T) {
 	gone := filepath.Join(t.TempDir(), "Caskroom", "trau", "2.1.0", "trau")
 	if _, err := resolveBinaryFrom(gone); err == nil {
 		t.Fatal("resolveBinaryFrom succeeded with no binary anywhere")
+	}
+}
+
+// TestPreflightResult pins what the two failing answers are told apart by: a
+// build that predates the subcommand names it, and everything else that fails is
+// a build that cannot serve — a panic on startup included, which leaves with the
+// same exit code a usage error does.
+func TestPreflightResult(t *testing.T) {
+	const path = "/opt/homebrew/bin/trau"
+	exit2 := errors.New("exit status 2")
+
+	tests := []struct {
+		name        string
+		out         string
+		err         error
+		unsupported bool
+	}{
+		{name: "can serve", out: "trau 2.16.0 can serve: hub schema v55, transcripts v1\n"},
+		{name: "predates the preflight", out: "hub: unknown subcommand: preflight\n", err: exit2, unsupported: true},
+		{name: "panics on startup", out: "panic: runtime error: index out of range\n\ngoroutine 1 [running]:\n", err: exit2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := preflightResult(path, []byte(tt.out), tt.err)
+			if (err != nil) != (tt.err != nil) {
+				t.Fatalf("preflightResult = %v, want an error: %v", err, tt.err != nil)
+			}
+			if got := errors.Is(err, ErrPreflightUnsupported); got != tt.unsupported {
+				t.Errorf("unsupported = %v, want %v", got, tt.unsupported)
+			}
+		})
 	}
 }
 

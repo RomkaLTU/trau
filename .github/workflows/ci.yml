@@ -1,0 +1,37 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+# A branch that gets a second push abandons the first run: only the tip decides
+# whether the branch is mergeable.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      # `make vet` runs the native-Windows compile gate first (ADR 0023). This is
+      # a Linux leg only: several suites fail on a Windows checkout for unrelated
+      # reasons, so the cross-build is what proves that platform here.
+      - name: vet
+        run: make vet
+      # No npm step: the SPA is committed under internal/webserver/dist, so the
+      # embed resolves from the checkout. `make test` brings the network guard
+      # (ADR 0027) and the race detector with it, and internal/webserver alone
+      # outlasts Go's 10-minute per-package default on a two-core runner.
+      # CGO_FOR_TEST=1 because -race requires cgo everywhere but darwin, while
+      # the Makefile's default only assumes that of a Windows host; the runner
+      # ships gcc, so the race guard is satisfied.
+      - name: test
+        run: make test CGO_FOR_TEST=1 TESTFLAGS='-timeout 20m'
