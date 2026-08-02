@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -222,6 +224,79 @@ func TestAzureReaderScopesToNamedTeams(t *testing.T) {
 	}
 }
 
+// Two repos on one board that disagree about STATUS_TODO are not asking the same
+// question of the organization, so the pull they share must not hand both of them
+// the winner's Proposed split.
+func TestAzureReaderStatusTodoSplitsTheSharedPull(t *testing.T) {
+	var wiql atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/wiql"):
+			wiql.Add(1)
+			_, _ = w.Write([]byte(`{"workItems":[{"id":7}]}`))
+		case r.URL.Query().Get("ids") != "":
+			_, _ = w.Write([]byte(`{"value":[{"id":7,"fields":{"System.Title":"Groom the intake",` +
+				`"System.State":"New","System.WorkItemType":"User Story","System.TeamProject":"Contoso"}}]}`))
+		case strings.HasSuffix(r.URL.Path, "/states"):
+			_, _ = w.Write([]byte(`{"value":[{"name":"New","category":"Proposed"},
+				{"name":"Ready to Develop","category":"Proposed"},{"name":"In Progress","category":"InProgress"},
+				{"name":"Done","category":"Completed"}]}`))
+		default:
+			if !serveAzureWork(w, r) {
+				t.Errorf("unrouted request %s %s", r.Method, r.URL.RequestURI())
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	reader := func(todo string) Reader {
+		t.Helper()
+		rd, err := NewReader("azure", Config{
+			Team:            "Contoso",
+			APIKey:          "pat",
+			BaseURL:         srv.URL,
+			StatusOverrides: map[Stage]string{StageTodo: todo},
+		})
+		if err != nil {
+			t.Fatalf("NewReader: %v", err)
+		}
+		return rd
+	}
+
+	var wg sync.WaitGroup
+	pulled := make([][]SyncedIssue, 2)
+	errs := make([]error, 2)
+	start := make(chan struct{})
+	for i, rd := range []Reader{reader(""), reader("New")} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			pulled[i], errs[i] = rd.SyncPull(context.Background(), ProjectBinding{}, "")
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i := range errs {
+		if errs[i] != nil {
+			t.Fatalf("reader %d SyncPull: %v", i, errs[i])
+		}
+		if len(pulled[i]) != 1 {
+			t.Fatalf("reader %d pulled %d issues, want 1", i, len(pulled[i]))
+		}
+	}
+	if got := pulled[0][0].Group; got != StatusGroupBacklog {
+		t.Errorf("unpinned group = %q, want New in the intake column", got)
+	}
+	if got := pulled[1][0].Group; got != StatusGroupUnstarted {
+		t.Errorf("STATUS_TODO=New group = %q, want the pin honoured", got)
+	}
+	if got := wiql.Load(); got != 2 {
+		t.Errorf("WIQL queries = %d, want 2 — the pin names a read of its own", got)
+	}
+}
+
 // A by-id read has to answer for the same slice of the board the hub mirrors: a work
 // item in the team project but under another team's area is work the loop would never
 // pick, so queue-by-id must not confirm it either.
@@ -248,7 +323,9 @@ func TestAzureReaderIssueScopesToTheBoard(t *testing.T) {
 			}
 			_, _ = w.Write([]byte(`{"workItems":[]}`))
 		default:
-			t.Errorf("unrouted request %s %s", r.Method, r.URL.RequestURI())
+			if !serveAzureWork(w, r) {
+				t.Errorf("unrouted request %s %s", r.Method, r.URL.RequestURI())
+			}
 		}
 	}))
 	t.Cleanup(srv.Close)

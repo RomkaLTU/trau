@@ -74,17 +74,25 @@ const (
 		"taskBacklog":{"defaultWorkItemType":{"name":"Task"},"workItemTypes":[{"name":"Task"}]},
 		"bugWorkItems":{"defaultWorkItemType":{"name":"Bug"},"workItemTypes":[{"name":"Bug"}]}}`
 	azureTeamSettings = `{"bugsBehavior":"asRequirements"}`
+	// azureStates is the Agile process's workflow, the states a fake organization
+	// reports for any work-item type a test does not route itself.
+	azureStates = `{"value":[{"name":"New","category":"Proposed"},{"name":"Active","category":"InProgress"},
+		{"name":"Resolved","category":"Resolved"},{"name":"Closed","category":"Completed"},
+		{"name":"Removed","category":"Removed"}]}`
 )
 
-// serveAzureWork answers the Work API reads every azure caller makes before it can
-// place a work-item type on a backlog level, reporting whether it handled the
-// request so a fake organization keeps its own routes in charge.
+// serveAzureWork answers the process-metadata reads every azure caller makes
+// before it can place a work-item type on a backlog level or classify its state,
+// reporting whether it handled the request so a fake organization keeps its own
+// routes in charge.
 func serveAzureWork(w http.ResponseWriter, r *http.Request) bool {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/_apis/work/backlogconfiguration"):
 		_, _ = w.Write([]byte(azureBacklogConfig))
 	case strings.HasSuffix(r.URL.Path, "/_apis/work/teamsettings"):
 		_, _ = w.Write([]byte(azureTeamSettings))
+	case strings.HasSuffix(r.URL.Path, "/states"):
+		_, _ = w.Write([]byte(azureStates))
 	default:
 		return false
 	}
@@ -457,6 +465,37 @@ func TestAzureResetRestoresReadyTagAndUnstartedState(t *testing.T) {
 	}
 	if got := (*patches)[1].value("System.State"); got != "New" {
 		t.Errorf("state = %v, want New (the template's Proposed state)", got)
+	}
+}
+
+// A customized process splits Proposed into a raw intake column and a groomed
+// one; a reset belongs in the groomed one, and STATUS_TODO still overrides it.
+func TestAzureResolveStateTargetsTheGroomedProposedColumn(t *testing.T) {
+	routes := map[string]string{
+		"/workitems/7": `{"id":7,"fields":{"System.WorkItemType":"Task"}}`,
+		"/workitemtypes/Task/states": `{"value":[{"name":"New","category":"Proposed"},
+			{"name":"Ready to Develop","category":"Proposed"},{"name":"In Progress","category":"InProgress"},
+			{"name":"Done","category":"Completed"}]}`,
+		"patch": `{"id":7}`,
+	}
+
+	az, _ := azureServer(t, routes)
+	state, err := az.resolveState(context.Background(), 7, StageTodo)
+	if err != nil {
+		t.Fatalf("resolveState returned error: %v", err)
+	}
+	if state != "Ready to Develop" {
+		t.Errorf("state = %q, want Ready to Develop", state)
+	}
+
+	pinned, _ := azureServer(t, routes)
+	pinned.StatusOverrides = map[Stage]string{StageTodo: "New"}
+	state, err = pinned.resolveState(context.Background(), 7, StageTodo)
+	if err != nil {
+		t.Fatalf("resolveState with STATUS_TODO returned error: %v", err)
+	}
+	if state != "New" {
+		t.Errorf("pinned state = %q, want New", state)
 	}
 }
 

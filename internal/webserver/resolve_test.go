@@ -159,6 +159,16 @@ func TestDefaultReaderUnavailableForInternal(t *testing.T) {
 	}
 }
 
+// On Azure DevOps the STATUS_TODO pin also decides which column the board groups
+// as unstarted, so a hub read that dropped it would group the board differently
+// from the loop that writes to it.
+func TestReaderConfigCarriesStatusTodo(t *testing.T) {
+	tc := readerConfig(config.Config{StatusTodo: "Ready to Develop"}, "azure")
+	if got := tc.StatusOverrides[tracker.StageTodo]; got != "Ready to Develop" {
+		t.Errorf("StageTodo override = %q, want the STATUS_TODO pin", got)
+	}
+}
+
 // TestDefaultWriterUnavailableForInternal keeps the write side on the same
 // no-credentials path the read side answers with, so a repo that resolves to the
 // internal provider is reported as a config state rather than a build failure.
