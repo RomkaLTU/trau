@@ -14,13 +14,15 @@ import (
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
-// offLimitsKey and startDirtKey carry the start-of-run sweep on the ticket's
-// checkpoint — which children may not be changed and how dirty each one already
-// was — so a resumed run judges its children against the census taken before the
-// build ran instead of re-taking it against the build's own leftovers.
+// offLimitsKey, startDirtKey and childBaseKey carry the start-of-run sweep on the
+// ticket's checkpoint — which children may not be changed, how dirty each one
+// already was, and the base each one ships to — so a resumed run judges and
+// branches its children exactly as the run that started them did, instead of
+// re-reading against the build's own leftovers.
 const (
 	offLimitsKey = "OFF_LIMITS"
 	startDirtKey = "START_DIRT"
+	childBaseKey = "CHILD_BASES"
 )
 
 // childDirt fingerprints a Child repo's uncommitted work, untracked files
@@ -92,7 +94,7 @@ func (p *Pipeline) baseCheckout(ctx context.Context, a attempt, discard bool) er
 		_, err := p.checkoutBase(ctx, true)
 		return err
 	}
-	return a.git.Checkout(ctx, p.Base, discard)
+	return a.git.Checkout(ctx, p.baseFor(a.repo), discard)
 }
 
 // RefuseEpic answers ErrFolderRepoEpic when a Folder repo is asked to run the epic
@@ -114,6 +116,8 @@ func (p *Pipeline) resetFolderRun() {
 	p.children = nil
 	p.offLimits = nil
 	p.startDirt = nil
+	p.childBases = nil
+	p.parked = nil
 	p.sliceChecks = nil
 	p.folderResumed = false
 }
@@ -160,11 +164,43 @@ func (p *Pipeline) startFolderRun(ctx context.Context, id string, resumed bool) 
 	if resumed {
 		p.offLimits = folderrepo.ParseCensus(p.State.Get(id, offLimitsKey))
 		p.startDirt = folderrepo.ParseCensus(p.State.Get(id, startDirtKey))
+		p.childBases = folderrepo.ParseCensus(p.State.Get(id, childBaseKey))
 		return
 	}
 	p.sweepChildren(ctx)
+	p.parkChildrenOnBase(ctx)
 	p.recordCensus(id, offLimitsKey, p.offLimits)
 	p.recordCensus(id, startDirtKey, p.startDirt)
+	p.recordCensus(id, childBaseKey, p.childBases)
+}
+
+// parkChildrenOnBase puts every clean child standing somewhere else back on its
+// own base — what EnsureCleanBase does for a plain Repo, and what a folder run
+// used to skip the child over instead. It runs where the census is settled and
+// before the build, so a checkout git refuses puts that child off limits on the
+// checkpoint rather than letting a build run off the wrong branch.
+func (p *Pipeline) parkChildrenOnBase(ctx context.Context) {
+	for _, name := range folderrepo.SortedNames(p.parked) {
+		c := folderrepo.Child{Name: name, Path: filepath.Join(p.RepoRoot, name)}
+		base := p.baseFor(name)
+		if err := p.childGit(c).Checkout(ctx, base, false); err != nil {
+			p.offLimits[name] = "it sits on " + p.parked[name] + " and could not be moved onto " + base
+			p.logf("  ⚠ %s: off limits — %v", name, err)
+			continue
+		}
+		p.logf("  ↻ %s: moved from %s onto %s", name, p.parked[name], base)
+	}
+}
+
+// baseFor is the branch a Child repo is cut from and ships back to: its own, as
+// the start-of-run sweep settled it, so a folder that is mostly master with one
+// repo on main ships to both instead of leaving the odd one out unshippable. The
+// folder's own base stands in for a child the sweep never reached.
+func (p *Pipeline) baseFor(child string) string {
+	if base := p.childBases[child]; base != "" {
+		return base
+	}
+	return p.Base
 }
 
 func (p *Pipeline) recordCensus(id, key string, census map[string]string) {
@@ -174,25 +210,32 @@ func (p *Pipeline) recordCensus(id, key string, census map[string]string) {
 }
 
 // sweepChildren takes the census the whole run is judged against: which Child
-// repos are off limits and why, and what uncommitted work each one already held.
-// The sweep is two cheap reads per child — `status --porcelain` and `rev-parse
-// --abbrev-ref HEAD` — deliberately in place of the fetches and checkouts that
-// preparing every child would cost, and it neither aborts the run nor touches
-// anything: a child lands here only so the build agent is told to stay out.
+// repos are off limits and why, what uncommitted work each one already held, the
+// base each one ships to, and which of them a run moves back onto that base.
+// The reads are per child and cheap — a status, a HEAD, the remote's URL and, for
+// a clone that never recorded origin/HEAD, one ls-remote — deliberately in place
+// of the fetches and checkouts that preparing every child would cost. It judges
+// only: a child lands off limits so the build agent is told to stay out, and
+// moving a parked child onto its base is sweepFolder's job, not this one's.
 func (p *Pipeline) sweepChildren(ctx context.Context) {
 	if p.offLimits != nil {
 		return
 	}
 	off, dirt := map[string]string{}, map[string]string{}
+	bases, parked := map[string]string{}, map[string]string{}
 	for _, st := range folderrepo.Sweep(ctx, p.folderChildren(), p.readChildState) {
-		if reason := st.OffLimitsReason(p.Base); reason != "" {
-			off[st.Name] = reason
-		}
+		bases[st.Name] = st.Base
 		if st.Dirt != "" {
 			dirt[st.Name] = st.Dirt
 		}
+		if reason := st.OffLimitsReason(); reason != "" {
+			off[st.Name] = reason
+		}
+		if st.ParkedAndMovable() {
+			parked[st.Name] = st.Branch
+		}
 	}
-	p.offLimits, p.startDirt = off, dirt
+	p.offLimits, p.startDirt, p.childBases, p.parked = off, dirt, bases, parked
 }
 
 // folderOffLimits names the Child repos this run must not change, mapped to why.
@@ -217,6 +260,8 @@ func (p *Pipeline) readChildState(ctx context.Context, c folderrepo.Child) folde
 		return st
 	}
 	st.Branch = branch
+	st.Base = p.baseOf(ctx, g, config.Declared(c.Path, "BASE_BRANCH"))
+	st.Forge = p.forgeOf(ctx, g, config.Declared(c.Path, "FORGE"))
 	if st.Dirt, err = childDirt(ctx, g, c.Path); err != nil {
 		st.Err = err
 	}
@@ -224,9 +269,11 @@ func (p *Pipeline) readChildState(ctx context.Context, c folderrepo.Child) folde
 }
 
 // sweepFolder is the Folder repo's stand-in for EnsureCleanBase: it takes the
-// cheap census of the children and reports what it found. Nothing is fetched,
-// checked out or stashed — a run touches a child for the first time when it cuts
-// that child's branch at ship time.
+// cheap census of the children and reports what it found. Nothing is fetched or
+// stashed, and the clean children standing off their base are moved back onto it
+// where the census is stamped on the checkpoint (see startFolderRun); a run
+// touches a child otherwise for the first time when it cuts that child's branch
+// at ship time.
 func (p *Pipeline) sweepFolder(ctx context.Context) error {
 	children := p.folderChildren()
 	if len(children) == 0 {
@@ -494,21 +541,21 @@ func (p *Pipeline) commitChild(ctx context.Context, c folderrepo.Child, branch, 
 	if _, err := EnsureChildConfigInclude(ctx, p.RepoRoot, c.Path); err != nil {
 		return "", fmt.Errorf("wire %s: %w", RepoConfigFile, err)
 	}
-	g := p.childGit(c)
+	g, base := p.childGit(c), p.baseFor(c.Name)
 	if exists, _ := g.BranchExists(ctx, branch); exists {
 		if err := g.Checkout(ctx, branch, false); err != nil {
 			return "", fmt.Errorf("checkout %s: %w", branch, err)
 		}
 		if fork == "" {
-			cut, err := g.MergeBase(ctx, branch, p.Base)
+			cut, err := g.MergeBase(ctx, branch, base)
 			if err != nil {
 				p.logf("  ⚠ %s: fork point not pinned: %v", c.Name, err)
 			}
 			fork = cut
 		}
 	} else {
-		if err := g.CreateBranch(ctx, branch, p.Base); err != nil {
-			return "", fmt.Errorf("branch %s off %s: %w", branch, p.Base, err)
+		if err := g.CreateBranch(ctx, branch, base); err != nil {
+			return "", fmt.Errorf("branch %s off %s: %w", branch, base, err)
 		}
 		head, err := g.HeadSHA(ctx)
 		if err != nil {
@@ -567,17 +614,17 @@ func siblingSection(targets []shipTarget, name string) string {
 }
 
 func (p *Pipeline) openChildPR(ctx context.Context, c folderrepo.Child, branch, title, body string) (string, error) {
-	g, gh := p.childGit(c), p.childGitHub(c)
+	g, gh, base := p.childGit(c), p.childGitHub(c), p.baseFor(c.Name)
 	if err := g.Push(ctx, p.Remote, branch, false); err != nil {
 		return "", fmt.Errorf("push %s: %w", branch, err)
 	}
 	if url, err := gh.PRURL(ctx, branch); err == nil && url != "" {
 		return url, nil
 	}
-	if err := p.assertPRBaseCurrent(ctx, g, p.Base, p.Base); err != nil {
+	if err := p.assertPRBaseCurrent(ctx, g, base, base); err != nil {
 		return "", err
 	}
-	url, err := gh.CreatePR(ctx, p.Base, branch, title, body, false)
+	url, err := gh.CreatePR(ctx, base, branch, title, body, false)
 	if err != nil {
 		return "", fmt.Errorf("pr create: %w", err)
 	}
@@ -682,7 +729,7 @@ func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 		if t.PRURL == "" {
 			return p.giveUp(ctx, id, "no PR recorded for "+t.Name)
 		}
-		if err := p.pollCIWith(ctx, p.childGitHub(t.Child), t.Path, prNumber(t.PRURL), p.Base); err != nil {
+		if err := p.pollCIWith(ctx, p.childGitHub(t.Child), t.Path, prNumber(t.PRURL), p.baseFor(t.Name)); err != nil {
 			p.logf("  ✗ CI in %s: %v", t.Name, err)
 			return p.giveUp(ctx, id, "CI not green in "+t.Name)
 		}
@@ -712,20 +759,20 @@ func (p *Pipeline) landFolderLocally(ctx context.Context, id string, targets []s
 	branch := p.State.Get(id, "BRANCH")
 	if !p.AutoMerge {
 		p.setPRStatus(id, prStatusAwaitingMerge)
-		p.logf("  ⏳ %s is ready on %s in %s — merge them into %s yourself (AUTO_MERGE=0)", id, branch, strings.Join(targetNames(targets), ", "), p.Base)
+		p.logf("  ⏳ %s is ready on %s in %s — merge them into each one's base yourself (AUTO_MERGE=0)", id, branch, strings.Join(targetNames(targets), ", "))
 		return nil
 	}
 	p.setActivity(id, activity.Merge, "")
 	message := deterministicCommitMessage(id, p.commitTitle(ctx, id))
 	for _, t := range targets {
-		g := p.childGit(t.Child)
-		if err := g.Checkout(ctx, p.Base, false); err != nil {
-			return p.giveUp(ctx, id, fmt.Sprintf("could not check out %s in %s: %v", p.Base, t.Name, err))
+		g, base := p.childGit(t.Child), p.baseFor(t.Name)
+		if err := g.Checkout(ctx, base, false); err != nil {
+			return p.giveUp(ctx, id, fmt.Sprintf("could not check out %s in %s: %v", base, t.Name, err))
 		}
 		if err := g.SquashMerge(ctx, branch, message); err != nil {
-			return p.giveUp(ctx, id, fmt.Sprintf("could not squash-merge %s into %s in %s: %v", branch, p.Base, t.Name, err))
+			return p.giveUp(ctx, id, fmt.Sprintf("could not squash-merge %s into %s in %s: %v", branch, base, t.Name, err))
 		}
-		p.logf("  ✓ %s: %s squash-merged into %s (%s)", t.Name, branch, p.Base, localDeliveryNote)
+		p.logf("  ✓ %s: %s squash-merged into %s (%s)", t.Name, branch, base, localDeliveryNote)
 	}
 	return p.markDone(ctx, id, "  ✓ delivered %s locally in every changed child repo, marked Done")
 }

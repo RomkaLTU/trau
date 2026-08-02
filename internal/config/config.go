@@ -30,6 +30,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/folderrepo"
+	"github.com/RomkaLTU/trau/internal/forge"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
@@ -84,6 +85,10 @@ type Config struct {
 	BaseBranch string
 	Remote     string
 	RepoRoot   string
+	// Forge names the code host the repo's remote points at, overriding what its
+	// remote says. Empty is the normal case: the forge is identified per
+	// repository from that repository's own remote.
+	Forge string
 
 	// PromptOverrides is the repo's stored prompt-override map, fetched from the
 	// hub at startup for the preambles baked into the agent backends. Nil keeps
@@ -441,6 +446,7 @@ func Defaults() Config {
 		BaseBranch:             "main",
 		Remote:                 "origin",
 		RepoRoot:               "",
+		Forge:                  "",
 		Provider:               "claude",
 		TrackerProvider:        "linear",
 		GrillProvider:          "",
@@ -628,6 +634,16 @@ func ProjectConfigPath(dir string) string {
 	return filepath.Join(dir, ProjectConfigName)
 }
 
+// Declared is the value a repository states for itself in its own .trau.ini, or
+// "" when it states none. It backs the knobs where a Folder repo's child must
+// override the folder root rather than inherit from it — which forge it is on and
+// which branch it ships to — because a folder may legitimately hold children on
+// different forges and different bases.
+func Declared(dir, key string) string {
+	value, _ := WorkspaceOverride(dir, key)
+	return value
+}
+
 // WorkspaceOverride reads <workspaceDir>/.trau.ini and returns the value it
 // sets for key, if any (ADR 0019). It backs monorepo knob scoping: a knob
 // resolved after a slice's diff is known checks the owning workspace's own
@@ -801,6 +817,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		}
 	}
 	str("REMOTE", &c.Remote)
+	str("FORGE", &c.Forge)
 	str("TRAU_REPO_ROOT", &c.RepoRoot)
 	str("PROVIDER", &c.Provider)
 	if provider != "" {
@@ -1560,6 +1577,7 @@ func WriteProjectEnv(path string, values map[string]string) error {
 		"PROJECT",
 		"BASE_BRANCH",
 		"REMOTE",
+		"FORGE",
 		"TRAU_REPO_ROOT",
 		"PROVIDER",
 		"EPIC_FLOW",
@@ -1816,6 +1834,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "PROJECT", Group: sectionTracker, WebEditable: true, Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
 		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
+		{Key: "FORGE", Group: sectionGit, WebEditable: true, Suggestions: forge.Names(), Description: "Code host this repo's remote is on — leave empty to identify it from the remote itself; a Folder repo's child overrides it in its own .trau.ini"},
 		{Key: "TRAU_REPO_ROOT", Group: sectionPaths, Description: "Target app repo path"},
 		{Key: "PROVIDER", Group: sectionProviders, Default: "claude", Description: "AI provider: claude | codex | kimi", Options: providerOptions},
 		{Key: "CLAUDE_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Claude config file"},
@@ -2385,6 +2404,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.BaseBranch
 	case "REMOTE":
 		return cfg.Remote
+	case "FORGE":
+		return cfg.Forge
 	case "TRAU_REPO_ROOT":
 		return cfg.RepoRoot
 	case "PROVIDER":

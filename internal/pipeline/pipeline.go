@@ -34,6 +34,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/folderrepo"
+	"github.com/RomkaLTU/trau/internal/forge"
 	"github.com/RomkaLTU/trau/internal/forkpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -189,6 +190,15 @@ type Git interface {
 	// (git remote get-url). A local-only project has none, which is an expected
 	// (false, nil); only a git failure returns a non-nil error.
 	RemoteExists(ctx context.Context, remote string) (bool, error)
+
+	// RemoteURL returns the URL configured for remote, "" when the repo has none.
+	// Which forge the repo is on is read off it and off nothing else.
+	RemoteURL(ctx context.Context, remote string) string
+
+	// RemoteDefaultBranch returns the branch remote itself calls default, never
+	// the branch the repo happens to have checked out. "" when neither the
+	// clone's record of it nor the remote can answer.
+	RemoteDefaultBranch(ctx context.Context, remote string) string
 
 	// SquashMerge collapses branch's work into a single commit on the branch
 	// currently checked out (git merge --squash), the local equivalent of a
@@ -517,7 +527,11 @@ type Pipeline struct {
 	RunsDir    string
 	Base       string
 	Remote     string
-	Prefix     string
+	// Forge is the operator's declared code host for RepoRoot, overriding what its
+	// remote says. Empty leaves the identification to the remote itself; a Folder
+	// repo's children are never covered by it and answer from their own remotes.
+	Forge  string
+	Prefix string
 	// TrackerProvider is the effective tracker backend (config
 	// EffectiveTrackerProvider) that names the PR body's ticket trailer;
 	// InternalPrefix is the repo's internal issue-id prefix, marking ids no
@@ -739,18 +753,23 @@ type Pipeline struct {
 	// first localDelivery call resolves it.
 	localOnly *bool
 
-	// children is a Folder repo run's scan of its Child repos; offLimits and
-	// startDirt are the start-of-run sweep's verdict on each — why it may not be
-	// changed, and a fingerprint of the uncommitted work it already carried — and
-	// are always filled as a pair; sliceChecks is the verify library the changed
-	// children resolved to. All are resolved per run, the sweep from the checkpoint
-	// when the run is a resume (see startFolderRun). folderResumed is that resume
+	// children is a Folder repo run's scan of its Child repos; offLimits,
+	// startDirt and childBases are the start-of-run sweep's verdict on each — why
+	// it may not be changed, a fingerprint of the uncommitted work it already
+	// carried, and the base it ships to — and are always filled together;
+	// sliceChecks is the verify library the changed children resolved to. All are
+	// resolved per run, the sweep from the checkpoint when the run is a resume
+	// (see startFolderRun). parked names the children the sweep found standing
+	// somewhere other than their base, for sweepFolder to move onto it, and is a
+	// pre-build fact alone — nothing resumes from it. folderResumed is the resume
 	// flag, held because ship also has to know: only a resume may read what an
 	// earlier attempt left in a child — its branch, its recorded ship set — as this
 	// run's own work.
 	children      []folderrepo.Child
 	offLimits     map[string]string
 	startDirt     map[string]string
+	childBases    map[string]string
+	parked        map[string]string
 	sliceChecks   []checks.Check
 	folderResumed bool
 
@@ -1391,6 +1410,9 @@ func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	if p.FolderRepo {
 		return p.sweepFolder(ctx)
 	}
+	if err := p.assertDeliverable(ctx); err != nil {
+		return err
+	}
 	dirty, err := p.Git.StatusPorcelain(ctx)
 	if err != nil {
 		return fmt.Errorf("ensure clean base: git status: %w", err)
@@ -1576,7 +1598,7 @@ func (p *Pipeline) discardFolderWork(ctx context.Context, id string) {
 	p.startFolderRun(ctx, id, true)
 	for _, c := range p.folderRunFootprint(ctx, id) {
 		g := p.childGit(c)
-		_ = g.Checkout(ctx, p.Base, true)
+		_ = g.Checkout(ctx, p.baseFor(c.Name), true)
 		_ = g.Clean(ctx)
 	}
 }
@@ -5774,6 +5796,18 @@ func (g ExecGit) RemoteExists(ctx context.Context, remote string) (bool, error) 
 		return false, nil
 	}
 	return false, fmt.Errorf("remote get-url %s: %w", remote, err)
+}
+
+// RemoteURL returns the URL the repo has configured for remote. A repo without
+// it is a local-only project, an expected "".
+func (g ExecGit) RemoteURL(ctx context.Context, remote string) string {
+	return forge.RemoteURL(ctx, g.Repo, remote)
+}
+
+// RemoteDefaultBranch asks the remote which branch it calls default, reading the
+// clone's own record of it first. A remote with no answer is an expected "".
+func (g ExecGit) RemoteDefaultBranch(ctx context.Context, remote string) string {
+	return forge.DefaultBranch(ctx, g.Repo, remote)
 }
 
 // SquashMerge stages branch's whole diff onto the checked-out branch and commits

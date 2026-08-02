@@ -39,7 +39,9 @@ a PR in each Child repo it changed.**
   --porcelain` plus `rev-parse --abbrev-ref HEAD`, which across fifty children
   costs milliseconds where fifty fetches and checkouts would cost minutes and
   would trample checkouts the ticket never goes near.
-- **A dirty or off-base child does not abort the run.** It is recorded by the
+- **A dirty or off-base child does not abort the run.** (The off-base half is
+  withdrawn by ADR 0032: each child ships to its own base and a clean one parked
+  elsewhere is checked out onto it.) It is recorded by the
   sweep and named to the build agent as off limits. The run gives up only if a
   change actually lands in one of them, because that change is entangled with
   work trau does not own.

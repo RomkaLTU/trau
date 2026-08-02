@@ -28,9 +28,23 @@ type childGit struct {
 	checkedOut    []string
 	forced        []string // the checkouts that were allowed to discard the tree
 	cleaned       int
-	hasBranch     bool // whether the ticket's branch already exists here
-	baseBehind    bool // this child's remote base is missing the local base tip
-	pushFixes     bool // whether pushing the base brings the remote current
+	hasBranch     bool   // whether the ticket's branch already exists here
+	baseBehind    bool   // this child's remote base is missing the local base tip
+	pushFixes     bool   // whether pushing the base brings the remote current
+	remote        string // the origin URL, which is what says where this child is hosted
+	remoteBase    string // the branch this child's own remote calls default
+	cutFrom       string // the ref CreateBranch was asked to cut at
+}
+
+func (g *childGit) RemoteURL(context.Context, string) string {
+	if g.remote == "" {
+		return "git@github.com:acme/child.git"
+	}
+	return g.remote
+}
+
+func (g *childGit) RemoteDefaultBranch(context.Context, string) string {
+	return g.remoteBase
 }
 
 func (g *childGit) WorktreeStatus(context.Context) (string, error) { return g.status, nil }
@@ -48,8 +62,8 @@ func (g *childGit) CurrentBranch(ctx context.Context) (string, error) {
 	return g.fakeGit.CurrentBranch(ctx)
 }
 
-func (g *childGit) CreateBranch(_ context.Context, branch, _ string) error {
-	g.branch = branch
+func (g *childGit) CreateBranch(_ context.Context, branch, base string) error {
+	g.branch, g.cutFrom = branch, base
 	return nil
 }
 
@@ -100,6 +114,78 @@ func (g *childGit) DeletePushedBranch(_ context.Context, _, branch string) error
 
 func (g *childGit) IsAncestor(context.Context, string, string) (bool, error) {
 	return !g.baseBehind, nil
+}
+
+// TestFolderShipsEachChildToItsOwnBase holds the three facts a folder run has to
+// read per child off that child's own remote: api-orders ships to master and
+// api-web to main, so a folder that is mostly one branch no longer makes the odd
+// one out unshippable; api-web is standing on a spike branch and is moved back
+// onto its base rather than skipped for it; and api-legacy is on Azure DevOps,
+// where trau opens no pull requests, so it is named off limits before the build
+// runs instead of dying at PR time.
+func TestFolderShipsEachChildToItsOwnBase(t *testing.T) {
+	id := "COD-93020"
+	branch := "feature/COD-93020-own-base"
+	root := t.TempDir()
+	gits := map[string]*childGit{
+		"api-legacy": {remote: "https://dev.azure.com/acme/platform/_git/api-legacy"},
+		"api-orders": {remoteBase: "master"},
+		"api-web":    {remoteBase: "main", head: "spike/redesign"},
+	}
+	ghs := map[string]*epicGitHub{
+		"api-legacy": {},
+		"api-orders": {createURL: "https://github.com/acme/api-orders/pull/11"},
+		"api-web":    {createURL: "https://github.com/acme/api-web/pull/4"},
+	}
+	for name := range gits {
+		if err := os.MkdirAll(filepath.Join(root, name, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.FolderRepo = true
+	p.RepoRoot = root
+	p.Remote = "origin"
+	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
+	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	if err := p.State.Set(id, "BRANCH", branch); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if err := p.EnsureCleanBase(ctx); err != nil {
+		t.Fatalf("EnsureCleanBase: %v", err)
+	}
+	p.startFolderRun(ctx, id, false)
+	gits["api-orders"].status = " M orders.go"
+	gits["api-web"].status = "?? web/panel.tsx"
+
+	if !slices.Contains(gits["api-web"].checkedOut, "main") {
+		t.Errorf("api-web checkouts = %v, want it moved onto its own base before the build", gits["api-web"].checkedOut)
+	}
+	if reason := p.folderOffLimits(ctx)["api-legacy"]; !strings.Contains(reason, "Azure DevOps") {
+		t.Errorf("api-legacy off-limits reason = %q, want its forge named", reason)
+	}
+
+	if err := p.CommitAndPR(ctx, id); err != nil {
+		t.Fatalf("CommitAndPR: %v", err)
+	}
+
+	for name, wantBase := range map[string]string{"api-orders": "master", "api-web": "main"} {
+		if got := gits[name].cutFrom; got != wantBase {
+			t.Errorf("%s branch cut from %q, want %q", name, got, wantBase)
+		}
+		if got := ghs[name].base; got != wantBase {
+			t.Errorf("%s PR base = %q, want %q", name, got, wantBase)
+		}
+	}
+	if got := p.State.Get(id, childBaseKey); !strings.Contains(got, "api-orders=master") || !strings.Contains(got, "api-web=main") {
+		t.Errorf("%s = %q, want each child's own base recorded for a resume", childBaseKey, got)
+	}
+	if ghs["api-legacy"].createCalls > 0 {
+		t.Errorf("api-legacy opened %d PRs, want none — trau delivers to GitHub only", ghs["api-legacy"].createCalls)
+	}
 }
 
 // TestFolderShipFansOutToEveryChangedChild is the Folder repo delivery contract:
@@ -513,13 +599,14 @@ func TestFolderShipCrossLinksEveryPRAndPublishesProofs(t *testing.T) {
 // contract: every recorded ship target loses its branch on both sides and its
 // working tree, and a child the run never shipped to is left exactly as it was
 // found — whether its work was already there when the run started or an operator
-// added it while the run was in flight.
+// added it while the run was in flight. api-companies ships to master, so the undo
+// puts it back on its own base rather than on the folder's.
 func TestFolderResetDropsShipTargetsAndSparesUnrelatedWIP(t *testing.T) {
 	id := "COD-93014"
 	branch := "feature/COD-93014-cross-repo-slice"
 	root := t.TempDir()
 	gits := map[string]*childGit{
-		"api-companies": {hasBranch: true},
+		"api-companies": {hasBranch: true, remoteBase: "master"},
 		"api-billing":   {status: " M billing.go"},
 		"api-users":     {},
 	}
@@ -551,8 +638,8 @@ func TestFolderResetDropsShipTargetsAndSparesUnrelatedWIP(t *testing.T) {
 	if !slices.Contains(shipped.deleted, branch) || !slices.Contains(shipped.deletedRemote, branch) {
 		t.Errorf("api-companies deleted %v locally and %v on the remote, want %s in both", shipped.deleted, shipped.deletedRemote, branch)
 	}
-	if !slices.Contains(shipped.checkedOut, p.Base) || shipped.cleaned == 0 {
-		t.Errorf("api-companies checked out %v and cleaned %d times, want it back on %s with its loose work gone", shipped.checkedOut, shipped.cleaned, p.Base)
+	if !slices.Contains(shipped.checkedOut, "master") || slices.Contains(shipped.checkedOut, p.Base) || shipped.cleaned == 0 {
+		t.Errorf("api-companies checked out %v and cleaned %d times, want it back on its own base master, never on the folder's %s", shipped.checkedOut, shipped.cleaned, p.Base)
 	}
 	wip := gits["api-billing"]
 	if len(wip.deleted) > 0 || len(wip.checkedOut) > 0 || wip.cleaned > 0 {

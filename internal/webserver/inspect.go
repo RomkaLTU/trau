@@ -15,6 +15,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/folderrepo"
+	"github.com/RomkaLTU/trau/internal/forge"
 )
 
 // InspectRequest is the body of POST /api/v1/repos/inspect: the absolute path to a
@@ -36,18 +37,24 @@ type RepoInspection struct {
 	HasTrauIni       bool                `json:"has_trau_ini"`
 	DetectedProvider string              `json:"detected_provider,omitempty"`
 	Credentials      []InspectCredential `json:"credentials"`
+	Forge            forge.Forge         `json:"forge"`
 	DefaultBranch    string              `json:"default_branch"`
+	CurrentBranch    string              `json:"current_branch,omitempty"`
 	Children         []InspectChild      `json:"children,omitempty"`
 	Findings         []DetectionFinding  `json:"findings"`
 	Prefill          *InspectPrefill     `json:"prefill,omitempty"`
 }
 
 // InspectChild is one Child repo of a folder under inspection: its name, the
-// default branch it agrees or disagrees on, and whether it can be shipped to.
+// branch its own remote calls default, the branch it currently stands on — a
+// separate fact, never the answer to the first — the forge it would ship
+// through, and whether it can be shipped to at all.
 type InspectChild struct {
-	Name          string `json:"name"`
-	DefaultBranch string `json:"default_branch"`
-	HasRemote     bool   `json:"has_remote"`
+	Name          string      `json:"name"`
+	DefaultBranch string      `json:"default_branch"`
+	CurrentBranch string      `json:"current_branch,omitempty"`
+	Forge         forge.Forge `json:"forge"`
+	HasRemote     bool        `json:"has_remote"`
 }
 
 // InspectCredential records that a provider's credentials exist and the config
@@ -141,17 +148,22 @@ func (s *Server) inspectRepo(ctx context.Context, root string) RepoInspection {
 	}
 	var head []DetectionFinding
 	if census := folderrepo.Scan(root); census.IsFolder {
-		children := inspectChildren(ctx, census.Children)
+		children := inspectChildren(ctx, census.Children, cfg.Remote)
 		insp.Kind = repoKindFolder
 		insp.Children = children
 		insp.DefaultBranch = branchOr(majorityBranch(children), cfg.BaseBranch)
 		head = folderFindings(children, census.Truncated, insp.DefaultBranch)
 	} else {
-		origin, branch := inspectGit(ctx, root)
-		insp.DefaultBranch = branchOr(branch, cfg.BaseBranch)
+		origin, branch, current := inspectGit(ctx, root, cfg.Remote)
+		f := forge.Resolve(cfg.Forge, origin)
+		insp.Forge, insp.DefaultBranch, insp.CurrentBranch = f, branchOr(branch, cfg.BaseBranch), current
 		head = []DetectionFinding{
 			gitFinding(origin),
-			{Label: "default branch", Value: insp.DefaultBranch, State: findingOK},
+			forgeFinding(f, origin),
+			{Label: "default branch", Value: insp.DefaultBranch, State: findingOK, Detail: defaultBranchDetail(branch)},
+		}
+		if current != "" && current != insp.DefaultBranch {
+			head = append(head, parkedFinding(current, insp.DefaultBranch))
 		}
 	}
 	insp.Findings = inspectionFindings(cfg, sources, hasTrauIni, explicit, provider, head)
@@ -213,6 +225,49 @@ func gitFinding(origin string) DetectionFinding {
 		}
 	}
 	return DetectionFinding{Label: "git repository", Value: "yes — origin " + origin, State: findingOK}
+}
+
+// forgeFinding names where the code is hosted, read off this repo's own remote
+// and off nothing else. Delivery is GitHub-only, so a repo hosted elsewhere is a
+// failure stated here rather than one discovered at `gh pr create` once the
+// build, handoff and verify agents have been paid for. The tracker is a separate
+// question entirely: tickets in one service and code in another is ordinary.
+func forgeFinding(f forge.Forge, origin string) DetectionFinding {
+	value := f.Label()
+	if host := forge.Host(origin); host != "" {
+		value += " — " + host
+	}
+	if reason := f.Unsupported(); reason != "" {
+		return DetectionFinding{
+			Label:  "forge",
+			Value:  value,
+			State:  findingFail,
+			Detail: "trau opens pull requests on GitHub only, so a run here would die at PR time. Set FORGE in this repo's .trau.ini if the host is a GitHub install trau did not recognize.",
+		}
+	}
+	return DetectionFinding{Label: "forge", Value: value, State: findingOK}
+}
+
+// defaultBranchDetail says so when the branch had to be taken from config: the
+// remote answered for every other repo, and the difference decides whether the
+// value the wizard is about to write is a fact or a fallback.
+func defaultBranchDetail(fromRemote string) string {
+	if fromRemote != "" {
+		return ""
+	}
+	return "The remote did not answer, so this is BASE_BRANCH from config rather than the branch the remote calls default."
+}
+
+// parkedFinding states the branch the working copy stands on as the separate fact
+// it is. Reporting it as the default branch is what makes a repo whose default is
+// master onboard as azure-devops-generic-pipeline.
+func parkedFinding(current, base string) DetectionFinding {
+	return DetectionFinding{
+		Label:  "parked on",
+		Value:  current,
+		State:  findingInfo,
+		Detail: "The working copy stands here, not on " + base + ". A run checks the base out before it builds.",
+	}
 }
 
 func trauIniFinding(hasTrauIni, explicit bool) DetectionFinding {
@@ -345,13 +400,13 @@ func credentialLocation(layer config.Layer) string {
 
 // inspectChildren reads every Child repo behind a Folder repo, keeping the scan's
 // name order.
-func inspectChildren(ctx context.Context, found []folderrepo.Child) []InspectChild {
+func inspectChildren(ctx context.Context, found []folderrepo.Child, remote string) []InspectChild {
 	children := make([]InspectChild, len(found))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(childInspectConcurrency)
 	for i, c := range found {
 		g.Go(func() error {
-			children[i] = inspectChild(gctx, c)
+			children[i] = inspectChild(gctx, c, remote)
 			return nil
 		})
 	}
@@ -359,27 +414,30 @@ func inspectChildren(ctx context.Context, found []folderrepo.Child) []InspectChi
 	return children
 }
 
-// inspectChild reads the two facts a run needs from a Child repo: the branch it
-// has to agree with the folder's base on, and whether there is an origin to open a
-// pull request against. A child whose reads fail carries its zero value rather
-// than cancelling the rest.
-func inspectChild(ctx context.Context, c folderrepo.Child) InspectChild {
-	branch := strings.TrimPrefix(gitOutput(ctx, c.Path, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"), "origin/")
-	if branch == "" {
-		branch = gitOutput(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD")
-	}
+// inspectChild reads the facts a run needs from a Child repo, every one of them
+// from that child's own remote: the base it ships to, the forge it would ship
+// through, and whether there is a remote to open a pull request against at all.
+// The branch it currently stands on is reported alongside rather than in place of
+// its base — a child parked on a feature branch is still a child whose base is
+// master. A child whose reads fail carries its zero value rather than cancelling
+// the rest.
+func inspectChild(ctx context.Context, c folderrepo.Child, remote string) InspectChild {
+	url := forge.RemoteURL(ctx, c.Path, remote)
 	return InspectChild{
 		Name:          c.Name,
-		DefaultBranch: branch,
-		HasRemote:     gitOutput(ctx, c.Path, "remote", "get-url", "origin") != "",
+		DefaultBranch: forge.ResolveBase(config.Declared(c.Path, "BASE_BRANCH"), forge.DefaultBranch(ctx, c.Path, remote), ""),
+		CurrentBranch: gitOutput(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD"),
+		Forge:         forge.Resolve(config.Declared(c.Path, "FORGE"), url),
+		HasRemote:     url != "",
 	}
 }
 
-// majorityBranch is the default branch most Child repos sit on, ties broken
-// alphabetically so the same folder always reports the same answer. Reporting the
-// majority rather than nothing on disagreement is the point: an empty value only
-// makes the wizard fall back to main, which loses the real answer while keeping
-// the risk it carries.
+// majorityBranch is the base most Child repos' own remotes name, ties broken
+// alphabetically so the same folder always reports the same answer. It is the
+// folder's fallback and nothing stronger — each child ships to its own — but
+// reporting the majority rather than nothing on disagreement is still the point:
+// an empty value only makes the wizard fall back to main, which loses the real
+// answer while keeping the risk it carries.
 func majorityBranch(children []InspectChild) string {
 	counts := map[string]int{}
 	for _, c := range children {
@@ -397,33 +455,42 @@ func majorityBranch(children []InspectChild) string {
 }
 
 // folderFindings replaces the single-repo git report for a Folder repo, which has
-// no origin or HEAD of its own to report. A run applies one base branch to every
-// child, so a child sitting on another one is off limits to every run and a change
-// landing there aborts it — a failure to fix before onboarding, not a warning.
+// no origin or HEAD of its own to report. Each child ships to its own base, so a
+// child whose base differs from the majority is a fact worth naming and nothing
+// worse. What does stop a child being shipped to is its forge: delivery is
+// GitHub-only, and a mixed folder ships to its GitHub children and leaves the
+// rest alone with the reason named.
 func folderFindings(children []InspectChild, truncated bool, base string) []DetectionFinding {
-	outliers, remoteless := []string{}, []string{}
+	outliers, unsupported, remoteless := []string{}, []string{}, []string{}
 	for _, c := range children {
 		if c.DefaultBranch != "" && c.DefaultBranch != base {
 			outliers = append(outliers, c.Name+" on "+c.DefaultBranch)
+		}
+		if c.Forge.Unsupported() != "" {
+			unsupported = append(unsupported, c.Name+" on "+c.Forge.Label())
 		}
 		if !c.HasRemote {
 			remoteless = append(remoteless, c.Name)
 		}
 	}
-	branchState := findingOK
-	if len(outliers) > 0 {
-		branchState = findingInfo
-	}
 	findings := []DetectionFinding{
 		childCountFinding(len(children), truncated),
-		{Label: "default branch", Value: base, State: branchState},
+		{Label: "default branch", Value: base, State: findingOK, Detail: "The branch most children's remotes call default. Each child ships to its own."},
 	}
 	if len(outliers) > 0 {
 		findings = append(findings, DetectionFinding{
-			Label:  "branch disagreement",
+			Label:  "own base branch",
 			Value:  strings.Join(outliers, ", "),
+			State:  findingInfo,
+			Detail: "These ship to their own base rather than " + base + ". Nothing to fix.",
+		})
+	}
+	if len(unsupported) > 0 {
+		findings = append(findings, DetectionFinding{
+			Label:  "forge",
+			Value:  strings.Join(unsupported, ", "),
 			State:  findingFail,
-			Detail: "A run bases every child on " + base + ", so these are off limits to it — and a change landing in one aborts the run. Move them onto " + base + " before onboarding.",
+			Detail: "trau opens pull requests on GitHub only. A run ships to the rest of the folder and leaves these untouched. Set FORGE in a child's own .trau.ini if its host is a GitHub install trau did not recognize.",
 		})
 	}
 	if len(remoteless) > 0 {
@@ -449,16 +516,16 @@ func childCountFinding(count int, truncated bool) DetectionFinding {
 	return DetectionFinding{Label: "child repositories", Value: strconv.Itoa(count), State: findingOK}
 }
 
-// inspectGit reads the repo's origin remote and default branch best-effort: a repo
-// without git set up (or without an origin) simply yields empty strings, which the
-// findings render as their own states rather than failing the inspection.
-func inspectGit(ctx context.Context, root string) (origin, branch string) {
-	origin = gitOutput(ctx, root, "remote", "get-url", "origin")
-	branch = strings.TrimPrefix(gitOutput(ctx, root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"), "origin/")
-	if branch == "" {
-		branch = gitOutput(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
-	}
-	return origin, branch
+// inspectGit reads the repo's remote URL, the branch that remote calls default,
+// and the branch the working copy stands on — three facts, kept apart. The last
+// is never allowed to answer for the second: a checkout parked on a feature
+// branch would otherwise be onboarded with that branch written into BASE_BRANCH.
+// All of it is best-effort: a repo without git set up simply yields empty
+// strings, which the findings render as their own states.
+func inspectGit(ctx context.Context, root, remote string) (origin, branch, current string) {
+	origin = forge.RemoteURL(ctx, root, remote)
+	branch = forge.DefaultBranch(ctx, root, remote)
+	return origin, branch, gitOutput(ctx, root, "rev-parse", "--abbrev-ref", "HEAD")
 }
 
 func gitOutput(ctx context.Context, root string, args ...string) string {

@@ -22,6 +22,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/folderrepo"
+	"github.com/RomkaLTU/trau/internal/forge"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/launchd"
@@ -68,6 +69,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, provider, sources, repoRoot, rr)
 	checkRemote(ctx, cfg, repoRoot, rr)
+	checkForge(ctx, cfg, repoRoot, rr)
 	checkConfigLayers(paths, rr)
 	checkConfigShadowing(paths, rr)
 	checkBrowserVerify(cfg, repoRoot, rr)
@@ -316,10 +318,11 @@ type childState struct {
 }
 
 // checkChildRepos reports how much of a Folder repo a run could actually ship to:
-// the children that are clean and on the base branch, and the ones the
-// start-of-run sweep would put off limits. None of it is ever a failure — ADR 0030
-// leaves an off-limits child out of the run rather than aborting one — so a dirty
-// child, an off-base child and a child with no remote are all warnings.
+// the children a run may change, and the ones the start-of-run sweep would put
+// off limits. None of it is ever a failure — ADR 0030 leaves an off-limits child
+// out of the run rather than aborting one — so a dirty child, a child on a forge
+// trau cannot open a pull request on, and a child with no remote are all
+// warnings. A child merely parked off its base is neither: a run moves it back.
 func checkChildRepos(ctx context.Context, cfg config.Config, children []folderrepo.Child, rr *runner) {
 	base := strings.TrimSpace(cfg.BaseBranch)
 	remote := strings.TrimSpace(cfg.Remote)
@@ -327,37 +330,70 @@ func checkChildRepos(ctx context.Context, cfg config.Config, children []folderre
 		remote = "origin"
 	}
 	states := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) childState {
-		return childState{
-			State:     folderrepo.ReadState(ctx, c),
-			hasRemote: hasGitRemote(ctx, c.Path, remote),
-		}
+		st := folderrepo.ReadState(ctx, c)
+		url := forge.RemoteURL(ctx, c.Path, remote)
+		st.Base = forge.ResolveBase(config.Declared(c.Path, "BASE_BRANCH"), forge.DefaultBranch(ctx, c.Path, remote), base)
+		st.Forge = forge.Resolve(config.Declared(c.Path, "FORGE"), url)
+		return childState{State: st, hasRemote: url != ""}
 	})
 
-	offLimits, noRemote := []string{}, []string{}
+	offLimits, parked, noRemote := []string{}, []string{}, []string{}
 	for _, c := range states {
-		if reason := c.OffLimitsReason(base); reason != "" {
+		if reason := c.OffLimitsReason(); reason != "" {
 			offLimits = append(offLimits, c.Name+" ("+reason+")")
+		}
+		if c.ParkedAndMovable() {
+			parked = append(parked, c.Name+" on "+c.Branch+", base "+c.Base)
 		}
 		if !c.hasRemote {
 			noRemote = append(noRemote, c.Name)
 		}
 	}
 
-	message := fmt.Sprintf("%d of %d clean and on %s", len(children)-len(offLimits), len(children), base)
+	message := fmt.Sprintf("%d of %d shippable, each to its own base", len(children)-len(offLimits), len(children))
 	if len(offLimits) > 0 {
 		message += "\n    off limits to a run: " + strings.Join(offLimits, ", ")
+	}
+	if len(parked) > 0 {
+		message += "\n    parked off base (a run moves these back): " + strings.Join(parked, ", ")
 	}
 	if len(noRemote) > 0 {
 		message += fmt.Sprintf("\n    no %s remote (local delivery only): %s", remote, strings.Join(noRemote, ", "))
 	}
 	switch {
 	case len(offLimits) > 0:
-		rr.add("child repos", warn, message, "commit or stash their work, or put them back on "+base+" — a run ships to the rest and leaves these untouched")
+		rr.add("child repos", warn, message, "commit or stash their work, or name their forge with FORGE in their own .trau.ini — a run ships to the rest and leaves these untouched")
 	case len(noRemote) > 0:
 		rr.add("child repos", warn, message, fmt.Sprintf("add a %s remote to those children to get pull requests and CI from them", remote))
 	default:
 		rr.add("child repos", pass, message, "")
 	}
+}
+
+// checkForge names the code host the repo's own remote points at, and refuses a
+// repo hosted where trau cannot open a pull request. Onboarding otherwise passes
+// such a repo cleanly and the run dies at `gh pr create`, with the build, handoff
+// and verify agents already paid for. A repo with no remote delivers locally and
+// reaches no forge at all.
+func checkForge(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) {
+	if repoRoot == "" || folderrepo.Is(repoRoot) {
+		return
+	}
+	remote := strings.TrimSpace(cfg.Remote)
+	url := forge.RemoteURL(ctx, repoRoot, remote)
+	if url == "" {
+		return
+	}
+	f := forge.Resolve(strings.TrimSpace(cfg.Forge), url)
+	where := f.Label()
+	if host := forge.Host(url); host != "" {
+		where += " (" + host + ")"
+	}
+	if reason := f.Unsupported(); reason != "" {
+		rr.add("forge", fail, where+" — "+reason, "set FORGE in the repo's .trau.ini if this host is a GitHub install trau did not recognize; otherwise this repo cannot be shipped to")
+		return
+	}
+	rr.add("forge", pass, where, "")
 }
 
 // checkConfigLayers names the file every config layer resolved to. The
