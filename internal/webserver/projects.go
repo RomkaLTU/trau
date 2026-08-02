@@ -189,7 +189,7 @@ func (s *Server) forgetProjectRepos(w http.ResponseWriter, r *http.Request) {
 			out.Blocked = append(out.Blocked, ProjectRemovalRepo{Name: repo.Name, Root: repo.Root, Reason: reason})
 			continue
 		}
-		if err := s.forgetMemberRepo(repo.Root); err != nil {
+		if err := s.forgetMemberRepo(repo); err != nil {
 			out.Blocked = append(out.Blocked, ProjectRemovalRepo{Name: repo.Name, Root: repo.Root, Reason: err.Error()})
 			continue
 		}
@@ -223,15 +223,20 @@ func (s *Server) removalRefusal(repo registry.Repo) string {
 
 // forgetMemberRepo removes one member from the hub, mirroring forgetRepo. Only the
 // registration drop can leave the repo listed, so it is the one failure the caller
-// records against the member; the rest is best-effort cleanup.
-func (s *Server) forgetMemberRepo(root string) error {
-	if err := s.stores.Registrations().Forget(root); err != nil {
+// records against the member — a removal that matched no row included; the rest is
+// best-effort cleanup.
+func (s *Server) forgetMemberRepo(repo registry.Repo) error {
+	removed, err := s.stores.Registrations().Forget(repo.Root)
+	if err != nil {
 		return fmt.Errorf("failed to remove repo: %w", err)
 	}
-	if err := s.stores.Projects().ForgetRoot(root); err != nil {
-		logger.Verbosef("drop project membership for %s: %v", root, err)
+	if !removed {
+		return errors.New(nothingRemovedFailure(repo))
 	}
-	s.dropUnregisteredRepoState(root)
+	if err := s.stores.Projects().ForgetRoot(repo.Root); err != nil {
+		logger.Verbosef("drop project membership for %s: %v", repo.Root, err)
+	}
+	s.dropUnregisteredRepoState(repo.Root)
 	return nil
 }
 

@@ -113,8 +113,8 @@ func TestForgetClearsBothSetsAndLeavesOthers(t *testing.T) {
 		}
 	}
 
-	if err := s.Forget("/repo/gone"); err != nil {
-		t.Fatalf("Forget: %v", err)
+	if removed, err := s.Forget("/repo/gone"); err != nil || !removed {
+		t.Fatalf("Forget = (%v, %v), want (true, nil)", removed, err)
 	}
 
 	want := []registry.Repo{{Name: "kept", Root: "/repo/kept", RunsDir: "/repo/kept/runs"}}
@@ -124,8 +124,63 @@ func TestForgetClearsBothSetsAndLeavesOthers(t *testing.T) {
 	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{"/repo/kept"}) {
 		t.Fatalf("registered = %v, want only the kept repo", got)
 	}
-	if err := s.Forget("/repo/gone"); err != nil {
-		t.Fatalf("re-Forget: %v", err)
+	if removed, err := s.Forget("/repo/gone"); err != nil || removed {
+		t.Fatalf("re-Forget = (%v, %v), want (false, nil) for a root with no rows", removed, err)
+	}
+}
+
+// TestForgetClearsEverySpellingOfARoot covers the store a removal used to give up
+// on: rows written under whatever spelling the loop resolved — `git rev-parse`
+// answers with forward slashes on Windows — where a byte-equal DELETE matched
+// nothing and the repo stayed listed forever.
+func TestForgetClearsEverySpellingOfARoot(t *testing.T) {
+	s := testStore(t, t.TempDir())
+	clean := filepath.Join(t.TempDir(), "gone")
+	spellings := []string{clean, clean + string(filepath.Separator), filepath.ToSlash(clean)}
+	for _, root := range spellings {
+		if _, err := s.db.Exec(
+			`INSERT INTO known_repos(root, name, runs_dir) VALUES(?, ?, ?) ON CONFLICT(root) DO NOTHING`,
+			root, "gone", filepath.Join(root, ".trau", "runs"),
+		); err != nil {
+			t.Fatalf("seed known %q: %v", root, err)
+		}
+		if err := s.Register(root); err != nil {
+			t.Fatalf("register %q: %v", root, err)
+		}
+	}
+
+	if removed, err := s.Forget(filepath.ToSlash(clean)); err != nil || !removed {
+		t.Fatalf("Forget = (%v, %v), want (true, nil)", removed, err)
+	}
+
+	if known, _ := s.Known(); len(known) != 0 {
+		t.Errorf("known = %v, want every spelling gone", known)
+	}
+	if got, _ := s.Registered(); len(got) != 0 {
+		t.Errorf("registered = %v, want every spelling gone", got)
+	}
+}
+
+// TestRememberSkipsACanonicalTwin keeps the sweep and the post-unregister remember
+// from adding a second row for a directory already known under another spelling.
+func TestRememberSkipsACanonicalTwin(t *testing.T) {
+	s := testStore(t, t.TempDir())
+	root := filepath.Join(t.TempDir(), "acme")
+	stored := root + string(filepath.Separator)
+	if err := s.Remember([]registry.Repo{{Name: "acme", Root: stored, RunsDir: filepath.Join(stored, ".trau", "runs")}}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	if err := s.Remember([]registry.Repo{{Name: "acme", Root: root, RunsDir: filepath.Join(root, ".trau", "runs")}}); err != nil {
+		t.Fatalf("Remember canonical twin: %v", err)
+	}
+
+	known, err := s.Known()
+	if err != nil {
+		t.Fatalf("Known: %v", err)
+	}
+	if len(known) != 1 || known[0].Root != stored {
+		t.Fatalf("known = %v, want only the root as first stored", known)
 	}
 }
 
