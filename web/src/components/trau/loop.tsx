@@ -95,6 +95,7 @@ import {
   queueRunnable,
   QUEUE_NOT_RUNNABLE,
   releaseGateLabel,
+  requeueIssue,
   runNext as runNextRequest,
   runQueueItem,
   skipResumeApplies,
@@ -2585,7 +2586,7 @@ export function haltNotice(halt: LoopHalt): HaltNotice {
         tone: "fail",
         glyph: "✗",
         headline: "quarantined",
-        hint: `${ticket} needs a human — open the run to see why.`,
+        hint: `${ticket} needs a human — open the run to see why, then Requeue to retry it from scratch once the cause is fixed.`,
       };
   }
 }
@@ -2710,10 +2711,52 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
             {tickets.map((ticket) => (
               <HaltLink key={ticket} repo={repo} ticket={ticket} />
             ))}
+            {halt.kind === "quarantined" && halt.ticket ? (
+              <RequeueAction repo={repo} ticket={halt.ticket} />
+            ) : null}
           </div>
         ) : null}
       </div>
     </div>
+  );
+}
+
+// RequeueAction is the quarantine banner's way back: one click drives the same
+// trau --requeue the CLI offers and republishes the repaired queue, so the
+// banner clears and Start can re-attempt the ticket. The runs query is
+// invalidated alongside — the requeue dropped the checkpoint the settled run
+// row was derived from.
+function RequeueAction({ repo, ticket }: { repo: string; ticket: string }) {
+  const queryClient = useQueryClient();
+  const requeue = useMutation({
+    mutationFn: () => requeueIssue(repo, ticket),
+    onSuccess: (res) => {
+      publishQueue(queryClient, repo, res);
+      queryClient.invalidateQueries({ queryKey: ["runs", repo] });
+    },
+  });
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => requeue.mutate()}
+        disabled={requeue.isPending}
+        className="inline-flex w-fit cursor-pointer items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline disabled:cursor-default disabled:opacity-60"
+      >
+        <RefreshCw
+          className={cn("size-3.5", requeue.isPending && "animate-spin")}
+          aria-hidden="true"
+        />
+        {requeue.isPending ? `Requeuing ${ticket}…` : `Requeue ${ticket}`}
+      </button>
+      {requeue.isError ? (
+        <span className="font-sans text-xs text-fail">
+          {requeue.error instanceof Error
+            ? requeue.error.message
+            : "requeue failed"}
+        </span>
+      ) : null}
+    </>
   );
 }
 

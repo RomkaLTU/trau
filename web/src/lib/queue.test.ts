@@ -21,6 +21,7 @@ import {
   queueQueryOptions,
   queueRunnable,
   releaseGateLabel,
+  requeueIssue,
   runNext,
   runOnly,
   skipResumeApplies,
@@ -407,6 +408,31 @@ describe('queueLive', () => {
     expect(
       queueLive(queueResponse({ items: [item({ id: 'COD-1', status: 'paused' })] })),
     ).toBe(false)
+  })
+})
+
+describe('requeueIssue', () => {
+  it('posts to the issue requeue route and answers with the repaired queue', async () => {
+    const repaired = queueResponse({
+      items: [item({ id: 'COD-1', status: 'pending' })],
+    })
+    mockFetch.mockResolvedValueOnce(response(200, repaired))
+
+    expect(await requeueIssue('trau', 'COD-1')).toEqual(repaired)
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/issues/COD-1/requeue',
+      { method: 'POST' },
+    )
+  })
+
+  it('surfaces a refusal from the hub', async () => {
+    mockFetch.mockResolvedValueOnce(
+      response(409, { error: 'trau has a loop running — stop it before requeuing COD-1' }),
+    )
+
+    await expect(requeueIssue('trau', 'COD-1')).rejects.toThrow(
+      'trau has a loop running',
+    )
   })
 })
 
