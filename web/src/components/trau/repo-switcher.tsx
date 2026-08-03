@@ -4,6 +4,7 @@ import { useNavigate } from '@tanstack/react-router'
 import {
   AlertTriangle,
   Check,
+  ChevronRight,
   ChevronsUpDown,
   Circle,
   FolderGit2,
@@ -25,6 +26,7 @@ import { loadRepoUsage, sortRepos } from '@/lib/active-repo'
 import { instancesQueryOptions, type RepoView } from '@/lib/instances'
 import {
   repoBadgeState,
+  reposBadgeState,
   toSessionState,
   type RepoBadgeState,
 } from '@/lib/overview'
@@ -35,10 +37,13 @@ import {
   shortcutLabel,
 } from '@/lib/palette-keys'
 import {
+  expandedOnOpen,
   filterRepoRows,
   groupRepos,
+  projectNameForRoot,
   projectsQueryOptions,
-  type RepoRow,
+  toggleExpanded,
+  type ProjectView,
 } from '@/lib/projects'
 import { loadRecents } from '@/lib/recents'
 import { cn } from '@/lib/utils'
@@ -66,7 +71,11 @@ function useRepoBadgeStates(): Map<string, RepoBadgeState> {
 export function RepoSwitcher({ onOpen }: { onOpen: () => void }) {
   const { repo, repos, isAll } = useActiveRepo()
   const badges = useRepoBadgeStates()
+  const { data: projectData } = useQuery(projectsQueryOptions)
   const active = repos.find((r) => r.name === repo)
+  const project = active
+    ? projectNameForRoot(active.root, projectData?.projects ?? [])
+    : ''
 
   return (
     <button
@@ -89,7 +98,7 @@ export function RepoSwitcher({ onOpen }: { onOpen: () => void }) {
           {isAll
             ? `${repos.length} repos`
             : active
-              ? active.root
+              ? withProject(project, active.root)
               : `${repos.length} registered`}
         </span>
       </span>
@@ -116,7 +125,9 @@ export function RepoSwitcherDialog({
   const { data: projectData } = useQuery(projectsQueryOptions)
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
+  const [expanded, setExpanded] = useState<ReadonlySet<string> | null>(null)
   const trimmed = query.trim()
+  const scoped = isAll ? null : repo
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -129,7 +140,9 @@ export function RepoSwitcherDialog({
   }, [open, onOpenChange])
 
   useEffect(() => {
-    if (!open) setQuery('')
+    if (open) return
+    setQuery('')
+    setExpanded(null)
   }, [open])
 
   // A gated nav click opens the picker so the fix is one keystroke away instead
@@ -152,10 +165,16 @@ export function RepoSwitcherDialog({
     [open, repos, badges, projectData],
   )
 
-  const sections = useMemo(
-    () => repoSections(filterRepoRows(rows, trimmed)),
-    [rows, trimmed],
+  const visible = useMemo(() => filterRepoRows(rows, trimmed), [rows, trimmed])
+
+  // Only a toggle overrides the opening state, so the badge poll that rebuilds
+  // the rows cannot shut a project the user just opened. A query overrides the
+  // other way: what it matched has to be reachable.
+  const openProjects = useMemo(
+    () => expanded ?? expandedOnOpen(rows, scoped ?? ''),
+    [expanded, rows, scoped],
   )
+  const isExpanded = (id: string) => trimmed !== '' || openProjects.has(id)
 
   const recents = useMemo(() => {
     if (!open || trimmed !== '') return []
@@ -169,7 +188,7 @@ export function RepoSwitcherDialog({
       .slice(0, RECENT_REPOS)
   }, [open, trimmed, repo, repos])
 
-  const scoped = isAll ? null : repo
+  const projects = projectData?.projects ?? []
   const showAllScope = repos.length > 1 && matchesQuery(trimmed, ['All repos'])
   const showNewProject = matchesQuery(trimmed, ['New project'])
   const showManageRepos = matchesQuery(trimmed, ['Manage repos'])
@@ -238,6 +257,7 @@ export function RepoSwitcherDialog({
                 key={r.name}
                 value={`recent:${r.name}`}
                 repo={r}
+                project={projectNameForRoot(r.root, projects)}
                 state={badges.get(r.name) ?? 'none'}
                 active={r.name === scoped}
                 onSelect={() => pick(r.name)}
@@ -245,24 +265,38 @@ export function RepoSwitcherDialog({
             ))}
           </CommandGroup>
         )}
-        {sections.map((section) => (
-          <CommandGroup
-            key={section.key}
-            heading={section.heading}
-            className={GROUP_HEADING}
-          >
-            {section.repos.map((r) => (
-              <RepoOption
-                key={r.name}
-                value={`repo:${r.name}`}
-                repo={r}
-                state={badges.get(r.name) ?? 'none'}
-                active={r.name === scoped}
-                onSelect={() => pick(r.name)}
-              />
-            ))}
+        {visible.length > 0 && (
+          <CommandGroup heading="repos" className={GROUP_HEADING}>
+            {visible.map((row) =>
+              row.project === null ? (
+                row.repos.map((r) => (
+                  <RepoOption
+                    key={r.name}
+                    value={`repo:${r.name}`}
+                    repo={r}
+                    project={projectNameForRoot(r.root, projects)}
+                    state={badges.get(r.name) ?? 'none'}
+                    active={r.name === scoped}
+                    onSelect={() => pick(r.name)}
+                  />
+                ))
+              ) : (
+                <ProjectRows
+                  key={row.project.id}
+                  project={row.project}
+                  repos={row.repos}
+                  badges={badges}
+                  scoped={scoped}
+                  expanded={isExpanded(row.project.id)}
+                  onToggle={(id) =>
+                    setExpanded(toggleExpanded(openProjects, id))
+                  }
+                  onPick={pick}
+                />
+              ),
+            )}
           </CommandGroup>
-        ))}
+        )}
         {(showNewProject || showManageRepos) && (
           <>
             <CommandSeparator />
@@ -295,55 +329,96 @@ export function RepoSwitcherDialog({
   )
 }
 
-interface RepoSection {
-  key: string
-  heading: string
+// A project holding two or more repos is one row that opens rather than a
+// heading with the members always under it: with a repo per service the list is
+// otherwise all scrolling. Selecting the row only works the disclosure — the
+// scope is a repo, so there is nothing here to pick.
+function ProjectRows({
+  project,
+  repos,
+  badges,
+  scoped,
+  expanded,
+  onToggle,
+  onPick,
+}: {
+  project: ProjectView
   repos: RepoView[]
-}
-
-// repoSections turns the grouped rows into the dialog's headings. Every repo no
-// project holds shares one "repos" heading, opened where the first of them ranks,
-// so the usage order the rows arrive in survives the merge.
-function repoSections(rows: readonly RepoRow[]): RepoSection[] {
-  const sections: RepoSection[] = []
-  let loose: RepoView[] | null = null
-  for (const row of rows) {
-    if (row.project) {
-      sections.push({
-        key: row.project.id,
-        heading: row.project.name,
-        repos: row.repos,
-      })
-      continue
-    }
-    if (!loose) {
-      loose = []
-      sections.push({ key: 'repos', heading: 'repos', repos: loose })
-    }
-    loose.push(...row.repos)
-  }
-  return sections
+  badges: Map<string, RepoBadgeState>
+  scoped: string | null
+  expanded: boolean
+  onToggle: (id: string) => void
+  onPick: (repo: string) => void
+}) {
+  const count = `${repos.length} ${repos.length === 1 ? 'repo' : 'repos'}`
+  return (
+    <>
+      <CommandItem
+        value={`project:${project.id}`}
+        onSelect={() => onToggle(project.id)}
+        title={`${project.name}\n${count}`}
+        aria-expanded={expanded}
+        className="gap-2.5 px-2.5 py-1.5"
+      >
+        <RepoIcon
+          state={reposBadgeState(repos.map((r) => badges.get(r.name) ?? 'none'))}
+        />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-sm text-foreground">
+            {project.name}
+          </span>
+          <span className="truncate text-[0.65rem] text-muted-foreground">
+            {count}
+          </span>
+        </span>
+        <ChevronRight
+          className={cn(
+            'size-3.5 shrink-0 text-muted-foreground transition-transform',
+            expanded && 'rotate-90',
+          )}
+          aria-hidden="true"
+        />
+      </CommandItem>
+      {expanded &&
+        repos.map((r) => (
+          <RepoOption
+            key={r.name}
+            value={`repo:${r.name}`}
+            repo={r}
+            state={badges.get(r.name) ?? 'none'}
+            active={r.name === scoped}
+            onSelect={() => onPick(r.name)}
+            inset
+          />
+        ))}
+    </>
+  )
 }
 
 function RepoOption({
   value,
   repo,
+  project = '',
   state,
   active,
+  inset = false,
   onSelect,
 }: {
   value: string
   repo: RepoView
+  project?: string
   state: RepoBadgeState
   active: boolean
+  inset?: boolean
   onSelect: () => void
 }) {
+  const subtitle = withProject(project, repoSubtitle(repo))
   return (
     <CommandItem
       value={value}
       onSelect={onSelect}
-      title={`${repo.name}\n${repoSubtitle(repo)}`}
-      className="gap-2.5 px-2.5 py-1.5"
+      title={`${repo.name}\n${subtitle}`}
+      className={cn('gap-2.5 py-1.5 pr-2.5', inset ? 'pl-7' : 'pl-2.5')}
     >
       <RepoIcon state={state} />
       <span className="flex min-w-0 flex-1 flex-col">
@@ -356,7 +431,7 @@ function RepoOption({
           {repo.name}
         </span>
         <span className="truncate text-[0.65rem] text-muted-foreground">
-          {repoSubtitle(repo)}
+          {subtitle}
         </span>
       </span>
       {active && (
@@ -364,6 +439,13 @@ function RepoOption({
       )}
     </CommandItem>
   )
+}
+
+// A repo the picker shows outside its project's row still says which project it
+// belongs to, so the one place the name appears is not the group it was left out
+// of.
+function withProject(project: string, detail: string): string {
+  return project === '' ? detail : `${project} · ${detail}`
 }
 
 // A Folder repo is an ordinary Repo — one board, one queue, one row — so its

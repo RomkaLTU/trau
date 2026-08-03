@@ -9,6 +9,7 @@ import {
   phasePill,
   prStatusPill,
   repoBadgeState,
+  reposBadgeState,
   sessionStatePill,
   type LiveLoop,
   type SessionState,
@@ -288,5 +289,18 @@ describe("repoBadgeState", () => {
   it("dims a repo with only idle or unknown instances", () => {
     expect(repoBadgeState(["idle"])).toBe("idle");
     expect(repoBadgeState(["unknown"])).toBe("idle");
+  });
+});
+
+describe("reposBadgeState", () => {
+  it("has no badge when no member has one", () => {
+    expect(reposBadgeState([])).toBe("none");
+    expect(reposBadgeState(["none", "none"])).toBe("none");
+  });
+
+  it("shows the liveliest member, so a collapsed group hides nothing", () => {
+    expect(reposBadgeState(["none", "idle", "parked", "active"])).toBe("active");
+    expect(reposBadgeState(["none", "idle", "parked"])).toBe("parked");
+    expect(reposBadgeState(["none", "idle"])).toBe("idle");
   });
 });
