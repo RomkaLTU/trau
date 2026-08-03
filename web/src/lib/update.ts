@@ -75,6 +75,9 @@ export interface RestartAck {
   version: string
 }
 
+export const RELEASES_URL = 'https://github.com/RomkaLTU/trau/releases'
+export const CHANGELOG_URL = 'https://trau.sh/changelog'
+
 const LIVE_POLL_MS = 5000
 const APPLY_POLL_MS = 2000
 
