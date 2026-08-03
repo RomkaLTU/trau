@@ -52,11 +52,13 @@ interface ChannelFields {
 // selfReloadPending names the repo whose merge asked the hub to restart onto its
 // own build, empty when nothing is waiting. upgradeCommand is what the package
 // manager that installed this trau updates it with, empty when no manager owns
-// it.
+// it. latestNotes is the GitHub release body for latest, so it describes that
+// tag whether or not the hub is behind it.
 export interface UpdateStatus extends ChannelFields {
   running: string
   onDisk: string
   latest: string
+  latestNotes: string
   restartPending: boolean
   updateAvailable: boolean
   installMethod: string

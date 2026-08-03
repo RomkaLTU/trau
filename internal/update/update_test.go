@@ -212,6 +212,36 @@ func TestFailedCheckKeepsLastResult(t *testing.T) {
 	}
 }
 
+// TestStatusCarriesTheReleaseNotes pins the notes to the tag they describe: the
+// fetched body reaches the status, and a later blip leaves it standing.
+func TestStatusCarriesTheReleaseNotes(t *testing.T) {
+	code := http.StatusOK
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(code)
+		_, _ = w.Write([]byte(`{"tag_name":"v2.3.0","body":"## What's Changed\n* a fix\n"}`))
+	}))
+	t.Cleanup(ts.Close)
+
+	c := newTestChecker("2.2.0", "2.2.0", installBrew)
+	c.endpoint = ts.URL
+	if err := c.CheckNow(context.Background()); err != nil {
+		t.Fatalf("CheckNow: %v", err)
+	}
+
+	want := "## What's Changed\n* a fix"
+	if got := c.Status().LatestNotes; got != want {
+		t.Errorf("latestNotes = %q, want %q", got, want)
+	}
+
+	code = http.StatusServiceUnavailable
+	if err := c.CheckNow(context.Background()); err == nil {
+		t.Fatal("CheckNow succeeded against a failing endpoint")
+	}
+	if got := c.Status().LatestNotes; got != want {
+		t.Errorf("latestNotes = %q after a failed check, want the notes it already had", got)
+	}
+}
+
 func releaseServer(t *testing.T, body string) string {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
