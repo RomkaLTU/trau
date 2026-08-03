@@ -518,3 +518,72 @@ export async function addProjectRepo(
   }
   return res.json()
 }
+
+// The hub keeps a project its last member left, so the answer names what the
+// project holds now.
+export async function removeProjectRepo(
+  id: string,
+  repo: string,
+): Promise<ProjectView> {
+  const res = await apiFetch(
+    `/api/v1/projects/${encodeURIComponent(id)}/repos/${encodeURIComponent(repo)}`,
+    { method: 'DELETE' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'remove repo from project failed'))
+  }
+  return res.json()
+}
+
+// deleteProject drops the grouping only; every member repo stays on the hub.
+export async function deleteProject(id: string): Promise<ProjectView> {
+  const res = await apiFetch(`/api/v1/projects/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'delete project failed'))
+  }
+  return res.json()
+}
+
+export function projectHolding(
+  root: string,
+  projects: readonly ProjectView[],
+): ProjectView | null {
+  return projects.find((p) => p.repos.includes(root)) ?? null
+}
+
+export function otherProjects(
+  root: string,
+  projects: readonly ProjectView[],
+): ProjectView[] {
+  return projects.filter((p) => !p.repos.includes(root))
+}
+
+export type MoveTarget =
+  | { kind: 'project'; id: string }
+  | { kind: 'new'; name: string }
+  | { kind: 'none'; from: string }
+
+// Joining prunes an emptied source itself, so only leaving one behind can strand
+// a husk.
+export interface MoveOutcome {
+  project: ProjectView | null
+  emptied: ProjectView | null
+}
+
+// Joining is one call: the hub takes the root out of whichever project held it,
+// prunes that project if it was the last member, and seeds the destination's
+// tracker keys into the repo.
+export async function moveRepo(
+  root: string,
+  target: MoveTarget,
+): Promise<MoveOutcome> {
+  if (target.kind === 'none') {
+    const source = await removeProjectRepo(target.from, root)
+    return { project: null, emptied: source.repos.length === 0 ? source : null }
+  }
+  const id =
+    target.kind === 'new' ? (await createProject(target.name)).id : target.id
+  return { project: await addProjectRepo(id, root), emptied: null }
+}

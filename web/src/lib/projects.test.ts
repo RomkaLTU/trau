@@ -2,11 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
 import {
+  deleteProject,
   expandedOnOpen,
   filterRepoRows,
   groupRepos,
   matchesProjectDefaults,
+  moveRepo,
+  otherProjects,
   projectAnchor,
+  projectHolding,
   projectDefaultKeys,
   projectDefaults,
   projectDefaultsModified,
@@ -515,5 +519,165 @@ describe('writeProjectTracker', () => {
       keys: { READY_LABEL: 'ship-it', EPIC_FLOW: '1' },
     })
     expect(saved.repos).toHaveLength(2)
+  })
+})
+
+describe('projectHolding', () => {
+  const projects = [
+    project('platform', 'Platform', ['api', 'web']),
+    project('tools', 'Tools', ['cli']),
+  ]
+
+  it('names the project a root belongs to', () => {
+    expect(projectHolding('/repos/web', projects)?.id).toBe('platform')
+  })
+
+  it('answers null for a root no project holds', () => {
+    expect(projectHolding('/repos/docs', projects)).toBeNull()
+  })
+})
+
+describe('otherProjects', () => {
+  const projects = [
+    project('platform', 'Platform', ['api', 'web']),
+    project('tools', 'Tools', ['cli']),
+  ]
+
+  it('drops the project already holding the repo', () => {
+    expect(otherProjects('/repos/web', projects).map((p) => p.id)).toEqual([
+      'tools',
+    ])
+  })
+
+  it('offers every project to a repo in none, in served order', () => {
+    expect(otherProjects('/repos/docs', projects).map((p) => p.id)).toEqual([
+      'platform',
+      'tools',
+    ])
+  })
+})
+
+describe('moveRepo', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function ok(body: unknown) {
+    return { ok: true, status: 200, json: async () => body }
+  }
+
+  it('joins an existing project in one call, addressed by root', async () => {
+    const fetchMock = vi.fn(async () =>
+      ok(project('platform', 'Platform', ['api', 'web'])),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const outcome = await moveRepo('/repos/web', {
+      kind: 'project',
+      id: 'platform',
+    })
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/v1/projects/platform/repos')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(String(init.body))).toEqual({ repo: '/repos/web' })
+    expect(outcome.project?.id).toBe('platform')
+    expect(outcome.emptied).toBeNull()
+  })
+
+  it('creates the project it names, then joins it', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok(project('acme', 'Acme', [])))
+      .mockResolvedValueOnce(ok(project('acme', 'Acme', ['web'])))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const outcome = await moveRepo('/repos/web', { kind: 'new', name: 'Acme' })
+
+    const [created, createInit] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(created).toBe('/api/v1/projects')
+    expect(JSON.parse(String(createInit.body))).toEqual({ name: 'Acme' })
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/projects/acme/repos')
+    expect(outcome.project?.repos).toEqual(['/repos/web'])
+  })
+
+  it('offers the source it emptied when the repo leaves every project', async () => {
+    const fetchMock = vi.fn(async () => ok(project('platform', 'Platform', [])))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const outcome = await moveRepo('/repos/web', {
+      kind: 'none',
+      from: 'platform',
+    })
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/v1/projects/platform/repos/%2Frepos%2Fweb')
+    expect(init.method).toBe('DELETE')
+    expect(outcome.project).toBeNull()
+    expect(outcome.emptied?.id).toBe('platform')
+  })
+
+  it('leaves a source that still holds members alone', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ok(project('platform', 'Platform', ['api']))),
+    )
+
+    const outcome = await moveRepo('/repos/web', {
+      kind: 'none',
+      from: 'platform',
+    })
+
+    expect(outcome.emptied).toBeNull()
+  })
+
+  it('reports the hub refusing a repo it does not know', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'repo "/repos/web" is not known to the hub' }),
+      })),
+    )
+
+    await expect(
+      moveRepo('/repos/web', { kind: 'project', id: 'platform' }),
+    ).rejects.toThrow('is not known to the hub')
+  })
+})
+
+describe('deleteProject', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('drops the grouping only', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'platform', name: 'Platform', repos: [] }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const deleted = await deleteProject('platform')
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/v1/projects/platform')
+    expect(init.method).toBe('DELETE')
+    expect(deleted.name).toBe('Platform')
+  })
+
+  it('reports a project the hub no longer holds', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'project not found' }),
+      })),
+    )
+
+    await expect(deleteProject('ghost')).rejects.toThrow('project not found')
   })
 })
