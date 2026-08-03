@@ -14,6 +14,7 @@ import { useNavigate } from '@tanstack/react-router'
 import {
   ALL_SCOPE,
   autoScopeTarget,
+  findRepo,
   loadLastRepo,
   loadStoredScope,
   repoRouteAction,
@@ -34,14 +35,19 @@ interface ActiveRepoValue {
   scope: string
   // repo is the concrete resolved repo, or null under "All projects" / no repos.
   repo: string | null
+  // root is the resolved repo's root, the only thing that separates two repos
+  // registered under the same name.
+  root: string | null
   // isAll is true under "All projects" — operate pages gate on it.
   isAll: boolean
   repos: RepoView[]
-  setScope: (scope: string) => void
-  setRepo: (name: string) => void
+  // setScope takes a repo ident — a root, which addresses one of two same-named
+  // repos, or a name — or ALL_SCOPE.
+  setScope: (ident: string) => void
+  setRepo: (ident: string) => void
   // autoScope jumps out of "All projects" to a sensible repo (lone/last-used),
   // returning it, or null when the caller should open the switcher to choose.
-  autoScope: () => string | null
+  autoScope: () => RepoView | null
   // openSwitcher opens the repo picker so a gated click points at the fix.
   openSwitcher: () => void
   switcherSignal: number
@@ -51,26 +57,35 @@ const ActiveRepoContext = createContext<ActiveRepoValue | null>(null)
 
 export function ActiveRepoProvider({ children }: { children: ReactNode }) {
   const { data } = useQuery(reposQueryOptions)
-  const repos = data?.repos ?? []
+  const repos = useMemo(() => data?.repos ?? [], [data])
 
   const [stored, setStored] = useState<string | null>(() => loadStoredScope())
-  const { scope, repo, isAll } = resolveScope(repos, stored)
+  const { scope, repo, root, isAll } = resolveScope(repos, stored)
 
   const [switcherSignal, setSwitcherSignal] = useState(0)
 
-  const setScope = useCallback((next: string) => {
-    setStored(next)
-    storeScope(next)
-    if (next !== ALL_SCOPE) {
-      saveRecents(recordRecent(loadRecents(), projectRecent(next, Date.now())))
-    }
-  }, [])
+  // The root is what gets persisted, so a reload lands on the repo that was
+  // picked rather than on whichever one happens to carry the name first.
+  const setScope = useCallback(
+    (ident: string) => {
+      const picked = findRepo(repos, ident)
+      const next = picked?.root ?? ident
+      setStored(next)
+      storeScope(next)
+      if (picked) {
+        saveRecents(
+          recordRecent(loadRecents(), projectRecent(picked, Date.now())),
+        )
+      }
+    },
+    [repos],
+  )
 
   const openSwitcher = useCallback(() => setSwitcherSignal((n) => n + 1), [])
 
   const autoScope = useCallback(() => {
     const target = autoScopeTarget(repos, loadLastRepo())
-    if (target) setScope(target)
+    if (target) setScope(target.root)
     return target
   }, [repos, setScope])
 
@@ -78,6 +93,7 @@ export function ActiveRepoProvider({ children }: { children: ReactNode }) {
     () => ({
       scope,
       repo,
+      root,
       isAll,
       repos,
       setScope,
@@ -86,7 +102,17 @@ export function ActiveRepoProvider({ children }: { children: ReactNode }) {
       openSwitcher,
       switcherSignal,
     }),
-    [scope, repo, isAll, repos, setScope, autoScope, openSwitcher, switcherSignal],
+    [
+      scope,
+      repo,
+      root,
+      isAll,
+      repos,
+      setScope,
+      autoScope,
+      openSwitcher,
+      switcherSignal,
+    ],
   )
 
   return (

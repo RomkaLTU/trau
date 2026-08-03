@@ -27,7 +27,12 @@ type Navigation = {
 
 const { navigations, active } = vi.hoisted(() => ({
   navigations: [] as Navigation[],
-  active: { isAll: false, picked: [] as string[], switcher: 0 },
+  active: {
+    isAll: false,
+    picked: [] as string[],
+    switcher: 0,
+    repos: [] as { name: string; root: string }[],
+  },
 }))
 
 vi.mock('@/lib/api', () => ({ apiFetch: vi.fn() }))
@@ -45,7 +50,7 @@ vi.mock('@/components/trau/active-repo', () => ({
     scope: active.isAll ? 'All repos' : 'loop',
     repo: active.isAll ? null : 'loop',
     isAll: active.isAll,
-    repos: [],
+    repos: active.repos,
     setScope: (next: string) => active.picked.push(next),
     setRepo: () => {},
     autoScope: () => null,
@@ -96,6 +101,7 @@ afterEach(() => {
   active.isAll = false
   active.picked.length = 0
   active.switcher = 0
+  active.repos = []
   hub.draining = false
   vi.mocked(apiFetch).mockReset()
 })
@@ -537,6 +543,17 @@ it('switches to a cross-repo setting’s repo before landing on it', async () =>
   expect(navigations).toEqual([
     { to: '/settings', search: { q: 'LINEAR_API_KEY' } },
   ])
+})
+
+it('scopes to the repo whose row was picked, not its same-named sibling', async () => {
+  active.repos = repos
+  const opens = renderPalette()
+  await act(async () => {})
+
+  act(() => paletteRow('/private/tmp/b')?.click())
+
+  expect(active.picked).toEqual(['/private/tmp/b'])
+  expect(opens).toEqual([false])
 })
 
 function paletteHighlight(): string | null {

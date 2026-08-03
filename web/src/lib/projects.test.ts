@@ -15,6 +15,7 @@ import {
   removalPlan,
   removalSummary,
   renameProject,
+  repoQualifiers,
   toggleExpanded,
   writeProjectTracker,
   type ProjectRemoval,
@@ -22,11 +23,11 @@ import {
   type ProjectView,
 } from '@/lib/projects'
 
-function repo(name: string): RepoView {
+function repo(name: string, root = `/repos/${name}`): RepoView {
   return {
     name,
-    root: `/repos/${name}`,
-    runs_dir: `/repos/${name}/runs`,
+    root,
+    runs_dir: `${root}/runs`,
     live: false,
     allowed: true,
     registered: true,
@@ -138,6 +139,69 @@ describe('projectNameForRoot', () => {
   it('leaves a root no project holds unnamed', () => {
     expect(projectNameForRoot('/repos/delta', [platform, lone])).toBe('')
     expect(projectNameForRoot('/repos/alpha', [])).toBe('')
+  })
+})
+
+describe('repoQualifiers', () => {
+  it('leaves names only one repo carries alone', () => {
+    expect(repoQualifiers([repo('alpha'), repo('bravo')], [])).toEqual(new Map())
+  })
+
+  it('names the project two same-named repos differ by', () => {
+    const web = repo('api', '/Users/rd/web/api')
+    const ops = repo('api', '/Users/rd/ops/api')
+    const qualifiers = repoQualifiers(
+      [web, ops],
+      [
+        { id: 'web', name: 'Web', repos: [web.root] },
+        { id: 'ops', name: 'Ops', repos: [ops.root] },
+      ],
+    )
+
+    expect(qualifiers).toEqual(
+      new Map([
+        [web.root, 'Web'],
+        [ops.root, 'Ops'],
+      ]),
+    )
+  })
+
+  it('abbreviates the root when one project holds both', () => {
+    const first = repo('shipflock', '/Users/rd/Projects/qa-1/shipflock')
+    const second = repo('shipflock', '/Users/rd/Projects/qa-2/shipflock')
+    const qa = { id: 'qa', name: 'QA', repos: [first.root, second.root] }
+
+    expect(repoQualifiers([first, second], [qa])).toEqual(
+      new Map([
+        [first.root, '…/qa-1/shipflock'],
+        [second.root, '…/qa-2/shipflock'],
+      ]),
+    )
+  })
+
+  it('deepens the abbreviation until the roots differ', () => {
+    const work = repo('api', '/Users/rd/work/repos/api')
+    const oss = repo('api', '/Users/rd/oss/repos/api')
+
+    expect(repoQualifiers([work, oss], [])).toEqual(
+      new Map([
+        [work.root, '…/work/repos/api'],
+        [oss.root, '…/oss/repos/api'],
+      ]),
+    )
+  })
+
+  it('abbreviates the root of a repo no project names', () => {
+    const held = repo('api', '/Users/rd/web/api')
+    const loose = repo('api', '/Users/rd/scratch/api')
+    const web = { id: 'web', name: 'Web', repos: [held.root] }
+
+    expect(repoQualifiers([held, loose], [web])).toEqual(
+      new Map([
+        [held.root, 'Web'],
+        [loose.root, '…/scratch/api'],
+      ]),
+    )
   })
 })
 

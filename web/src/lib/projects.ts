@@ -109,6 +109,63 @@ export function filterRepoRows(rows: RepoRow[], query: string): RepoRow[] {
   return kept
 }
 
+// repoQualifiers tells same-named repos apart on the line that names them: a name
+// only one repo carries is left alone, a name two repos share gains the project
+// holding it, and a name their projects cannot tell apart falls back to an
+// abbreviated root. Keyed by root, which is unique per hub.
+export function repoQualifiers(
+  repos: readonly RepoView[],
+  projects: readonly ProjectView[],
+): Map<string, string> {
+  const byName = new Map<string, RepoView[]>()
+  for (const repo of repos) {
+    const shared = byName.get(repo.name) ?? []
+    shared.push(repo)
+    byName.set(repo.name, shared)
+  }
+  const qualifiers = new Map<string, string>()
+  for (const shared of byName.values()) {
+    if (shared.length < 2) continue
+    const byProject = new Map<string, RepoView[]>()
+    for (const repo of shared) {
+      const name = projectNameForRoot(repo.root, projects)
+      const holders = byProject.get(name) ?? []
+      holders.push(repo)
+      byProject.set(name, holders)
+    }
+    for (const [project, holders] of byProject) {
+      if (project !== '' && holders.length === 1) {
+        qualifiers.set(holders[0].root, project)
+        continue
+      }
+      for (const [root, tail] of abbreviateRoots(holders.map((r) => r.root))) {
+        qualifiers.set(root, tail)
+      }
+    }
+  }
+  return qualifiers
+}
+
+// abbreviateRoots is the shortest tail of each root no other root in the set
+// ends with, so a row spends only as much of its line on a path as it takes to
+// be tellable apart.
+function abbreviateRoots(roots: readonly string[]): Map<string, string> {
+  const parts = roots.map((root) => root.split('/').filter(Boolean))
+  const deepest = Math.max(...parts.map((p) => p.length))
+  for (let take = 2; take < deepest; take++) {
+    const tails = parts.map((p) => pathTail(p, take))
+    if (new Set(tails).size === roots.length) {
+      return new Map(roots.map((root, i) => [root, tails[i]]))
+    }
+  }
+  return new Map(roots.map((root) => [root, root]))
+}
+
+function pathTail(parts: readonly string[], take: number): string {
+  if (parts.length <= take) return `/${parts.join('/')}`
+  return `…/${parts.slice(-take).join('/')}`
+}
+
 // expandedOnOpen is the switcher's opening disclosure: every project row shut
 // but the one holding the scoped repo, so the list stays short without hiding
 // where the work currently is. Nothing is persisted — closing the dialog drops

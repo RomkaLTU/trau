@@ -14,6 +14,14 @@ function page(path: string, label: string, at = 0): RecentEntry {
   return { kind: 'page', key: `page:${path}`, label, path, at }
 }
 
+function project(
+  name: string,
+  at: number,
+  root = `/repos/${name}`,
+): RecentEntry {
+  return projectRecent({ name, root }, at)
+}
+
 function run(repo: string, ticket: string, at = 0): RecentEntry {
   return {
     kind: 'run',
@@ -98,7 +106,14 @@ describe('visitRecent', () => {
 })
 
 describe('visibleRecents', () => {
-  const current = { path: '/loop', repo: 'melga', repos: ['melga', 'salonradar'] }
+  const current = {
+    path: '/loop',
+    root: '/repos/melga',
+    repos: [
+      { name: 'melga', root: '/repos/melga' },
+      { name: 'salonradar', root: '/repos/salonradar' },
+    ],
+  }
 
   it('keeps newest-first order and caps at six', () => {
     const list = Array.from({ length: 8 }, (_, i) => run('melga', `COD-${8 - i}`, 8 - i))
@@ -115,14 +130,25 @@ describe('visibleRecents', () => {
   })
 
   it('drops the project entry for the active scope', () => {
-    const list = [projectRecent('melga', 1), projectRecent('salonradar', 2)]
+    const list = [project('melga', 1), project('salonradar', 2)]
     expect(visibleRecents(list, current).map((e) => e.label)).toEqual([
       'salonradar',
     ])
   })
 
+  it('keeps the same-named twin of the active repo', () => {
+    const twin = project('melga', 2, '/repos/qa-2/melga')
+    const scoped = {
+      ...current,
+      repos: [...current.repos, { name: 'melga', root: '/repos/qa-2/melga' }],
+    }
+    expect(
+      visibleRecents([project('melga', 1), twin], scoped).map((e) => e.key),
+    ).toEqual([twin.key])
+  })
+
   it('drops entries whose repo is no longer registered', () => {
-    const list = [projectRecent('gone', 1), run('gone', 'COD-1'), page('/costs', 'Costs')]
+    const list = [project('gone', 1), run('gone', 'COD-1'), page('/costs', 'Costs')]
     expect(visibleRecents(list, current).map((e) => e.key)).toEqual([
       'page:/costs',
     ])
