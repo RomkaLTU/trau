@@ -76,60 +76,64 @@ export function WhatsNewDialog({
           </span>
         </div>
 
-        <div className="flex flex-col gap-2 border-t border-border px-4 py-3">
-          {canApply(status) ? (
-            <Button
-              size="sm"
-              className="w-fit font-mono text-xs"
-              disabled={applying || apply.isPending}
-              onClick={() => apply.mutate()}
-            >
-              {applying ? 'Updating via Homebrew…' : 'Update now'}
-            </Button>
-          ) : (
-            <>
-              <span className="text-xs leading-relaxed text-muted-foreground">
-                {status.upgradeCommand ? (
-                  <>
-                    Update it with{' '}
-                    <span className="font-mono text-foreground">
-                      {status.upgradeCommand}
-                    </span>
-                    , then restart the hub.
-                  </>
-                ) : (
-                  <>
-                    trau was not installed by a package manager it knows, so it
-                    cannot update itself — releases are at{' '}
-                    <a
-                      href={releasesUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono text-primary underline-offset-2 hover:underline"
-                    >
-                      {releasesUrl}
-                    </a>
-                    .
-                  </>
-                )}
-              </span>
+        {/* Opened as a recap of the release already running, there is nothing
+            to move onto, so the upgrade instructions would be a lie. */}
+        {(status.updateAvailable || status.restartPending) && (
+          <div className="flex flex-col gap-2 border-t border-border px-4 py-3">
+            {canApply(status) ? (
               <Button
-                variant="outline"
                 size="sm"
-                asChild
                 className="w-fit font-mono text-xs"
+                disabled={applying || apply.isPending}
+                onClick={() => apply.mutate()}
               >
-                <Link
-                  to="/settings"
-                  hash="updates"
-                  onClick={() => onOpenChange(false)}
-                >
-                  Go to Settings
-                </Link>
+                {applying ? 'Updating via Homebrew…' : 'Update now'}
               </Button>
-            </>
-          )}
-        </div>
+            ) : (
+              <>
+                <span className="text-xs leading-relaxed text-muted-foreground">
+                  {status.upgradeCommand ? (
+                    <>
+                      Update it with{' '}
+                      <span className="font-mono text-foreground">
+                        {status.upgradeCommand}
+                      </span>
+                      , then restart the hub.
+                    </>
+                  ) : (
+                    <>
+                      trau was not installed by a package manager it knows, so
+                      it cannot update itself — releases are at{' '}
+                      <a
+                        href={releasesUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-primary underline-offset-2 hover:underline"
+                      >
+                        {releasesUrl}
+                      </a>
+                      .
+                    </>
+                  )}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  asChild
+                  className="w-fit font-mono text-xs"
+                >
+                  <Link
+                    to="/settings"
+                    hash="updates"
+                    onClick={() => onOpenChange(false)}
+                  >
+                    Go to Settings
+                  </Link>
+                </Button>
+              </>
+            )}
+          </div>
+        )}
       </DialogContent>
     </Dialog>
   )
