@@ -23,6 +23,8 @@ import {
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 import { queueQueryOptions } from '@/lib/queue'
 import {
+  CHANGELOG_URL,
+  RELEASES_URL,
   applyUpdate,
   canApply,
   checkForUpdates,
@@ -59,9 +61,6 @@ interface ConfirmAction {
 
 // The Hub & web server settings section, where HUB_SELF_RELOAD lives.
 const HUB_SECTION_HASH = 'hub-web-server'
-
-const RELEASES_URL = 'https://github.com/RomkaLTU/trau/releases'
-const CHANGELOG_URL = 'https://trau.sh/changelog'
 
 export function UpdatesSection() {
   const queryClient = useQueryClient()

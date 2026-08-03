@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { Lock, Search } from 'lucide-react'
@@ -7,6 +8,8 @@ import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
 import { NotificationBell } from '@/components/trau/notification-bell'
 import { RepoSwitcher } from '@/components/trau/repo-switcher'
 import { ThemeToggle } from '@/components/trau/theme-toggle'
+import { WhatsNewDialog } from '@/components/trau/whats-new-dialog'
+import { Badge } from '@/components/ui/badge'
 import { useAttentionCount } from '@/lib/attention'
 import { healthQueryOptions } from '@/lib/health'
 import { useInboxCounts } from '@/lib/inbox'
@@ -75,15 +78,15 @@ export function navBadge(
 
 // updateHint names what the footer dot is about. Drift wins over a newer
 // release: the binary is already here, and restarting is the shorter step.
-function updateHint(status: UpdateStatus | undefined): string | null {
-  if (!status) return null
+function updateHint(status: UpdateStatus | undefined): string | undefined {
+  if (!status) return undefined
   if (status.restartPending) {
     return `${versionLabel(status.onDisk)} is installed — restart the hub to apply it`
   }
   if (status.updateAvailable) {
     return `${versionLabel(status.latest)} is available`
   }
-  return null
+  return undefined
 }
 
 export function Sidebar({
@@ -115,9 +118,12 @@ export function Sidebar({
   const host = window.location.host
   const health = useQuery(healthQueryOptions)
   const update = useQuery(updateQueryOptions)
+  const [whatsNew, setWhatsNew] = useState(false)
+  const status = update.data
   const webVersion = `${__WEB_VERSION__}·${__WEB_BUILD__}`
-  const cliVersion = update.data?.running ?? health.data?.version
+  const cliVersion = status?.running ?? health.data?.version
   const cliLabel = cliVersion ? versionLabel(cliVersion) : null
+  const hint = updateHint(status)
 
   return (
     <aside className="fixed inset-y-0 left-0 z-10 flex w-60 flex-col border-r border-border bg-card">
@@ -253,20 +259,20 @@ export function Sidebar({
             {webVersion}
           </dd>
           <dt className="text-muted-foreground/60">cli</dt>
-          <dd className="min-w-0">
+          <dd className="flex min-w-0 items-center gap-1.5">
             <Link
               to="/settings"
               hash="updates"
-              title={updateHint(update.data) ?? cliLabel ?? 'unavailable'}
-              className="inline-flex max-w-full items-center gap-1.5 text-foreground/75 transition-colors hover:text-foreground"
+              title={hint ?? cliLabel ?? 'unavailable'}
+              className="inline-flex min-w-0 items-center gap-1.5 text-foreground/75 transition-colors hover:text-foreground"
             >
               <span className="truncate">{cliLabel ?? '—'}</span>
-              {update.data?.channel === 'dev' && (
+              {status?.channel === 'dev' && (
                 <span className="shrink-0 rounded-sm border border-teal/40 px-1 text-[0.6rem] uppercase tracking-[0.1em] text-teal">
                   dev
                 </span>
               )}
-              {needsAttention(update.data) && (
+              {needsAttention(status) && !status?.updateAvailable && (
                 <>
                   <span
                     aria-hidden="true"
@@ -276,9 +282,33 @@ export function Sidebar({
                 </>
               )}
             </Link>
+            {status?.updateAvailable && (
+              <Badge
+                asChild
+                variant="outline"
+                className="border-warn/50 bg-warn/12 px-1.5 py-0 font-mono text-[0.6rem] text-warn transition-colors hover:bg-warn/20"
+              >
+                <button
+                  type="button"
+                  onClick={() => setWhatsNew(true)}
+                  title={hint}
+                  aria-label={hint}
+                >
+                  {versionLabel(status.latest)}
+                </button>
+              </Badge>
+            )}
           </dd>
         </dl>
       </div>
+
+      {status && (
+        <WhatsNewDialog
+          status={status}
+          open={whatsNew}
+          onOpenChange={setWhatsNew}
+        />
+      )}
     </aside>
   )
 }
