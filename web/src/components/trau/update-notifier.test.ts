@@ -108,6 +108,100 @@ afterEach(async () => {
   vi.unstubAllGlobals()
 })
 
+const RECAPPED_KEY = 'trau.whats-new.seen'
+
+function recapped(): string | null {
+  return localStorage.getItem(RECAPPED_KEY)
+}
+
+// Runs first so the recap mark is still unset for the first-visit case, and
+// stays on 1.x so neither mark treads on the releases the toast tests announce.
+describe('UpdateNotifier recap', () => {
+  it('says nothing on a first visit and records where it came in', async () => {
+    await mount(
+      status({ running: '1.0.0', latest: '1.0.0', updateAvailable: false }),
+    )
+
+    expect(document.body.textContent).not.toContain("What's new in")
+    expect(recapped()).toBe('1.0.0')
+  })
+
+  it('opens the notes of the release installed under it, once', async () => {
+    await mount(status({ running: '1.1.0', latest: '1.2.0' }))
+    await unmount()
+
+    await mount(
+      status({ running: '1.2.0', latest: '1.2.0', updateAvailable: false }),
+    )
+
+    expect(document.body.textContent).toContain("What's new in v1.2.0")
+    expect(document.body.textContent).toContain('the queue drains politely now')
+    expect(document.body.textContent).not.toContain('brew upgrade')
+    expect(toasts()).not.toContain('is available')
+    await unmount()
+
+    await mount(
+      status({ running: '1.2.0', latest: '1.2.0', updateAvailable: false }),
+    )
+
+    expect(document.body.textContent).not.toContain("What's new in")
+  })
+
+  it('skips the recap of a hub newer releases have shipped past', async () => {
+    await mount(
+      status({ running: '1.3.0', latest: '1.4.0', updateAvailable: false }),
+    )
+    await unmount()
+
+    await mount(
+      status({ running: '1.4.0', latest: '1.5.0', updateAvailable: false }),
+    )
+
+    expect(document.body.textContent).not.toContain("What's new in")
+    expect(recapped()).toBe('1.4.0')
+  })
+
+  it('leaves the mark of a tab still polling the hub it came off', async () => {
+    await mount(
+      status({ running: '1.5.0', latest: '1.6.0', updateAvailable: false }),
+    )
+    await unmount()
+
+    await mount(
+      status({ running: '1.6.0', latest: '1.6.0', updateAvailable: false }),
+    )
+    expect(document.body.textContent).toContain("What's new in v1.6.0")
+
+    await act(async () => {
+      localStorage.setItem(RECAPPED_KEY, '1.5.0')
+      globalThis.dispatchEvent(
+        new StorageEvent('storage', { key: RECAPPED_KEY, newValue: '1.5.0' }),
+      )
+    })
+
+    expect(recapped()).toBe('1.5.0')
+  })
+
+  it('never recaps a build that names no release', async () => {
+    await mount(
+      status({ running: '1.6.0', latest: '1.7.0', updateAvailable: false }),
+    )
+    await unmount()
+
+    await mount(
+      status({
+        running: 'dev',
+        latest: '1.7.0',
+        channel: 'dev',
+        updateAvailable: false,
+      }),
+    )
+
+    expect(document.body.textContent).not.toContain("What's new in")
+    expect(recapped()).toBe('dev')
+  })
+})
+
 describe('UpdateNotifier', () => {
   it('announces a release and opens its notes from the toast', async () => {
     await mount(status())

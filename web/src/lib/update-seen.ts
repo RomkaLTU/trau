@@ -9,6 +9,10 @@ type Store = Pick<Storage, 'getItem' | 'setItem'>
 // quiet about a version already announced, and only a newer one speaks up.
 const TOASTED_KEY = 'trau.update.toasted'
 
+// A mark of its own: the toast is about the release ahead, the recap about the
+// one now running, and an upgrade settles the two at different moments.
+const RECAPPED_KEY = 'trau.whats-new.seen'
+
 function browserStore(): Store | null {
   try {
     return globalThis.localStorage ?? null
@@ -17,58 +21,85 @@ function browserStore(): Store | null {
   }
 }
 
-export function loadToasted(): string {
-  return browserStore()?.getItem(TOASTED_KEY) ?? ''
-}
+// versionMark is one localStorage key followed across tabs. The mark only ever
+// walks forward, so a tab whose poll still trails another's cannot talk it back
+// down to a release already announced.
+function versionMark(key: string) {
+  const listeners = new Set<() => void>()
+  let snapshot: string | null = null
 
-const listeners = new Set<() => void>()
-let snapshot: string | null = null
+  function load(): string {
+    return browserStore()?.getItem(key) ?? ''
+  }
 
-function currentToasted(): string {
-  if (snapshot === null) snapshot = loadToasted()
-  return snapshot
-}
+  function current(): string {
+    if (snapshot === null) snapshot = load()
+    return snapshot
+  }
 
-// Passing null drops the snapshot, so the next read comes off storage — which is
-// what another tab's write leaves behind.
-function publish(version: string | null): void {
-  snapshot = version
-  listeners.forEach((notify) => notify())
-}
+  // Passing null drops the snapshot, so the next read comes off storage — which
+  // is what another tab's write leaves behind.
+  function publish(version: string | null): void {
+    snapshot = version
+    listeners.forEach((notify) => notify())
+  }
 
-function onStorage(event: StorageEvent): void {
-  if (event.key === null || event.key === TOASTED_KEY) publish(null)
-}
+  function onStorage(event: StorageEvent): void {
+    if (event.key === null || event.key === key) publish(null)
+  }
 
-function subscribe(notify: () => void): () => void {
-  if (listeners.size === 0) globalThis.addEventListener('storage', onStorage)
-  listeners.add(notify)
-  return () => {
-    listeners.delete(notify)
-    if (listeners.size === 0) {
-      globalThis.removeEventListener('storage', onStorage)
+  function subscribe(notify: () => void): () => void {
+    if (listeners.size === 0) globalThis.addEventListener('storage', onStorage)
+    listeners.add(notify)
+    return () => {
+      listeners.delete(notify)
+      if (listeners.size === 0) {
+        globalThis.removeEventListener('storage', onStorage)
+      }
     }
   }
+
+  // record settles against what storage holds now: another tab may have moved
+  // the mark since this one last read the key.
+  function record(version: string): void {
+    const stored = load()
+    if (!isNewer(version, stored)) {
+      publish(stored)
+      return
+    }
+    browserStore()?.setItem(key, version)
+    publish(version)
+  }
+
+  return { load, current, subscribe, record }
 }
 
-// recordToasted advances the mark against what storage holds now. Another tab
-// may have announced a newer release since this one last read the key, and an
-// announcement never walks backwards.
-function recordToasted(version: string): void {
-  const stored = loadToasted()
-  if (!isNewer(version, stored)) {
-    publish(stored)
-    return
-  }
-  browserStore()?.setItem(TOASTED_KEY, version)
-  publish(version)
+const toastedMark = versionMark(TOASTED_KEY)
+
+export function loadToasted(): string {
+  return toastedMark.load()
 }
 
 // useToastedVersion hands the notifier the release it has already announced and
 // the recorder that settles the next one, so a second tab agrees about what has
 // been said without waiting for a reload.
 export function useToastedVersion(): [string, (version: string) => void] {
-  return [useSyncExternalStore(subscribe, currentToasted), recordToasted]
+  return [
+    useSyncExternalStore(toastedMark.subscribe, toastedMark.current),
+    toastedMark.record,
+  ]
+}
+
+// The recap mark names whichever hub a tab last came in on, so unlike the
+// announcement it has to settle downwards too. That leaves no order to converge
+// on, so it is read and written straight off storage instead of watched: a tab
+// answering another one's write would only trade the key back and forth.
+export function loadRecapped(): string {
+  return browserStore()?.getItem(RECAPPED_KEY) ?? ''
+}
+
+export function recordRecapped(version: string): void {
+  browserStore()?.setItem(RECAPPED_KEY, version)
 }
 
 // shouldToast reports whether this status names a release worth announcing. A
@@ -81,6 +112,25 @@ export function shouldToast(status: UpdateStatus, toasted: string): boolean {
     status.updateAvailable &&
     status.latest !== '' &&
     isNewer(status.latest, toasted)
+  )
+}
+
+// shouldRecap reports whether this load is the first one on a version that has
+// just been installed. An unset mark is a browser that has never watched an
+// upgrade land rather than one that missed a release, so it earns no recap; nor
+// does a hub with an update still to take — one whose notes belong to the toast,
+// whether it is behind the latest tag or already running it over a binary
+// waiting on disk.
+export function shouldRecap(status: UpdateStatus, recapped: string): boolean {
+  return (
+    recapped !== '' &&
+    status.running !== recapped &&
+    status.running !== 'dev' &&
+    status.channel === 'release' &&
+    status.checksEnabled &&
+    !status.updateAvailable &&
+    status.running === status.latest &&
+    status.latestNotes !== ''
   )
 }
 
