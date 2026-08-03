@@ -5,6 +5,8 @@ import { Boxes, FolderGit2, Plus, RotateCw, Wrench } from 'lucide-react'
 
 import { EventFeed } from '@/components/event-feed'
 import { MakeStartableButton } from '@/components/make-startable-button'
+import { MoveRepoButton } from '@/components/move-repo-button'
+import { ProjectNameField } from '@/components/project-name-field'
 import { RemoveProjectButton } from '@/components/remove-project-button'
 import { RemoveRepoButton } from '@/components/remove-repo-button'
 import { PageHeader } from '@/components/trau/page-header'
@@ -179,9 +181,7 @@ function ProjectGroup({
           className="size-3.5 shrink-0 text-muted-foreground"
           aria-hidden="true"
         />
-        <span className="truncate font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
-          {project.name}
-        </span>
+        <ProjectNameField project={project} />
         <span className="shrink-0 font-mono text-[0.65rem] tabular-nums text-muted-foreground">
           {repos.length} repos
         </span>
@@ -340,6 +340,7 @@ function RepoHealthActions({
           </Button>
         )}
         {!repo.allowed && <MakeStartableButton root={repo.root} size="sm" />}
+        <MoveRepoButton repo={repo} />
         {repo.registered && (
           <UnregisterRepoButton repo={repo.name} root={repo.root} />
         )}
