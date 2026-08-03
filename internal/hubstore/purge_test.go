@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -16,7 +16,7 @@ import (
 func purgeStores(t *testing.T) (*Stores, registry.Repo) {
 	t.Helper()
 	home := t.TempDir()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

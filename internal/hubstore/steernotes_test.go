@@ -5,14 +5,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 var steerEpoch = time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 
 func testSteerNotes(t *testing.T) *SteerNotes {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

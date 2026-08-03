@@ -184,20 +184,9 @@ func TestDiscoverRefusedOnExposedBind(t *testing.T) {
 	}
 }
 
-// gitIdentity puts an author in the environment the hub's git calls inherit, so
-// the init endpoint's commit works against the test's throwaway HOME.
-func gitIdentity(t *testing.T) {
-	t.Helper()
-	t.Setenv("GIT_AUTHOR_NAME", "t")
-	t.Setenv("GIT_AUTHOR_EMAIL", "t@example.com")
-	t.Setenv("GIT_COMMITTER_NAME", "t")
-	t.Setenv("GIT_COMMITTER_EMAIL", "t@example.com")
-}
-
 func TestInitCreatesRepoWithBaseBranch(t *testing.T) {
 	home := t.TempDir()
 	empty := mkdir(t, filepath.Join(home, "fresh"))
-	gitIdentity(t)
 	ts := browseServer(t, home)
 
 	res := postJSON(t, ts.URL+APIPrefix+"/fs/init", GitInitRequest{Path: empty})

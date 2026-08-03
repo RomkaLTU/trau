@@ -77,6 +77,7 @@ export function StepDetect({
   const member = members[selected] ?? members[0]
   const inspection = member.inspection
   const hasWarnings = inspection.findings.some((f) => f.state === 'warn')
+  const hasFailures = inspection.findings.some((f) => f.state === 'fail')
 
   return (
     <div className="flex flex-col gap-5">
@@ -105,6 +106,12 @@ export function StepDetect({
         </div>
       )}
 
+      {hasFailures && (
+        <Callout tone="fail" title="trau opens pull requests on GitHub only">
+          Name the host on the essentials step if it's a GitHub install trau didn't recognise.
+          A repo on another forge can still be registered, it just won't be shipped to.
+        </Callout>
+      )}
       {hasWarnings && (
         <Callout tone="warn" title="This config would break sync as-is">
           Resolve the flagged items on the next step, or the seed sync pulls from the wrong place.

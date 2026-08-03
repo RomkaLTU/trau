@@ -13,9 +13,6 @@ import (
 func qaGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(),
-		"GIT_AUTHOR_NAME=qa", "GIT_AUTHOR_EMAIL=qa@test",
-		"GIT_COMMITTER_NAME=qa", "GIT_COMMITTER_EMAIL=qa@test")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)

@@ -3,12 +3,12 @@ package hubstore
 import (
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 func testTokens(t *testing.T) *Tokens {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestTokensAnomaliesRoundTrip(t *testing.T) {
 }
 
 func TestTokensPruneKeepsRecentPerRepo(t *testing.T) {
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestTokensPruneKeepsRecentPerRepo(t *testing.T) {
 // grouped by on the write path. A call reporting none of them lands on the
 // defaults historical rows carry.
 func TestTokensAppendRecordsRouting(t *testing.T) {
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

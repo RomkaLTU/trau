@@ -73,6 +73,9 @@ export function forgeDelivers(forge: string): boolean {
   return forge === 'github' || forge === ''
 }
 
+// Mirrors forge.Names() in internal/forge — the values FORGE accepts.
+export const FORGE_NAMES = ['github', 'azure', 'gitlab', 'bitbucket']
+
 export interface Team {
   key: string
   name: string
@@ -312,8 +315,16 @@ export interface MemberBaseBranch {
   branch: string
 }
 
+// One entry per member whose forge can be declared. A Folder root is absent: it
+// has no remote of its own, and a child never inherits the root's FORGE.
+export interface MemberForge {
+  root: string
+  forge: string
+}
+
 export interface EssentialsFields {
   baseBranches: MemberBaseBranch[]
+  forges: MemberForge[]
   readyLabel: string
   epicFlow: boolean
 }
@@ -331,8 +342,9 @@ export function essentialsProjectKeys(fields: EssentialsFields): Record<string, 
   return keys
 }
 
-// Every member keeps its own BASE_BRANCH. Without a project to hold them, the
-// project-wide keys land on the primary repo instead.
+// Every member keeps its own BASE_BRANCH and FORGE. An unpicked forge is left
+// out — empty is already the default, so writing it is noise. Without a project
+// to hold them, the project-wide keys land on the primary repo instead.
 export function essentialsConfigWrites(
   fields: EssentialsFields,
   project: string | null,
@@ -341,6 +353,10 @@ export function essentialsConfigWrites(
   for (const { root, branch } of fields.baseBranches) {
     if (branch.trim() === '') continue
     writes.push({ root, key: 'BASE_BRANCH', value: branch.trim(), layer: 'project' })
+  }
+  for (const { root, forge } of fields.forges) {
+    if (forge === '') continue
+    writes.push({ root, key: 'FORGE', value: forge, layer: 'project' })
   }
   if (project !== null) return writes
   const primary = fields.baseBranches[0].root

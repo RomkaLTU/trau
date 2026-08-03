@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -124,7 +124,7 @@ func TestAttachmentAPILazyFetchCachesAndServes(t *testing.T) {
 // standing in for the minute a caller would otherwise have to wait out.
 func ageAttachmentAttempt(t *testing.T, home string, id int64) {
 	t.Helper()
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

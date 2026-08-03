@@ -62,7 +62,7 @@ func TestFindKimiSessionMatchesWorkspaceAndStart(t *testing.T) {
 		}
 	}
 
-	since := time.Now()
+	since := usageSince(filepath.Join(t.TempDir(), "run.result.json"), time.Now())
 	if _, ok := findKimiSession(sessions, repo, since); ok {
 		t.Error("a session last written before the call started must not be adopted")
 	}

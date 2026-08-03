@@ -20,6 +20,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
@@ -483,7 +484,7 @@ func TestCheckHubDatabaseNotYetCreated(t *testing.T) {
 func TestCheckHubDatabaseHealthy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TRAU_HOME", home)
-	db, err := hubdb.Open(home)
+	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -810,7 +811,7 @@ func TestCheckBrowserVerifyStoredAppURLs(t *testing.T) {
 // one app URL entry for repoRoot, so the check reads a real store.
 func seedAppURL(t *testing.T, repoRoot, url string) {
 	t.Helper()
-	db, err := hubdb.Open(registry.Home())
+	db, err := hubdbtest.Open(registry.Home())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
@@ -930,7 +931,7 @@ func teamSyncRepo(t *testing.T, withRemote bool) string {
 // empty — the shape of a hub that has started but never synced this repo.
 func seedTeamSyncState(t *testing.T, repoRoot string, st hubstore.TeamSyncState) {
 	t.Helper()
-	db, err := hubdb.Open(registry.Home())
+	db, err := hubdbtest.Open(registry.Home())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

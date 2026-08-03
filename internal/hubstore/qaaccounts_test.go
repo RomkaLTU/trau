@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
 )
 
 func testQAAccounts(t *testing.T) *QAAccounts {
@@ -17,7 +17,7 @@ func testQAAccounts(t *testing.T) *QAAccounts {
 // can exercise the attachment between them.
 func testQAStores(t *testing.T) (*QAAccounts, *AppURLs) {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	db, err := hubdbtest.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}

@@ -272,8 +272,6 @@ func TestEnsureCleanBaseReconcilesAgainstRealGit(t *testing.T) {
 
 	work := t.TempDir()
 	gitRun(t, work, "init")
-	gitRun(t, work, "config", "user.name", "t")
-	gitRun(t, work, "config", "user.email", "t@t")
 	writeRepoFile(t, work, "a.txt", "base\n")
 	gitRun(t, work, "add", "-A")
 	gitRun(t, work, "commit", "-m", "init")
