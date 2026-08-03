@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
 import {
+  expandedOnOpen,
   filterRepoRows,
   groupRepos,
   matchesProjectDefaults,
@@ -10,9 +11,11 @@ import {
   projectDefaults,
   projectDefaultsModified,
   projectMembers,
+  projectNameForRoot,
   removalPlan,
   removalSummary,
   renameProject,
+  toggleExpanded,
   writeProjectTracker,
   type ProjectRemoval,
   type ProjectTracker,
@@ -116,6 +119,65 @@ describe('filterRepoRows', () => {
 
   it('drops the rows nothing matches', () => {
     expect(filterRepoRows(rows, 'nothing')).toEqual([])
+  })
+})
+
+describe('projectNameForRoot', () => {
+  const platform = project('platform', 'Platform', ['bravo', 'charlie'])
+  const lone = project('alpha', 'Alpha Only', ['alpha'])
+
+  it('names the project holding a root, grouped or not', () => {
+    expect(projectNameForRoot('/repos/charlie', [platform, lone])).toBe(
+      'Platform',
+    )
+    expect(projectNameForRoot('/repos/alpha', [platform, lone])).toBe(
+      'Alpha Only',
+    )
+  })
+
+  it('leaves a root no project holds unnamed', () => {
+    expect(projectNameForRoot('/repos/delta', [platform, lone])).toBe('')
+    expect(projectNameForRoot('/repos/alpha', [])).toBe('')
+  })
+})
+
+describe('expandedOnOpen', () => {
+  const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
+  const platform = project('platform', 'Platform', ['bravo', 'charlie'])
+  const rows = groupRepos(repos, [platform])
+
+  it('opens the project holding the scoped repo and no other', () => {
+    expect([...expandedOnOpen(rows, 'charlie')]).toEqual(['platform'])
+  })
+
+  it('leaves every project shut when nothing is scoped into one', () => {
+    expect([...expandedOnOpen(rows, 'alpha')]).toEqual([])
+    expect([...expandedOnOpen(rows, '')]).toEqual([])
+  })
+
+  it('leaves a single-member project shut — it has no row to open', () => {
+    const lone = groupRepos(repos, [project('alpha', 'Alpha Only', ['alpha'])])
+    expect([...expandedOnOpen(lone, 'alpha')]).toEqual([])
+  })
+})
+
+describe('toggleExpanded', () => {
+  it('opens a shut project and shuts an open one', () => {
+    expect([...toggleExpanded(new Set(), 'platform')]).toEqual(['platform'])
+    expect([...toggleExpanded(new Set(['platform']), 'platform')]).toEqual([])
+  })
+
+  it('leaves the other projects as they were', () => {
+    expect([...toggleExpanded(new Set(['platform']), 'tools')]).toEqual([
+      'platform',
+      'tools',
+    ])
+  })
+
+  it('hands back a new set, so React sees the change', () => {
+    const expanded = new Set(['platform'])
+    expect(toggleExpanded(expanded, 'tools')).not.toBe(expanded)
+    expect([...expanded]).toEqual(['platform'])
   })
 })
 

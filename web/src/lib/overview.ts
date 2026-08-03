@@ -275,6 +275,18 @@ export function repoBadgeState(states: SessionState[]): RepoBadgeState {
   return "idle";
 }
 
+// reposBadgeState folds several repos' badges into one, on the same precedence
+// repoBadgeState uses: a collapsed group must not hide a member that is running
+// or wants a hand.
+export function reposBadgeState(
+  states: readonly RepoBadgeState[],
+): RepoBadgeState {
+  if (states.includes("active")) return "active";
+  if (states.includes("parked")) return "parked";
+  if (states.includes("idle")) return "idle";
+  return "none";
+}
+
 const STOPPED_COPY =
   "Stopped — work is saved at its checkpoint. Resume hands it back to the loop.";
 

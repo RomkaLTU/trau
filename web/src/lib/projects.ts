@@ -36,6 +36,16 @@ export const projectsQueryOptions = queryOptions({
   refetchInterval: 5000,
 })
 
+// projectNameForRoot names the project holding a repo root, empty when none
+// does. A single-member project never forms a group, so its name has nowhere to
+// surface but the repo's own row.
+export function projectNameForRoot(
+  root: string,
+  projects: readonly ProjectView[],
+): string {
+  return projects.find((p) => p.repos.includes(root))?.name ?? ''
+}
+
 // RepoRow is one row of a repo list — the switcher's, or the instances page's. A
 // project holding two or more listed repos renders as a named group; everything
 // else — a single-member project, a repo no project holds — renders as a bare repo.
@@ -97,6 +107,29 @@ export function filterRepoRows(rows: RepoRow[], query: string): RepoRow[] {
     if (repos.length > 0) kept.push({ ...row, repos })
   }
   return kept
+}
+
+// expandedOnOpen is the switcher's opening disclosure: every project row shut
+// but the one holding the scoped repo, so the list stays short without hiding
+// where the work currently is. Nothing is persisted — closing the dialog drops
+// the state and the next open starts here again.
+export function expandedOnOpen(
+  rows: readonly RepoRow[],
+  repo: string,
+): Set<string> {
+  const holder = rows.find(
+    (row) => row.project !== null && row.repos.some((r) => r.name === repo),
+  )
+  return new Set(holder?.project ? [holder.project.id] : [])
+}
+
+export function toggleExpanded(
+  expanded: ReadonlySet<string>,
+  id: string,
+): Set<string> {
+  const next = new Set(expanded)
+  if (!next.delete(id)) next.add(id)
+  return next
 }
 
 // projectAnchor names the repo a project's shared tracker surfaces read from:
