@@ -32,6 +32,13 @@ iso=$(mktemp -d) && TRAU_HOME=$iso/.trau HOME=$iso ./bin/trau serve --port 8799
 
 Override BOTH `TRAU_HOME` and `HOME` so the isolated hub cannot see the real `~/.trau` databases. When done, kill only that pid. Never stop, restart, or "clean up" any process listening on :8728 — it was not started by you, even if a port probe makes it look recent. `make reset` is for humans doing interactive dev outside a run.
 
+**QA repos must never impersonate a real one.** The real hub permanently adopts every repo a live trau instance heartbeats from (`known_repos` has no TTL and no temp-dir filter), and the next hub restart mints a project for each adopted root — a scratchpad clone named `shipflock` becomes a second `shipflock` project that the hub then syncs against the real tracker on the shared API budget (COD-1466), and same-named repos render as one wedged row in the repo picker (COD-1465). When QA needs a working target repo:
+
+- Run trau against a clone **only under the isolated hub above**. Anything that heartbeats or registers — `trau serve`, a run, a drain, `--requeue` — pointed at :8728 from inside a clone pollutes the real hub's state permanently.
+- Name throwaway clones distinctly — `qa-<ticket>-shipflock`, never the donor repo's own name — so an isolation slip produces identifiable junk instead of a doppelgänger project.
+- To exercise *real* hub state (a real quarantined ticket, the real queue), drive the real registered repo itself; do not substitute a clone.
+- Delete clones when finished. If one ever reached the real hub anyway, remove it through the web UI's repo management before ending the session.
+
 A hub running a *released* trau (Homebrew, say) cannot be moved onto a checkout by `make reset`: `trau hub restart` re-execs the binary the running process resolves to, which is the release one. For that, Settings → Updates has a **build channel** switch — it rebuilds a registered repo with `HUB_RELOAD_BUILD_CMD` and restarts onto `HUB_DEV_BINARY`, gated on that repo setting `HUB_SELF_RELOAD=1` (ADR 0024). The same section takes a dev hub back: **Rebuild & restart** is `make reset` without the terminal, and **Switch to release** restarts onto the first `trau` on PATH that no registered repo owns. A hub under `trau hub supervise` switches too: the LaunchAgent is rewritten to the chosen binary and handed back to launchd, so its respawn stays on that build. Same rule as above: humans only, never during a run.
 
 Commit messages follow Conventional Commits (`feat(scope):`, `fix:`, …) — release notes are generated from them (ADR 0002). Ticket IDs in commits/comments reference the project's own tracker tickets and act as the design changelog.
