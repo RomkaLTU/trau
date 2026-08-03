@@ -1,5 +1,7 @@
 import { NAV_GROUPS } from '@/components/trau/nav-items'
 
+import type { RepoView } from './instances'
+
 type Store = Pick<Storage, 'getItem' | 'setItem'>
 
 const RECENTS_KEY = 'trau.web.recents'
@@ -9,7 +11,14 @@ export const RECENTS_CAP = 20
 // A project entry carries no path — selecting it re-applies the scope instead
 // of navigating — so the two shapes stay distinct rather than faking a path.
 export type RecentEntry =
-  | { kind: 'project'; key: string; label: string; sublabel?: string; at: number }
+  | {
+      kind: 'project'
+      key: string
+      label: string
+      root: string
+      sublabel?: string
+      at: number
+    }
   | {
       kind: 'page' | 'run'
       key: string
@@ -19,8 +28,19 @@ export type RecentEntry =
       at: number
     }
 
-export function projectRecent(name: string, at: number): RecentEntry {
-  return { kind: 'project', key: `project:${name}`, label: name, at }
+// A project entry is keyed by the root, not the name it shows: two repos can
+// share a name, and re-applying the scope has to land on the one that was picked.
+export function projectRecent(
+  repo: Pick<RepoView, 'name' | 'root'>,
+  at: number,
+): RecentEntry {
+  return {
+    kind: 'project',
+    key: `project:${repo.root}`,
+    label: repo.name,
+    root: repo.root,
+    at,
+  }
 }
 
 const RUN_PATH = /^\/(runs|live)\/([^/]+)\/([^/]+)$/
@@ -60,17 +80,22 @@ export function recordRecent(
 // whose repo has since been unregistered.
 export function visibleRecents(
   list: readonly RecentEntry[],
-  current: { path: string; repo: string | null; repos: readonly string[] },
+  current: {
+    path: string
+    root: string | null
+    repos: readonly Pick<RepoView, 'name' | 'root'>[]
+  },
   limit = 6,
 ): RecentEntry[] {
-  const known = new Set(current.repos)
+  const names = new Set(current.repos.map((r) => r.name))
+  const roots = new Set(current.repos.map((r) => r.root))
   return list
     .filter((e) => {
       if (e.kind === 'project') {
-        return e.label !== current.repo && known.has(e.label)
+        return e.root !== current.root && roots.has(e.root)
       }
       if (e.path === current.path) return false
-      return e.kind === 'page' || known.has(e.sublabel ?? '')
+      return e.kind === 'page' || names.has(e.sublabel ?? '')
     })
     .slice(0, limit)
 }
@@ -82,7 +107,7 @@ function isRecentEntry(e: unknown): e is RecentEntry {
     typeof r.key === 'string' &&
     typeof r.label === 'string' &&
     typeof r.at === 'number' &&
-    (r.kind === 'project' ||
+    ((r.kind === 'project' && typeof r.root === 'string') ||
       ((r.kind === 'page' || r.kind === 'run') && typeof r.path === 'string'))
   )
 }

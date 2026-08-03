@@ -11,11 +11,11 @@ import {
 import type { RepoView } from '@/lib/instances'
 import type { RepoBadgeState } from '@/lib/overview'
 
-function repo(name: string, live = false): RepoView {
+function repo(name: string, live = false, root = `/repos/${name}`): RepoView {
   return {
     name,
-    root: `/repos/${name}`,
-    runs_dir: `/repos/${name}/runs`,
+    root,
+    runs_dir: `${root}/runs`,
     live,
     allowed: true,
     registered: true,
@@ -31,14 +31,39 @@ describe('resolveScope', () => {
     expect(resolveScope(repos, 'charlie')).toEqual({
       scope: 'charlie',
       repo: 'charlie',
+      root: '/repos/charlie',
       isAll: false,
     })
+  })
+
+  it('resolves a stored root to that repo rather than its same-named twin', () => {
+    const twins = [
+      repo('shipflock', false, '/repos/qa-1/shipflock'),
+      repo('shipflock', false, '/repos/qa-2/shipflock'),
+    ]
+    expect(resolveScope(twins, '/repos/qa-2/shipflock')).toEqual({
+      scope: 'shipflock',
+      repo: 'shipflock',
+      root: '/repos/qa-2/shipflock',
+      isAll: false,
+    })
+  })
+
+  it('resolves a windows root, which carries no leading slash', () => {
+    const twins = [
+      repo('shipflock', false, 'C:\\Users\\rd\\qa-1\\shipflock'),
+      repo('shipflock', false, 'C:\\Users\\rd\\qa-2\\shipflock'),
+    ]
+    expect(resolveScope(twins, 'C:\\Users\\rd\\qa-2\\shipflock').root).toBe(
+      'C:\\Users\\rd\\qa-2\\shipflock',
+    )
   })
 
   it('honors an explicit "all" scope when several repos are registered', () => {
     expect(resolveScope(repos, ALL_SCOPE)).toEqual({
       scope: ALL_SCOPE,
       repo: null,
+      root: null,
       isAll: true,
     })
   })
@@ -47,6 +72,7 @@ describe('resolveScope', () => {
     expect(resolveScope([repo('solo')], ALL_SCOPE)).toEqual({
       scope: 'solo',
       repo: 'solo',
+      root: '/repos/solo',
       isAll: false,
     })
   })
@@ -55,6 +81,7 @@ describe('resolveScope', () => {
     expect(resolveScope(repos, 'deleted')).toEqual({
       scope: 'bravo',
       repo: 'bravo',
+      root: '/repos/bravo',
       isAll: false,
     })
   })
@@ -63,6 +90,7 @@ describe('resolveScope', () => {
     expect(resolveScope([repo('alpha'), repo('charlie')], null)).toEqual({
       scope: 'alpha',
       repo: 'alpha',
+      root: '/repos/alpha',
       isAll: false,
     })
   })
@@ -71,6 +99,7 @@ describe('resolveScope', () => {
     expect(resolveScope([], 'anything')).toEqual({
       scope: ALL_SCOPE,
       repo: null,
+      root: null,
       isAll: false,
     })
   })
@@ -80,11 +109,21 @@ describe('autoScopeTarget', () => {
   const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
 
   it('picks the lone repo', () => {
-    expect(autoScopeTarget([repo('solo')], null)).toBe('solo')
+    expect(autoScopeTarget([repo('solo')], null)?.name).toBe('solo')
   })
 
   it('prefers the last-used repo when it still exists', () => {
-    expect(autoScopeTarget(repos, 'bravo')).toBe('bravo')
+    expect(autoScopeTarget(repos, 'bravo')?.name).toBe('bravo')
+  })
+
+  it('returns the repo the stored root points at, not its same-named twin', () => {
+    const twins = [
+      repo('shipflock', false, '/repos/qa-1/shipflock'),
+      repo('shipflock', false, '/repos/qa-2/shipflock'),
+    ]
+    expect(autoScopeTarget(twins, '/repos/qa-2/shipflock')?.root).toBe(
+      '/repos/qa-2/shipflock',
+    )
   })
 
   it('returns null when the last-used repo is gone and there is a choice', () => {
@@ -115,21 +154,24 @@ describe('sortRepos', () => {
   })
 
   it('orders the rest by last usage, newest first', () => {
-    const sorted = sortRepos(repos, badges({}), { alpha: 10, charlie: 20 })
+    const sorted = sortRepos(repos, badges({}), {
+      '/repos/alpha': 10,
+      '/repos/charlie': 20,
+    })
     expect(names(sorted)).toEqual(['charlie', 'alpha', 'bravo'])
   })
 
   it('keeps a running repo above a more recently used idle one', () => {
     const sorted = sortRepos(repos, badges({ bravo: 'active' }), {
-      alpha: 30,
-      bravo: 1,
+      '/repos/alpha': 30,
+      '/repos/bravo': 1,
     })
     expect(names(sorted)).toEqual(['bravo', 'alpha', 'charlie'])
   })
 
   it('ranks a parked repo with the rest rather than as running', () => {
     const sorted = sortRepos(repos, badges({ alpha: 'parked' }), {
-      charlie: 5,
+      '/repos/charlie': 5,
     })
     expect(names(sorted)).toEqual(['charlie', 'alpha', 'bravo'])
   })

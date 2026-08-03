@@ -42,6 +42,7 @@ import {
   groupRepos,
   projectNameForRoot,
   projectsQueryOptions,
+  repoQualifiers,
   toggleExpanded,
   type ProjectView,
 } from '@/lib/projects'
@@ -69,10 +70,10 @@ function useRepoBadgeStates(): Map<string, RepoBadgeState> {
 }
 
 export function RepoSwitcher({ onOpen }: { onOpen: () => void }) {
-  const { repo, repos, isAll } = useActiveRepo()
+  const { repo, root, repos, isAll } = useActiveRepo()
   const badges = useRepoBadgeStates()
   const { data: projectData } = useQuery(projectsQueryOptions)
-  const active = repos.find((r) => r.name === repo)
+  const active = repos.find((r) => r.root === root)
   const project = active
     ? projectNameForRoot(active.root, projectData?.projects ?? [])
     : ''
@@ -120,7 +121,7 @@ export function RepoSwitcherDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { repo, repos, isAll, setScope, switcherSignal } = useActiveRepo()
+  const { repo, root, repos, isAll, setScope, switcherSignal } = useActiveRepo()
   const badges = useRepoBadgeStates()
   const { data: projectData } = useQuery(projectsQueryOptions)
   const navigate = useNavigate()
@@ -167,6 +168,11 @@ export function RepoSwitcherDialog({
 
   const visible = useMemo(() => filterRepoRows(rows, trimmed), [rows, trimmed])
 
+  const qualifiers = useMemo(
+    () => repoQualifiers(repos, projectData?.projects ?? []),
+    [repos, projectData],
+  )
+
   // Only a toggle overrides the opening state, so the badge poll that rebuilds
   // the rows cannot shut a project the user just opened. A query overrides the
   // other way: what it matched has to be reachable.
@@ -178,25 +184,39 @@ export function RepoSwitcherDialog({
 
   const recents = useMemo(() => {
     if (!open || trimmed !== '') return []
-    const byName = new Map(repos.map((r) => [r.name, r]))
+    const byRoot = new Map(repos.map((r) => [r.root, r]))
     return loadRecents()
       .flatMap((entry) =>
-        entry.kind === 'project' && entry.label !== repo
-          ? (byName.get(entry.label) ?? [])
+        entry.kind === 'project' && entry.root !== root
+          ? (byRoot.get(entry.root) ?? [])
           : [],
       )
       .slice(0, RECENT_REPOS)
-  }, [open, trimmed, repo, repos])
+  }, [open, trimmed, root, repos])
 
   const projects = projectData?.projects ?? []
   const showAllScope = repos.length > 1 && matchesQuery(trimmed, ['All repos'])
   const showNewProject = matchesQuery(trimmed, ['New project'])
   const showManageRepos = matchesQuery(trimmed, ['Manage repos'])
 
-  function pick(scope: string) {
-    setScope(scope)
+  function pick(ident: string) {
+    setScope(ident)
     onOpenChange(false)
   }
+
+  // Rows are addressed by root all the way through to the scope, so picking one
+  // of two same-named repos lands on the one under the cursor.
+  const rowOption = (
+    r: RepoView,
+    group: 'repo' | 'recent' = 'repo',
+  ): RepoOptionRow => ({
+    value: `${group}:${r.root}`,
+    repo: r,
+    qualifier: qualifiers.get(r.root),
+    state: badges.get(r.name) ?? 'none',
+    active: r.name === scoped,
+    onSelect: () => pick(r.root),
+  })
 
   function goTo(to: '/projects/new' | '/instances') {
     onOpenChange(false)
@@ -254,13 +274,9 @@ export function RepoSwitcherDialog({
           <CommandGroup heading="recent" className={GROUP_HEADING}>
             {recents.map((r) => (
               <RepoOption
-                key={r.name}
-                value={`recent:${r.name}`}
-                repo={r}
+                key={r.root}
                 project={projectNameForRoot(r.root, projects)}
-                state={badges.get(r.name) ?? 'none'}
-                active={r.name === scoped}
-                onSelect={() => pick(r.name)}
+                {...rowOption(r, 'recent')}
               />
             ))}
           </CommandGroup>
@@ -271,13 +287,9 @@ export function RepoSwitcherDialog({
               row.project === null ? (
                 row.repos.map((r) => (
                   <RepoOption
-                    key={r.name}
-                    value={`repo:${r.name}`}
-                    repo={r}
+                    key={r.root}
                     project={projectNameForRoot(r.root, projects)}
-                    state={badges.get(r.name) ?? 'none'}
-                    active={r.name === scoped}
-                    onSelect={() => pick(r.name)}
+                    {...rowOption(r)}
                   />
                 ))
               ) : (
@@ -285,13 +297,11 @@ export function RepoSwitcherDialog({
                   key={row.project.id}
                   project={row.project}
                   repos={row.repos}
-                  badges={badges}
-                  scoped={scoped}
+                  option={rowOption}
                   expanded={isExpanded(row.project.id)}
                   onToggle={(id) =>
                     setExpanded(toggleExpanded(openProjects, id))
                   }
-                  onPick={pick}
                 />
               ),
             )}
@@ -336,20 +346,17 @@ export function RepoSwitcherDialog({
 function ProjectRows({
   project,
   repos,
-  badges,
-  scoped,
+  option,
   expanded,
   onToggle,
-  onPick,
 }: {
   project: ProjectView
   repos: RepoView[]
-  badges: Map<string, RepoBadgeState>
-  scoped: string | null
+  option: (repo: RepoView) => RepoOptionRow
   expanded: boolean
   onToggle: (id: string) => void
-  onPick: (repo: string) => void
 }) {
+  const rows = repos.map((r) => option(r))
   const count = `${repos.length} ${repos.length === 1 ? 'repo' : 'repos'}`
   return (
     <>
@@ -360,9 +367,7 @@ function ProjectRows({
         aria-expanded={expanded}
         className="gap-2.5 px-2.5 py-1.5"
       >
-        <RepoIcon
-          state={reposBadgeState(repos.map((r) => badges.get(r.name) ?? 'none'))}
-        />
+        <RepoIcon state={reposBadgeState(rows.map((r) => r.state))} />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-sm text-foreground">
             {project.name}
@@ -380,37 +385,35 @@ function ProjectRows({
         />
       </CommandItem>
       {expanded &&
-        repos.map((r) => (
-          <RepoOption
-            key={r.name}
-            value={`repo:${r.name}`}
-            repo={r}
-            state={badges.get(r.name) ?? 'none'}
-            active={r.name === scoped}
-            onSelect={() => onPick(r.name)}
-            inset
-          />
-        ))}
+        rows.map((row) => <RepoOption key={row.repo.root} {...row} inset />)}
     </>
   )
+}
+
+// RepoOptionRow is everything a row says about the repo it stands for — its cmdk
+// value included, since that is the field that must not drift — built once per
+// repo so the three places that render one cannot disagree.
+interface RepoOptionRow {
+  value: string
+  repo: RepoView
+  qualifier?: string
+  state: RepoBadgeState
+  active: boolean
+  onSelect: () => void
 }
 
 function RepoOption({
   value,
   repo,
   project = '',
+  qualifier,
   state,
   active,
   inset = false,
   onSelect,
-}: {
-  value: string
-  repo: RepoView
+}: RepoOptionRow & {
   project?: string
-  state: RepoBadgeState
-  active: boolean
   inset?: boolean
-  onSelect: () => void
 }) {
   const subtitle = withProject(project, repoSubtitle(repo))
   return (
@@ -429,6 +432,9 @@ function RepoOption({
           )}
         >
           {repo.name}
+          {qualifier && (
+            <span className="text-muted-foreground"> · {qualifier}</span>
+          )}
         </span>
         <span className="truncate text-[0.65rem] text-muted-foreground">
           {subtitle}

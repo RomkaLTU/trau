@@ -152,7 +152,7 @@ export function CommandPalette({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const { repo, repos, isAll, setScope, autoScope, openSwitcher } =
+  const { repo, root, repos, isAll, setScope, autoScope, openSwitcher } =
     useActiveRepo()
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -208,13 +208,9 @@ export function CommandPalette({
   const recents = useMemo(
     () =>
       open
-        ? visibleRecents(loadRecents(), {
-            path: pathname,
-            repo,
-            repos: repos.map((r) => r.name),
-          })
+        ? visibleRecents(loadRecents(), { path: pathname, root, repos })
         : [],
-    [open, pathname, repo, repos],
+    [open, pathname, root, repos],
   )
 
   // Under one repo the palette queries that repo's paths; under "All projects"
@@ -284,7 +280,8 @@ export function CommandPalette({
   // projects" is the one the repo handoff auto-scopes to — reading its queue and
   // health there is what keeps Start/Stop and the internal-tracker rule honest.
   const actionRepo = useMemo(
-    () => (open ? (repo ?? autoScopeTarget(repos, loadLastRepo()) ?? '') : ''),
+    () =>
+      open ? (repo ?? autoScopeTarget(repos, loadLastRepo())?.name ?? '') : '',
     [open, repo, repos],
   )
   const queue = useQuery({
@@ -520,7 +517,7 @@ export function CommandPalette({
 
   function pickRecent(entry: RecentEntry) {
     if (entry.kind === 'project') {
-      pickScope(entry.label)
+      pickScope(entry.root)
       return
     }
     if (entry.kind === 'page') {
@@ -783,7 +780,7 @@ export function CommandPalette({
                     <CommandItem
                       key={r.root}
                       value={r.root}
-                      onSelect={() => pickScope(r.name)}
+                      onSelect={() => pickScope(r.root)}
                     >
                       <GitBranch />
                       <span className="flex min-w-0 flex-1 flex-col">
