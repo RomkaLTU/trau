@@ -9,6 +9,7 @@ import { Link } from '@tanstack/react-router'
 import { ExternalLink, RefreshCw, RotateCw, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { Markdown } from '@/components/markdown'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { Button } from '@/components/ui/button'
@@ -22,6 +23,8 @@ import {
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 import { queueQueryOptions } from '@/lib/queue'
 import {
+  CHANGELOG_URL,
+  RELEASES_URL,
   applyUpdate,
   canApply,
   checkForUpdates,
@@ -58,8 +61,6 @@ interface ConfirmAction {
 
 // The Hub & web server settings section, where HUB_SELF_RELOAD lives.
 const HUB_SECTION_HASH = 'hub-web-server'
-
-const RELEASES_URL = 'https://github.com/RomkaLTU/trau/releases'
 
 export function UpdatesSection() {
   const queryClient = useQueryClient()
@@ -354,6 +355,8 @@ export function UpdatesSection() {
                 )}
               </Row>
 
+              <ReleaseNotes latest={status.latest} notes={status.latestNotes} />
+
               {status.installMethod !== 'brew' &&
                 (status.updateAvailable || status.restartPending) && (
                   <Row label="install">
@@ -579,6 +582,44 @@ function ChannelAction({
         </span>
       )}
     </span>
+  )
+}
+
+// ReleaseNotes carries the GitHub body for the latest tag, which describes that
+// tag and not a pending upgrade — once an update lands it reads as the running
+// version's own notes. The changelog link stands alone whenever there is no body
+// to show, which is every case where release checks are off.
+export function ReleaseNotes({
+  latest,
+  notes,
+}: {
+  latest: string
+  notes: string
+}) {
+  return (
+    <div className="flex flex-col gap-2 border-b border-border/60 px-4 py-3">
+      {latest && notes && (
+        <>
+          <p className="font-mono text-[0.7rem] uppercase tracking-[0.15em] text-muted-foreground/60">
+            What's new in {versionLabel(latest)}
+          </p>
+          <div className="max-h-64 overflow-y-auto rounded-md border border-border bg-input px-3 py-2">
+            <Markdown className="text-xs">{notes}</Markdown>
+          </div>
+        </>
+      )}
+      <span className="text-xs text-muted-foreground">
+        Full changelog →{' '}
+        <a
+          href={CHANGELOG_URL}
+          target="_blank"
+          rel="noreferrer"
+          className="font-mono text-primary underline-offset-2 hover:underline"
+        >
+          {CHANGELOG_URL}
+        </a>
+      </span>
+    </div>
   )
 }
 

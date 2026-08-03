@@ -25,6 +25,7 @@ function status(over: Partial<UpdateStatus> = {}): UpdateStatus {
     running: 'v2.1.0',
     onDisk: 'v2.1.0',
     latest: '2.1.0',
+    latestNotes: '',
     restartPending: false,
     updateAvailable: false,
     installMethod: 'brew',

@@ -36,6 +36,7 @@ type Status struct {
 	Running         string     `json:"running"`
 	OnDisk          string     `json:"onDisk"`
 	Latest          string     `json:"latest"`
+	LatestNotes     string     `json:"latestNotes"`
 	RestartPending  bool       `json:"restartPending"`
 	UpdateAvailable bool       `json:"updateAvailable"`
 	InstallMethod   string     `json:"installMethod"`
@@ -63,6 +64,7 @@ type Checker struct {
 	method       string
 	probedAt     time.Time
 	latest       string
+	latestNotes  string
 	checkedAt    time.Time
 	applyState   string
 	applyMessage string
@@ -102,6 +104,7 @@ func (c *Checker) Status() Status {
 		Running:        c.running,
 		OnDisk:         onDisk,
 		Latest:         c.latest,
+		LatestNotes:    c.latestNotes,
 		RestartPending: onDisk != "" && onDisk != c.running,
 		InstallMethod:  method,
 		UpgradeCommand: upgradeCommand(method),
@@ -153,9 +156,9 @@ func (c *Checker) Run(ctx context.Context) {
 	}
 }
 
-// CheckNow fetches the newest release tag and records it with the time it was
-// read. A failure leaves the previous answer in place; a disabled checker skips
-// the request entirely.
+// CheckNow fetches the newest release tag and its notes, and records them with
+// the time they were read. A failure leaves the previous answer in place; a
+// disabled checker skips the request entirely.
 func (c *Checker) CheckNow(ctx context.Context) error {
 	c.mu.Lock()
 	enabled := c.enabled
@@ -164,14 +167,14 @@ func (c *Checker) CheckNow(ctx context.Context) error {
 		return nil
 	}
 
-	tag, err := c.fetchLatest(ctx)
+	tag, notes, err := c.fetchLatest(ctx)
 	if err != nil {
 		return err
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.latest, c.checkedAt = tag, time.Now()
+	c.latest, c.latestNotes, c.checkedAt = tag, notes, time.Now()
 	return nil
 }
 
@@ -194,33 +197,34 @@ func (c *Checker) local() (version, method string) {
 	return version, method
 }
 
-func (c *Checker) fetchLatest(ctx context.Context) (string, error) {
+func (c *Checker) fetchLatest(ctx context.Context) (tag, notes string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	res, err := c.client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch latest release: %w", err)
+		return "", "", fmt.Errorf("fetch latest release: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch latest release: %s", res.Status)
+		return "", "", fmt.Errorf("fetch latest release: %s", res.Status)
 	}
 
 	var payload struct {
 		TagName string `json:"tag_name"`
+		Body    string `json:"body"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
-		return "", fmt.Errorf("decode latest release: %w", err)
+		return "", "", fmt.Errorf("decode latest release: %w", err)
 	}
-	tag := strings.TrimPrefix(strings.TrimSpace(payload.TagName), "v")
+	tag = strings.TrimPrefix(strings.TrimSpace(payload.TagName), "v")
 	if tag == "" {
-		return "", errors.New("latest release carries no tag")
+		return "", "", errors.New("latest release carries no tag")
 	}
-	return tag, nil
+	return tag, strings.TrimSpace(payload.Body), nil
 }
 
 // compareVersions orders a and b as dotted numeric versions, ignoring a leading
