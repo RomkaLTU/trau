@@ -501,8 +501,8 @@ export function CommandPalette({
   }, [submenu])
 
   // A repo-scoped action acts on the very repo its row describes, so under "All
-  // repos" the scope follows it there — or the pulsing switcher takes over when
-  // there was no sensible repo to describe in the first place.
+  // repos" the scope follows it there — or the repo picker takes over when there
+  // was no sensible repo to describe in the first place.
   function runAction(action: PaletteAction) {
     onOpenChange(false)
     const { run } = runners[action.id]
