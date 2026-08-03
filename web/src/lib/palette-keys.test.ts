@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   isMacPlatform,
   isPaletteShortcut,
+  isRepoPickerShortcut,
   leavesSubmenu,
   movesHighlight,
   opensSubmenu,
@@ -27,6 +28,28 @@ describe('isPaletteShortcut', () => {
   it('yields to an IME composing the keystroke', () => {
     expect(
       isPaletteShortcut({ key: 'k', metaKey: true, isComposing: true }),
+    ).toBe(false)
+  })
+})
+
+describe('isRepoPickerShortcut', () => {
+  it('fires on the modified p', () => {
+    expect(isRepoPickerShortcut({ key: 'p', metaKey: true })).toBe(true)
+    expect(isRepoPickerShortcut({ key: 'P', ctrlKey: true })).toBe(true)
+  })
+
+  it('ignores a bare p — that is typing', () => {
+    expect(isRepoPickerShortcut({ key: 'p' })).toBe(false)
+  })
+
+  it('leaves the palette chord alone', () => {
+    expect(isRepoPickerShortcut({ key: 'k', metaKey: true })).toBe(false)
+    expect(isPaletteShortcut({ key: 'p', metaKey: true })).toBe(false)
+  })
+
+  it('yields to an IME composing the keystroke', () => {
+    expect(
+      isRepoPickerShortcut({ key: 'p', metaKey: true, isComposing: true }),
     ).toBe(false)
   })
 })
@@ -101,5 +124,10 @@ describe('shortcutLabel', () => {
   it('shows the platform chord', () => {
     expect(shortcutLabel(true)).toBe('⌘K')
     expect(shortcutLabel(false)).toBe('Ctrl K')
+  })
+
+  it('takes the key it labels', () => {
+    expect(shortcutLabel(true, 'P')).toBe('⌘P')
+    expect(shortcutLabel(false, 'P')).toBe('Ctrl P')
   })
 })

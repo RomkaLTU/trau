@@ -11,7 +11,7 @@ export {
   CreatedBannerProvider,
   useCreatedBanner,
 } from './created-banner'
-export { RepoSwitcher } from './repo-switcher'
+export { RepoSwitcher, RepoSwitcherDialog } from './repo-switcher'
 export { ThemeToggle, useTheme } from './theme-toggle'
 export { ProjectScopeGate } from './project-scope-gate'
 export { RepoHealthGate } from './repo-health-gate'

@@ -42,7 +42,7 @@ interface ActiveRepoValue {
   // autoScope jumps out of "All projects" to a sensible repo (lone/last-used),
   // returning it, or null when the caller should open the switcher to choose.
   autoScope: () => string | null
-  // openSwitcher pulses the repo switcher open so a gated click points at the fix.
+  // openSwitcher opens the repo picker so a gated click points at the fix.
   openSwitcher: () => void
   switcherSignal: number
 }

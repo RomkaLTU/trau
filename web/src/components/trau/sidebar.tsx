@@ -86,7 +86,13 @@ function updateHint(status: UpdateStatus | undefined): string | null {
   return null
 }
 
-export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
+export function Sidebar({
+  onOpenPalette,
+  onOpenSwitcher,
+}: {
+  onOpenPalette: () => void
+  onOpenSwitcher: () => void
+}) {
   const { repo, repos, isAll, autoScope, openSwitcher } = useActiveRepo()
   const navigate = useNavigate()
   const attention = useAttentionCount(repo)
@@ -126,7 +132,7 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
           </Link>
           <NotificationBell />
         </div>
-        <RepoSwitcher />
+        <RepoSwitcher onOpen={onOpenSwitcher} />
         <button
           type="button"
           onClick={onOpenPalette}
