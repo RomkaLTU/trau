@@ -341,7 +341,8 @@ func liveLoops() ([]registry.Entry, error) {
 // tie-breaker cwd resolution needs between a Child repo and the Folder repo that
 // holds it. A machine whose hub has never run has none.
 func registeredRoots() ([]string, error) {
-	db, err := hubdb.OpenReadOnly(registry.Home())
+	home := registry.Home()
+	db, err := hubdb.OpenReadOnly(home)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -349,7 +350,7 @@ func registeredRoots() ([]string, error) {
 		return nil, err
 	}
 	defer func() { _ = db.Close() }()
-	return hubstore.NewRegistrations(db).Registered()
+	return hubstore.NewRegistrations(home, db).Registered()
 }
 
 // resolveRepoRoot is the production binding of the repo resolver: the current

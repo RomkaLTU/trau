@@ -46,7 +46,7 @@ type Stores struct {
 func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Stores {
 	return &Stores{
 		db:          db,
-		repos:       NewRegistrations(db),
+		repos:       NewRegistrations(home, db),
 		projects:    NewProjects(db),
 		issues:      NewIssues(db),
 		tokens:      NewTokens(db, retention.TokenCalls),
@@ -177,6 +177,27 @@ func (s *Stores) EnsureProjects() error {
 	return s.projects.EnsureRoots(roots)
 }
 
+// PruneStaleRepos drops the known-repo rows the hub should never have kept — a
+// throwaway clone under the temp dir, a root gone from disk — along with the
+// project each was filed into and any other project left holding nothing. Roots
+// registered from the web are exempt. Serve startup runs it before EnsureProjects,
+// so a pruned root is not immediately given a fresh project.
+func (s *Stores) PruneStaleRepos() error {
+	pruned, err := s.repos.PruneStale()
+	if err != nil {
+		return err
+	}
+	for _, root := range pruned {
+		if err := s.projects.ForgetRoot(root); err != nil {
+			return err
+		}
+	}
+	return s.projects.PruneEmpty()
+}
+
+// queueRoots returns the roots the hub tracks — known and web-registered — whose
+// directory is still on disk. A vanished root gets neither a queue import nor a
+// project: it is a root the hub remembers, not one it can act on.
 func (s *Stores) queueRoots() ([]string, error) {
 	known, err := s.repos.Known()
 	if err != nil {
@@ -189,7 +210,7 @@ func (s *Stores) queueRoots() ([]string, error) {
 	seen := make(map[string]struct{}, len(known)+len(registered))
 	roots := make([]string, 0, len(known)+len(registered))
 	add := func(root string) {
-		if root == "" {
+		if root == "" || !dirExists(root) {
 			return
 		}
 		if _, ok := seen[root]; ok {

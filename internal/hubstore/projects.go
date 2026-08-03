@@ -304,6 +304,26 @@ func (p *Projects) EnsureRoots(roots []string) error {
 	return tx.Commit()
 }
 
+// PruneEmpty drops every project holding no repos, so the project auto-minted for
+// a root that has since been pruned does not linger in the list. Serve start runs
+// it, which is also when a project created from the web and never filled goes.
+func (p *Projects) PruneEmpty() error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	ids, err := emptyProjectIDs(tx)
+	if err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	for _, id := range ids {
+		if err := pruneEmpty(tx, id); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
+	return tx.Commit()
+}
+
 func (p *Projects) members() (byProject map[string][]string, err error) {
 	rows, err := p.db.Query(`SELECT project, root FROM project_repos ORDER BY project, position`)
 	if err != nil {
@@ -380,6 +400,27 @@ func memberRoots(tx *sql.Tx, id string) (roots []string, err error) {
 		roots = append(roots, root)
 	}
 	return roots, rows.Err()
+}
+
+// emptyProjectIDs returns the identifiers of the projects holding no repos. They
+// are read out before the first delete because the transaction holds a single
+// connection.
+func emptyProjectIDs(tx *sql.Tx) (ids []string, err error) {
+	rows, err := tx.Query(
+		`SELECT id FROM projects WHERE NOT EXISTS(SELECT 1 FROM project_repos WHERE project = projects.id)`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // querier is the shared read surface of *sql.DB and *sql.Tx, so one lookup backs

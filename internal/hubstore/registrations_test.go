@@ -1,10 +1,12 @@
 package hubstore
 
 import (
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -12,14 +14,24 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
+// realHubHome stands in for the home of a hub that is not itself throwaway
+// (~/.trau on a real machine). The guard reads home only to classify the hub, so
+// the path never has to exist.
+const realHubHome = "/srv/trau"
+
 func testStore(t *testing.T, home string) *Registrations {
+	t.Helper()
+	return NewRegistrations(home, testHubDB(t, home))
+}
+
+func testHubDB(t *testing.T, home string) *sql.DB {
 	t.Helper()
 	db, err := hubdbtest.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewRegistrations(db.SQL())
+	return db.SQL()
 }
 
 func TestRegisterInOrderAndDedupes(t *testing.T) {
@@ -97,6 +109,122 @@ func TestRememberAddsNewSortsAndDoesNotOverwrite(t *testing.T) {
 	if !reflect.DeepEqual(known, want) {
 		t.Fatalf("known = %v, want %v (sorted by name, no overwrite)", known, want)
 	}
+}
+
+func TestRememberSkipsScratchpadClonesOnARealHub(t *testing.T) {
+	s := NewRegistrations(realHubHome, testHubDB(t, t.TempDir()))
+	clone := t.TempDir()
+
+	if err := s.Remember([]registry.Repo{
+		{Name: "acme", Root: "/repos/acme", RunsDir: "/repos/acme/runs"},
+		{Name: "acme", Root: clone, RunsDir: filepath.Join(clone, "runs")},
+	}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	known, err := s.Known()
+	if err != nil {
+		t.Fatalf("Known: %v", err)
+	}
+	want := []registry.Repo{{Name: "acme", Root: "/repos/acme", RunsDir: "/repos/acme/runs"}}
+	if !reflect.DeepEqual(known, want) {
+		t.Fatalf("known = %v, want %v — a temp-dir clone must not be adopted", known, want)
+	}
+}
+
+// TestRememberKeepsTempRootsOnAThrowawayHub pins the carve-out the isolated QA
+// hub of AGENTS.md relies on: a hub whose own home is throwaway dies with its
+// clones, so it still tracks them.
+func TestRememberKeepsTempRootsOnAThrowawayHub(t *testing.T) {
+	s := testStore(t, t.TempDir())
+	clone := t.TempDir()
+
+	if err := s.Remember([]registry.Repo{{Name: "acme", Root: clone, RunsDir: filepath.Join(clone, "runs")}}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	known, err := s.Known()
+	if err != nil {
+		t.Fatalf("Known: %v", err)
+	}
+	if len(known) != 1 || known[0].Root != clone {
+		t.Fatalf("known = %v, want the clone %s", known, clone)
+	}
+}
+
+func TestUnderTempDirCoversBothTempTrees(t *testing.T) {
+	cases := map[string]bool{
+		filepath.Join(t.TempDir(), "clone"):  true,
+		filepath.Join(os.TempDir(), "clone"): true,
+		// macOS hands each user a TMPDIR under /var/folders, so a scratchpad clone
+		// under /tmp is one os.TempDir() alone would miss.
+		"/tmp/claude-501/scratchpad/repos/shipflock": true,
+		"/repos/api":     false,
+		"/tmpfiles/repo": false,
+		"":               false,
+	}
+	for path, want := range cases {
+		if got := underTempDir(path); got != want {
+			t.Errorf("underTempDir(%q) = %v, want %v", path, got, want)
+		}
+	}
+	// A root is stored as the loop resolved it, and macOS resolves /tmp to
+	// /private/tmp.
+	resolved, err := filepath.EvalSymlinks("/tmp")
+	if err != nil {
+		t.Skipf("no /tmp to resolve: %v", err)
+	}
+	if !underTempDir(filepath.Join(resolved, "scratchpad", "repos", "shipflock")) {
+		t.Errorf("underTempDir under resolved %s = false, want true", resolved)
+	}
+}
+
+func TestPruneStaleDropsClonesAndVanishedRootsOnly(t *testing.T) {
+	db := testHubDB(t, t.TempDir())
+	// The package directory is the one real, non-temp root a test can point at.
+	real, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	clone, registeredClone, vanished := t.TempDir(), t.TempDir(), "/repos/vanished"
+	// A throwaway hub adopts every root, which is how the rows a real hub must now
+	// prune reached the store on the builds before the guard.
+	seed := NewRegistrations(t.TempDir(), db)
+	for _, root := range []string{real, clone, registeredClone, vanished} {
+		if err := seed.Remember([]registry.Repo{{Name: filepath.Base(root), Root: root, RunsDir: filepath.Join(root, "runs")}}); err != nil {
+			t.Fatalf("seed %s: %v", root, err)
+		}
+	}
+	if err := seed.Register(registeredClone); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	s := NewRegistrations(realHubHome, db)
+	pruned, err := s.PruneStale()
+	if err != nil {
+		t.Fatalf("PruneStale: %v", err)
+	}
+	sort.Strings(pruned)
+	if want := sortedRoots(clone, vanished); !reflect.DeepEqual(pruned, want) {
+		t.Fatalf("pruned = %v, want %v", pruned, want)
+	}
+	known, err := s.Known()
+	if err != nil {
+		t.Fatalf("Known: %v", err)
+	}
+	var kept []string
+	for _, repo := range known {
+		kept = append(kept, repo.Root)
+	}
+	sort.Strings(kept)
+	if want := sortedRoots(real, registeredClone); !reflect.DeepEqual(kept, want) {
+		t.Fatalf("known after prune = %v, want %v — a real repo and a registered one must survive", kept, want)
+	}
+}
+
+func sortedRoots(roots ...string) []string {
+	sort.Strings(roots)
+	return roots
 }
 
 func TestForgetClearsBothSetsAndLeavesOthers(t *testing.T) {
