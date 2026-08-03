@@ -2,6 +2,7 @@ package hubstore
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -18,6 +19,20 @@ func testProjects(t *testing.T, home string) *Projects {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return NewProjects(db.SQL())
+}
+
+func testStores(t *testing.T, home string) *Stores {
+	t.Helper()
+	return NewStores(home, testHubDB(t, home), nil, Retention{})
+}
+
+func repoDir(t *testing.T, parent, name string) string {
+	t.Helper()
+	dir := filepath.Join(parent, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	return dir
 }
 
 func mustCreateProject(t *testing.T, p *Projects, name string) Project {
@@ -196,7 +211,7 @@ func TestDeleteDropsGroupingOnly(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	p := NewProjects(db.SQL())
-	regs := NewRegistrations(db.SQL())
+	regs := NewRegistrations(home, db.SQL())
 
 	for _, root := range []string{"/repos/api", "/repos/web"} {
 		if err := regs.Register(root); err != nil {
@@ -293,18 +308,15 @@ func TestEnsureRootsLeavesGroupedRepoWhereItIs(t *testing.T) {
 
 func TestEnsureProjectsCoversTheReposTheHubTracks(t *testing.T) {
 	home := t.TempDir()
-	db, err := hubdbtest.Open(home)
-	if err != nil {
-		t.Fatalf("open hub db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	stores := NewStores(home, db.SQL(), nil, Retention{})
+	base := t.TempDir()
+	api, web := repoDir(t, base, "api"), repoDir(t, base, "web")
+	stores := testStores(t, home)
 
-	if err := stores.Registrations().Register("/repos/api"); err != nil {
+	if err := stores.Registrations().Register(api); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if err := stores.Registrations().Remember([]registry.Repo{
-		{Name: "web", Root: "/repos/web", RunsDir: "/repos/web/runs"},
+		{Name: "web", Root: web, RunsDir: filepath.Join(web, "runs")},
 	}); err != nil {
 		t.Fatalf("remember: %v", err)
 	}
@@ -318,6 +330,85 @@ func TestEnsureProjectsCoversTheReposTheHubTracks(t *testing.T) {
 	}
 	if want := []string{"api", "web"}; !reflect.DeepEqual(projectNames(projects), want) {
 		t.Fatalf("projects = %v, want %v", projectNames(projects), want)
+	}
+}
+
+func TestEnsureProjectsSkipsVanishedRoots(t *testing.T) {
+	base := t.TempDir()
+	live := repoDir(t, base, "api")
+	stores := testStores(t, t.TempDir())
+	for _, root := range []string{live, filepath.Join(base, "deleted")} {
+		if err := stores.Registrations().Register(root); err != nil {
+			t.Fatalf("register %s: %v", root, err)
+		}
+	}
+
+	if err := stores.EnsureProjects(); err != nil {
+		t.Fatalf("EnsureProjects: %v", err)
+	}
+	projects, err := stores.Projects().List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(projects) != 1 || !reflect.DeepEqual(projects[0].Repos, []string{live}) {
+		t.Fatalf("projects = %+v, want one holding %s", projects, live)
+	}
+}
+
+func TestPruneStaleReposClearsAdoptedClonesAndEmptyProjects(t *testing.T) {
+	home := t.TempDir()
+	db := testHubDB(t, home)
+	real, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	clone := repoDir(t, t.TempDir(), filepath.Base(real))
+
+	// A throwaway hub adopts both roots and files each into its own project — the
+	// state a real hub inherits from the builds before the guard.
+	seed := NewStores(home, db, nil, Retention{})
+	for _, root := range []string{real, clone} {
+		if err := seed.Registrations().Remember([]registry.Repo{
+			{Name: filepath.Base(root), Root: root, RunsDir: filepath.Join(root, "runs")},
+		}); err != nil {
+			t.Fatalf("seed %s: %v", root, err)
+		}
+	}
+	if err := seed.EnsureProjects(); err != nil {
+		t.Fatalf("EnsureProjects: %v", err)
+	}
+	if _, err := seed.Projects().Create("M4C"); err != nil {
+		t.Fatalf("create empty project: %v", err)
+	}
+
+	stores := NewStores(realHubHome, db, nil, Retention{})
+	if err := stores.PruneStaleRepos(); err != nil {
+		t.Fatalf("PruneStaleRepos: %v", err)
+	}
+
+	projects, err := stores.Projects().List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(projects) != 1 || !reflect.DeepEqual(projects[0].Repos, []string{real}) {
+		t.Fatalf("projects = %+v, want only the real repo's", projects)
+	}
+	known, err := stores.Registrations().Known()
+	if err != nil {
+		t.Fatalf("Known: %v", err)
+	}
+	if len(known) != 1 || known[0].Root != real {
+		t.Fatalf("known = %v, want only %s", known, real)
+	}
+	if err := stores.EnsureProjects(); err != nil {
+		t.Fatalf("EnsureProjects after prune: %v", err)
+	}
+	after, err := stores.Projects().List()
+	if err != nil {
+		t.Fatalf("List after re-ensure: %v", err)
+	}
+	if !reflect.DeepEqual(after, projects) {
+		t.Fatalf("projects came back after the prune: %+v -> %+v", projects, after)
 	}
 }
 

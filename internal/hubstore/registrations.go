@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -27,11 +28,16 @@ const (
 // web as startable.
 type Registrations struct {
 	db *sql.DB
+	// throwawayHub is set when the hub's own home lives under the temp dir — an
+	// isolated QA hub or a test hub, whose whole state dies with the directory. It
+	// may adopt temp-dir repo roots; the real hub refuses them.
+	throwawayHub bool
 }
 
-// NewRegistrations returns a store over db. The caller owns db's lifecycle.
-func NewRegistrations(db *sql.DB) *Registrations {
-	return &Registrations{db: db}
+// NewRegistrations returns a store over db for the hub at home. The caller owns
+// db's lifecycle.
+func NewRegistrations(home string, db *sql.DB) *Registrations {
+	return &Registrations{db: db, throwawayHub: underTempDir(home)}
 }
 
 // Known returns the repos the hub has seen a loop run in, sorted by name.
@@ -57,7 +63,7 @@ func (r *Registrations) Known() (repos []registry.Repo, err error) {
 // whose root canonicalizes to one already known is skipped rather than inserted
 // under its own spelling: the ON CONFLICT clause only catches a byte-identical
 // root, and a second row for the same directory is a row every later lookup and
-// removal has to reconcile.
+// removal has to reconcile. Throwaway roots are never folded in at all.
 func (r *Registrations) Remember(repos []registry.Repo) error {
 	if len(repos) == 0 {
 		return nil
@@ -76,7 +82,7 @@ func (r *Registrations) Remember(repos []registry.Repo) error {
 	}
 	for _, repo := range repos {
 		canonical := filepath.Clean(repo.Root)
-		if repo.Root == "" || seen[canonical] {
+		if repo.Root == "" || seen[canonical] || r.throwaway(repo.Root) {
 			continue
 		}
 		seen[canonical] = true
@@ -88,6 +94,49 @@ func (r *Registrations) Remember(repos []registry.Repo) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// throwaway reports whether root is a clone the hub must not adopt permanently:
+// a directory under the temp dir, where QA and verify sessions run scratchpad
+// clones that vanish with the session. A loop running in one still shows in the
+// repos list for as long as it is live — its root just never reaches known_repos.
+func (r *Registrations) throwaway(root string) bool {
+	return !r.throwawayHub && underTempDir(root)
+}
+
+// PruneStale drops the known-repo rows the hub should never have kept: throwaway
+// roots under the temp dir, and roots whose directory is gone from disk. It
+// returns the roots it dropped, so the caller can drop what hung off them. Roots
+// registered from the web are exempt — they leave only through Unregister and
+// Forget.
+func (r *Registrations) PruneStale() (pruned []string, err error) {
+	known, err := r.Known()
+	if err != nil {
+		return nil, err
+	}
+	registered, err := r.Registered()
+	if err != nil {
+		return nil, err
+	}
+	exempt := make(map[string]bool, len(registered))
+	for _, root := range registered {
+		exempt[filepath.Clean(root)] = true
+	}
+	tx, err := r.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	for _, repo := range known {
+		usable := !r.throwaway(repo.Root) && dirExists(repo.Root)
+		if usable || exempt[filepath.Clean(repo.Root)] {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM known_repos WHERE root = ?`, repo.Root); err != nil {
+			return nil, errors.Join(err, tx.Rollback())
+		}
+		pruned = append(pruned, repo.Root)
+	}
+	return pruned, tx.Commit()
 }
 
 // Registered returns the repo roots registered as startable from the web, in the
@@ -182,6 +231,42 @@ func deleteRootsMatching(tx *sql.Tx, table, root string) (bool, error) {
 		}
 	}
 	return len(matches) > 0, nil
+}
+
+// underTempDir reports whether path lives in a throwaway tree: the OS temp dir or
+// the conventional /tmp, which are not the same directory on macOS — each user
+// gets a TMPDIR under /var/folders while agents write under /tmp. Both sides are
+// compared in their literal and their symlink-resolved spelling, since /tmp
+// resolves to /private/tmp and a root is stored exactly as the loop resolved it.
+func underTempDir(path string) bool {
+	if path == "" {
+		return false
+	}
+	trees := append(pathSpellings(os.TempDir()), pathSpellings("/tmp")...)
+	for _, spelling := range pathSpellings(path) {
+		for _, tree := range trees {
+			if spelling == tree || strings.HasPrefix(spelling, tree+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pathSpellings returns path cleaned, plus its symlink-resolved form when the
+// path exists and resolves elsewhere.
+func pathSpellings(path string) []string {
+	cleaned := filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil || resolved == cleaned {
+		return []string{cleaned}
+	}
+	return []string{cleaned, resolved}
+}
+
+func dirExists(root string) bool {
+	info, err := os.Stat(root)
+	return err == nil && info.IsDir()
 }
 
 // ImportLegacy backfills the store from any repos.json / workspace.json left by
