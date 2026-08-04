@@ -621,6 +621,10 @@ func (p *Pipeline) openChildPR(ctx context.Context, c folderrepo.Child, branch, 
 	if url, _, err := gh.PRURL(ctx, branch); err == nil && url != "" {
 		return url, nil
 	}
+	if merged, _ := gh.MergedPRURL(ctx, branch); merged != "" {
+		p.logf("  ↻ %s already shipped %s — adopting it instead of opening a second PR", c.Name, merged)
+		return merged, nil
+	}
 	if err := p.assertPRBaseCurrent(ctx, g, base, base); err != nil {
 		return "", err
 	}
@@ -716,6 +720,9 @@ func (p *Pipeline) folderRunFootprint(ctx context.Context, id string) []folderre
 // green before any of them merges. A half-merged cross-repo change is the one
 // outcome that breaks deployed services, so the first PR that is not green gives
 // the ticket up with all of them still open, for the repair loop to work from.
+// A child ship adopted as already merged is passed over: its work landed before
+// this run, so there is nothing left to gate, and gh refuses a second merge with
+// a failure no retry can get past — which would strand its siblings' real PRs.
 func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 	targets := p.shipTargets(id)
 	if len(targets) == 0 {
@@ -725,10 +732,18 @@ func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 		return p.landFolderLocally(ctx, id, targets)
 	}
 	p.setActivity(id, activity.CIWait, "")
+	pending := make([]shipTarget, 0, len(targets))
 	for _, t := range targets {
 		if t.PRURL == "" {
 			return p.giveUp(ctx, id, "no PR recorded for "+t.Name)
 		}
+		if st, _ := p.childGitHub(t.Child).PRState(ctx, prNumber(t.PRURL)); st == "MERGED" {
+			p.logf("  ✓ %s already merged %s", t.Name, t.PRURL)
+			continue
+		}
+		pending = append(pending, t)
+	}
+	for _, t := range pending {
 		if err := p.pollCIWith(ctx, p.childGitHub(t.Child), t.Path, prNumber(t.PRURL), p.baseFor(t.Name)); err != nil {
 			p.logf("  ✗ CI in %s: %v", t.Name, err)
 			return p.giveUp(ctx, id, "CI not green in "+t.Name)
@@ -740,7 +755,7 @@ func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 		return nil
 	}
 	p.setActivity(id, activity.Merge, "")
-	for _, t := range targets {
+	for _, t := range pending {
 		pr := prNumber(t.PRURL)
 		if err := p.retryGH(ctx, "merge "+t.Name, func() error {
 			return p.childGitHub(t.Child).Merge(ctx, pr, p.MergeMethod, true)

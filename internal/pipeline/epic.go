@@ -148,7 +148,7 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bo
 	}
 	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID), draft)
 	if err != nil {
-		if strings.Contains(err.Error(), "No commits between") {
+		if noCommitsBetween(err) {
 			if merged, _ := p.GitHub.MergedPRURL(ctx, epicBranch); merged != "" {
 				p.logf("  epic PR already merged %s", merged)
 				return merged, false, nil

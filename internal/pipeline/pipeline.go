@@ -2765,6 +2765,9 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		return p.pauseHumanDraft(id, "commit", prURL)
 	}
 	if prURL == "" {
+		if settled := p.adoptIfMerged(ctx, id, branch); settled != nil {
+			return settled
+		}
 		prBase := p.Base
 		if p.EpicID != "" {
 			prBase, err = p.epicBranchName(ctx)
@@ -2780,6 +2783,11 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		body := p.prBody(ctx, id, p.proofsSection(ctx, id, p.RepoRoot))
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
 		if err != nil {
+			if noCommitsBetween(err) {
+				if settled := p.adoptIfMerged(ctx, id, branch); settled != nil {
+					return settled
+				}
+			}
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
 		}
 		if prBase != p.Base {
@@ -3068,6 +3076,19 @@ func (p *Pipeline) reconcileDeliveredBranch(ctx context.Context, id, from string
 	if p.localDelivery(ctx) {
 		return nil
 	}
+	url, _ := p.GitHub.MergedPRURL(ctx, branch)
+	if url == "" {
+		return nil
+	}
+	return p.adoptMergedPR(ctx, id, branch, url)
+}
+
+// adoptIfMerged settles id against the PR that already shipped branch, and reports
+// nil when there is none to adopt. A squash-merged head is no longer an ancestor of
+// its base, so GitHub will happily open a second PR carrying the whole diff again —
+// merging that one applies the slice twice. PRURL sees only open PRs by design
+// (COD-750), so the merged one is the only signal left that this work already landed.
+func (p *Pipeline) adoptIfMerged(ctx context.Context, id, branch string) error {
 	url, _ := p.GitHub.MergedPRURL(ctx, branch)
 	if url == "" {
 		return nil
@@ -3574,7 +3595,7 @@ func retryableGH(err error) bool {
 	}
 	s := strings.ToLower(err.Error())
 	for _, deterministic := range []string{
-		"no commits between",
+		noCommitsBetweenMarker,
 		"already exists",
 		"not found",
 		"could not resolve to",
@@ -3728,6 +3749,18 @@ func (p *Pipeline) createOrAdoptPR(ctx context.Context, base, branch, title, bod
 		return e
 	})
 	return url, err
+}
+
+// noCommitsBetweenMarker is gh's refusal when the head carries nothing base does
+// not already have. Both the retry guard and the merged-PR rescue turn on it, and
+// they have to read the same refusal the same way.
+const noCommitsBetweenMarker = "no commits between"
+
+// noCommitsBetween reports whether GitHub refused a create for that reason. It
+// reads gh's own words, so it holds only where withStderr folded them into the
+// error.
+func noCommitsBetween(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), noCommitsBetweenMarker)
 }
 
 type ciStatus int
