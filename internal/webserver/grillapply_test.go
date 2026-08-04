@@ -999,6 +999,50 @@ func TestGrillApplyResearchCommentsOnTheAnchoredIssue(t *testing.T) {
 	}
 }
 
+func TestGrillApplyResearchCommentEndsInTheSources(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition: grillDispResearch,
+		Findings:    "## Conclusion\n\nExponential backoff.",
+		Summary:     "answered the retry question",
+		Sources: []grillSource{
+			{Title: "Retry docs", URL: "https://sdk.example/retries", Note: "the backoff table"},
+			{Title: "Release notes", URL: "https://sdk.example/changelog"},
+		},
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied {
+		t.Fatalf("apply result = %+v, want applied", out)
+	}
+	body := fake.comments[0].body
+	want := "\n\n### Sources\n" +
+		"\n1. [Retry docs](https://sdk.example/retries) — the backoff table" +
+		"\n2. [Release notes](https://sdk.example/changelog)"
+	if !strings.HasSuffix(body, want) {
+		t.Fatalf("comment = %q, want it to end in the sources list %q", body, want)
+	}
+}
+
+func TestGrillApplyResearchWithoutSourcesHasNoSourcesSection(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition: grillDispResearch,
+		Findings:    "## Conclusion\n\nIt reads the known set first.",
+		Summary:     "answered from the repository alone",
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied {
+		t.Fatalf("apply result = %+v, want applied", out)
+	}
+	if body := fake.comments[0].body; strings.Contains(body, "Sources") {
+		t.Fatalf("comment = %q, want no sources heading", body)
+	}
+}
+
 func TestGrillApplyResearchAuthoringWritesNothing(t *testing.T) {
 	fake := newFakeWriter()
 	ts, stores, root := grillApplyServer(t, fake)

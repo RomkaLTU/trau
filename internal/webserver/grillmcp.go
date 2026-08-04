@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -70,7 +71,20 @@ var grillMCPTools = []mcpTool{
     "disposition": {"type": "string", "enum": ["rewrite", "split", "needs_split", "create", "research", "no_change"], "description": "The proposed outcome."},
     "title": {"type": "string", "description": "Required when disposition is create (the title of the new issue or epic to file) or research (the report's own title — what the reader sees at the top of the document and in the report list, not the question verbatim)."},
     "proposed_description": {"type": "string", "description": "Required when disposition is rewrite (the full replacement issue description), split (the parent rewrite framing the epic goal), or create (the full description of the new issue or epic)."},
-    "findings": {"type": "string", "description": "Required when disposition is research: the complete Markdown research report — the question, what was investigated, the sources consulted, the conclusions, and the recommendation."},
+    "findings": {"type": "string", "description": "Required when disposition is research: the complete Markdown research report — the question, what was investigated, the conclusions, and the recommendation."},
+    "sources": {
+      "type": "array",
+      "description": "Optional, for research: every source the investigation actually consulted, in the order the report refers to them. Omit it entirely when there were none — a question answered from this repository alone has no sources.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string", "description": "The source's own title."},
+          "url": {"type": "string", "description": "The source's http(s) URL."},
+          "note": {"type": "string", "description": "Optional: what this source supported."}
+        },
+        "required": ["title", "url"]
+      }
+    },
     "labels": {"type": "array", "items": {"type": "string"}, "description": "Optional labels for the created issue when disposition is create. A single issue defaults to the ready-for-agent label; an epic parent gets none by default."},
     "sub_issues": {
       "type": "array",
@@ -343,6 +357,7 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		Title               string          `json:"title"`
 		ProposedDescription string          `json:"proposed_description"`
 		Findings            string          `json:"findings"`
+		Sources             []grillSource   `json:"sources"`
 		Labels              []string        `json:"labels"`
 		SubIssues           []grillSubIssue `json:"sub_issues"`
 		Summary             string          `json:"summary"`
@@ -377,6 +392,11 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 			return
 		}
 	}
+	sources, srcMsg := normalizeGrillSources(a.Sources)
+	if srcMsg != "" {
+		respondRPCJSON(w, rpcID, mcpToolError(srcMsg))
+		return
+	}
 	var subIssues []grillSubIssue
 	if disposition == grillDispSplit || (disposition == grillDispCreate && len(a.SubIssues) > 0) {
 		var msg string
@@ -409,6 +429,7 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		Title               string          `json:"title,omitempty"`
 		ProposedDescription string          `json:"proposed_description,omitempty"`
 		Findings            string          `json:"findings,omitempty"`
+		Sources             []grillSource   `json:"sources,omitempty"`
 		Labels              []string        `json:"labels,omitempty"`
 		SubIssues           []grillSubIssue `json:"sub_issues,omitempty"`
 		Summary             string          `json:"summary"`
@@ -417,6 +438,7 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		Title:               title,
 		ProposedDescription: proposed,
 		Findings:            findings,
+		Sources:             sources,
 		Labels:              trimLabels(a.Labels),
 		SubIssues:           subIssues,
 		Summary:             summary,
@@ -578,6 +600,32 @@ func normalizeSplitSubIssues(in []grillSubIssue) ([]grillSubIssue, string) {
 			}
 		}
 		out[i] = grillSubIssue{Title: title, Description: desc, Labels: trimLabels(sub.Labels), BlockedBy: blockedBy}
+	}
+	return out, ""
+}
+
+// normalizeGrillSources trims a research proposal's sources and validates them:
+// each needs a title and an http(s) url, and a url cited more than once is kept
+// only the first time. It returns the cleaned slice, or a tool-error message the
+// agent can correct.
+func normalizeGrillSources(in []grillSource) ([]grillSource, string) {
+	out := make([]grillSource, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for i, src := range in {
+		title := strings.TrimSpace(src.Title)
+		if title == "" {
+			return nil, fmt.Sprintf("source %d is missing a title", i+1)
+		}
+		link := strings.TrimSpace(src.URL)
+		parsed, err := url.Parse(link)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return nil, fmt.Sprintf("source %d (%q) needs an http(s) url, got %q", i+1, title, link)
+		}
+		if seen[link] {
+			continue
+		}
+		seen[link] = true
+		out = append(out, grillSource{Title: title, URL: link, Note: strings.TrimSpace(src.Note)})
 	}
 	return out, ""
 }
