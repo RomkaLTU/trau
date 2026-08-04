@@ -48,6 +48,7 @@ type KimiInteractive struct {
 	steerPoll    time.Duration
 	usageWait    time.Duration
 	settle       time.Duration
+	endGrace     time.Duration
 }
 
 // Provider names the backend for logging and routing attribution.
@@ -150,7 +151,7 @@ func (c *KimiInteractive) Run(ctx context.Context, prompt, label string) (Result
 			return res, fmt.Errorf("kimi interactive run (%s): read result: %w", label, err)
 		} else if ok {
 			stats, usageOK := c.awaitUsage(ctx, since)
-			_ = sess.Kill()
+			endSession(sess, wait, c.endGrace)
 			res := c.enrich(Result{Final: final}, stats, usageOK)
 			dur := c.clock().Sub(start)
 			c.emit(label, res, dur, nil, usageOK)
