@@ -3,6 +3,7 @@ package prompts
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -206,6 +207,37 @@ func TestRenderTestEffortGoldens(t *testing.T) {
 			TicketContext:  goldenTicketCtx,
 		}},
 	})
+}
+
+// Both research variants share one template, so the plan-approval step has to
+// survive edits made for either side.
+func TestResearchPromptRequiresPlanApproval(t *testing.T) {
+	wanted := []string{
+		"SINGLE ask_user call",
+		`"Approve plan"`,
+		`"Adjust (tell me what to change)"`,
+		"open no source until the answer comes back",
+		"without a recommended option",
+		"keep it out of the report body",
+	}
+	cases := []struct {
+		name string
+		data GrillResearchData
+	}{
+		{"anchored", grillResearchAnchored(goldenGrillFocus)},
+		{"idea", GrillResearchData{Idea: goldenGrillQuestion}},
+		{"auto_accept", GrillResearchData{GrillIssueData: grillIssueAutoAccept()}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Render("grill_research", tc.data)
+			for _, want := range wanted {
+				if !strings.Contains(got, want) {
+					t.Errorf("research prompt is missing %q:\n%s", want, got)
+				}
+			}
+		})
+	}
 }
 
 func TestCatalog(t *testing.T) {
