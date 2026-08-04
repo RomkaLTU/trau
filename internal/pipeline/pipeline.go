@@ -5335,7 +5335,32 @@ func (g ExecGit) bin() string {
 // up on its own.
 const gitWaitDelay = 2 * time.Second
 
+// staleIndexLockAge is how long a zero-length index.lock must have sat untouched
+// before run treats it as debris from a git that was killed mid-index-write
+// rather than as a live index writer. Git never reclaims the file itself, so an
+// orphan silently fails every mutating command — including the WIP-preservation
+// path, whose add/commit/checkout all need the lock while `clean` does not — until
+// a human deletes it. The window is far longer than any real index write and far
+// shorter than the gap between the phase that leaked the lock and the one that
+// trips over it.
+const staleIndexLockAge = 30 * time.Second
+
+// run executes a mutating git command, recovering once from an index.lock left by
+// a dead git. Only that specific collision is retried, and only after the lock has
+// been proven stale and removed; anything else — and a second consecutive failure
+// — returns the original error untouched.
 func (g ExecGit) run(ctx context.Context, args ...string) error {
+	err := g.runOnce(ctx, args...)
+	if err == nil || !isIndexLockCollision(err) || !g.clearStaleIndexLock(ctx) {
+		return err
+	}
+	if retryErr := g.runOnce(ctx, args...); retryErr != nil {
+		return err
+	}
+	return nil
+}
+
+func (g ExecGit) runOnce(ctx context.Context, args ...string) error {
 	full := append([]string{"-C", g.Repo}, args...)
 	logger.Debugf("git %s", strings.Join(full, " "))
 	cmd := exec.CommandContext(ctx, g.bin(), full...)
@@ -5344,6 +5369,37 @@ func (g ExecGit) run(ctx context.Context, args ...string) error {
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func isIndexLockCollision(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "index.lock") && strings.Contains(msg, "File exists")
+}
+
+// clearStaleIndexLock removes the target repo's index.lock when it is stale debris
+// and reports whether the caller may retry. A young, non-empty or absent lock is
+// left alone — a live git owns it and stealing it would corrupt the index. The git
+// dir is resolved rather than assumed to be <repo>/.git, which is wrong for linked
+// worktrees and submodules.
+func (g ExecGit) clearStaleIndexLock(ctx context.Context) bool {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "rev-parse", "--absolute-git-dir").Output()
+	if err != nil {
+		return false
+	}
+	lock := filepath.Join(strings.TrimSpace(string(out)), "index.lock")
+	info, err := os.Stat(lock)
+	if err != nil || info.Size() != 0 {
+		return false
+	}
+	age := time.Since(info.ModTime())
+	if age < staleIndexLockAge {
+		return false
+	}
+	if err := os.Remove(lock); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	logger.Printf("removed stale git index.lock in %s (idle %s)", g.Repo, age.Round(time.Second))
+	return true
 }
 
 // CurrentBranch returns the checked-out branch of the target repo.
