@@ -115,16 +115,19 @@ func (s *Server) applyQueuedLabel(ctx context.Context, lb queuedLabeler, ids []s
 		}); err != nil {
 			logger.Verbosef("queued label %s: mirror synced row: %v", id, err)
 		}
+		if err := s.stores.Issues().SetQueuedLabelPlaced(lb.root, id, add); err != nil {
+			logger.Verbosef("queued label %s: record placement: %v", id, err)
+		}
 	}
 }
 
 // reconcileQueuedLabels heals the repo's queued label against actual queue
 // membership, running off the sync pull that just landed the tracker's labels.
 // Only the disagreements are written, so a board already in step costs no tracker
-// call. That covers a transition write the tracker refused, a label edited away by
-// hand, and work queued before the label existed. Repos the hub can build no
-// direct writer for are skipped: their rows would only be overwritten by the next
-// pull.
+// call. That covers a transition write the tracker refused, work queued before the
+// label existed, and a label edited away by hand — always on a label this hub owns,
+// never one another hub or a human put there. Repos the hub can build no direct
+// writer for are skipped: their rows would only be overwritten by the next pull.
 func (s *Server) reconcileQueuedLabels(ctx context.Context, root string) {
 	lb, ok := s.queuedLabeler(root)
 	if !ok || lb.writer == nil {
@@ -140,17 +143,19 @@ func (s *Server) reconcileQueuedLabels(ctx context.Context, root string) {
 		logger.Verbosef("queued label %s: read queue: %v", root, err)
 		return
 	}
-	missing, stray := queuedLabelDrift(states, expectedQueuedLabel(items, states), lb.label)
+	missing, stray := queuedLabelDrift(states, items, lb.label)
 	s.applyQueuedLabel(ctx, lb, missing, true)
 	s.applyQueuedLabel(ctx, lb, stray, false)
 }
 
 // expectedQueuedLabel is the set of issues that should carry the queued label:
 // planned work the hub has not started. A pending item — paused included, since a
-// resume re-attempts it — covers its own issue and every sub-issue it captured. A
-// running epic covers only the captured sub-issues still sitting in
-// backlog/unstarted, so mid-epic the finished and in-flight slices drop out. Issues
-// no sync has pulled are left out: the hub only labels what its store knows.
+// resume re-attempts it — covers its own issue and the captured sub-issues still
+// sitting in backlog/unstarted; a sub-issue someone already finished elsewhere is
+// no longer waiting on this queue. A running epic covers those same planned
+// sub-issues but not itself, so mid-epic the finished and in-flight slices drop
+// out. Issues no sync has pulled are left out: the hub only labels what its store
+// knows.
 func expectedQueuedLabel(items []queue.Item, states []hubstore.LabelState) map[string]bool {
 	groups := make(map[string]string, len(states))
 	for _, st := range states {
@@ -162,21 +167,37 @@ func expectedQueuedLabel(items []queue.Item, states []hubstore.LabelState) map[s
 			want[id] = true
 		}
 	}
-	for _, it := range items {
-		switch {
-		case it.Status == queue.StatusPending, it.Status == queue.StatusPaused:
-			for _, id := range queuedLabelTargets(it) {
-				mark(id)
-			}
-		case it.Status == queue.StatusRunning && it.Kind == queue.KindEpic:
-			for _, sub := range it.SubIssues {
-				if plannedGroup(groups[sub.ID]) {
-					mark(sub.ID)
-				}
+	markPlanned := func(subs []queue.SubIssue) {
+		for _, sub := range subs {
+			if plannedGroup(groups[sub.ID]) {
+				mark(sub.ID)
 			}
 		}
 	}
+	for _, it := range items {
+		switch {
+		case it.Status == queue.StatusPending, it.Status == queue.StatusPaused:
+			mark(it.ID)
+			markPlanned(it.SubIssues)
+		case it.Status == queue.StatusRunning && it.Kind == queue.KindEpic:
+			markPlanned(it.SubIssues)
+		}
+	}
 	return want
+}
+
+// queuedLabelHistory is every issue the hub's queue still names: the items it
+// holds — settled rows included — and the sub-issues each captured. Their labels
+// are this hub's own even when no placement was ever recorded against them, as on
+// work labelled before the hub tracked placements.
+func queuedLabelHistory(items []queue.Item) map[string]bool {
+	queued := make(map[string]bool, len(items))
+	for _, it := range items {
+		for _, id := range queuedLabelTargets(it) {
+			queued[id] = true
+		}
+	}
+	return queued
 }
 
 func plannedGroup(group string) bool {
@@ -185,13 +206,18 @@ func plannedGroup(group string) bool {
 
 // queuedLabelDrift splits the stored issues into the ones missing the queued label
 // they should carry and the ones carrying one they should not, comparing labels
-// the way the store merges them — case-insensitively.
-func queuedLabelDrift(states []hubstore.LabelState, want map[string]bool, label string) (missing, stray []string) {
+// the way the store merges them — case-insensitively. Only a label this hub owns —
+// placed by a write of its own, or sitting on work its queue still names — can be
+// stray: any other belongs to whoever wrote it.
+func queuedLabelDrift(states []hubstore.LabelState, items []queue.Item, label string) (missing, stray []string) {
+	want := expectedQueuedLabel(items, states)
+	history := queuedLabelHistory(items)
 	for _, st := range states {
+		ours := st.QueuedLabelPlaced || history[st.Identifier]
 		switch has := hasLabel(st.Labels, label); {
 		case want[st.Identifier] && !has:
 			missing = append(missing, st.Identifier)
-		case !want[st.Identifier] && has:
+		case !want[st.Identifier] && has && ours:
 			stray = append(stray, st.Identifier)
 		}
 	}
