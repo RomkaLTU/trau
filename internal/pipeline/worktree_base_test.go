@@ -238,7 +238,7 @@ func TestSweepBackDetachesWhenWorktreeHoldsBase(t *testing.T) {
 		{
 			name: "preserve-and-clean saves the branch then parks at the base tip",
 			sweep: func(t *testing.T, p *Pipeline) {
-				p.preserveAndClean(context.Background(), "wip("+id+"): stopped mid-run")
+				p.preserveAndClean(context.Background(), id, "wip("+id+"): stopped mid-run")
 			},
 		},
 		{
@@ -272,7 +272,7 @@ func TestSweepBackDetachesWhenWorktreeHoldsBase(t *testing.T) {
 		g := &worktreeGit{branch: "feature/" + id + "-thing", holder: "/Users/rd/Projects/loop-fix"}
 		p := newWorktreePipeline(t, g)
 
-		p.preserveAndClean(context.Background(), "wip("+id+"): stopped mid-run")
+		p.preserveAndClean(context.Background(), id, "wip("+id+"): stopped mid-run")
 
 		if g.commits != 1 {
 			t.Errorf("commits = %d, want the feature branch's WIP preserved", g.commits)
@@ -366,7 +366,7 @@ func TestWorktreeHeldBaseAgainstRealGit(t *testing.T) {
 	}
 	writeRepoFile(t, work, "b.txt", "agent work\n")
 
-	p.preserveAndClean(context.Background(), "wip("+id+"): stopped mid-run")
+	p.preserveAndClean(context.Background(), id, "wip("+id+"): stopped mid-run")
 
 	if got := gitOut(t, work, "rev-parse", "--abbrev-ref", "HEAD"); got != detachedHead {
 		t.Errorf("after the sweep HEAD = %q, want to be parked at the base tip detached", got)

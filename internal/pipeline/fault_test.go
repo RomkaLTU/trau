@@ -20,6 +20,10 @@ import (
 type recordingGit struct {
 	fakeGit
 	branch      string
+	status      string
+	addErr      error
+	commitErr   error
+	created     string
 	calls       []string
 	deadCtx     []string
 	commitMsgs  []string
@@ -50,12 +54,30 @@ func (g *recordingGit) CurrentBranch(ctx context.Context) (string, error) {
 
 func (g *recordingGit) AddAll(ctx context.Context) error {
 	g.record(ctx, "add")
+	return g.addErr
+}
+
+// Commit empties the tree the way a real preserve commit does, so the sweep's
+// verification reads what git would report afterwards.
+func (g *recordingGit) Commit(ctx context.Context, msg string, _ bool) error {
+	g.record(ctx, "commit")
+	if g.commitErr != nil {
+		return g.commitErr
+	}
+	g.commitMsgs = append(g.commitMsgs, msg)
+	g.status = ""
 	return nil
 }
 
-func (g *recordingGit) Commit(ctx context.Context, msg string, _ bool) error {
-	g.record(ctx, "commit")
-	g.commitMsgs = append(g.commitMsgs, msg)
+func (g *recordingGit) WorktreeStatus(ctx context.Context) (string, error) {
+	g.record(ctx, "status")
+	return g.status, nil
+}
+
+// CreateBranch stays out of the call log: a run cuts its own branch long before any
+// sweep, and only the sweep's calls are the ones that must be detached.
+func (g *recordingGit) CreateBranch(_ context.Context, branch, _ string) error {
+	g.created = branch
 	return nil
 }
 
@@ -147,7 +169,7 @@ func TestUnexpectedErrorFaultsBlamelessly(t *testing.T) {
 // instantly, leaving the repo dirty on the feature branch.
 func TestFinalizeRunsDetachedFromACancelledRun(t *testing.T) {
 	id := "COD-1092"
-	want := []string{"current-branch", "add", "commit", "push", "checkout main", "clean"}
+	want := []string{"current-branch", "add", "commit", "status", "push", "checkout main", "clean"}
 	finalizers := map[string]func(*Pipeline, context.Context, string){
 		"fault":  (*Pipeline).finalizeFault,
 		"failed": (*Pipeline).finalizeFailed,
@@ -174,6 +196,106 @@ func TestFinalizeRunsDetachedFromACancelledRun(t *testing.T) {
 				t.Errorf("commit msgs = %v, want one mentioning %s", git.commitMsgs, id)
 			}
 		})
+	}
+}
+
+// TestPreserveAndCleanNeverSweepsUnpreservedWork pins the invariant the sweep
+// exists to respect: checkout -f and clean delete every untracked file the agent
+// wrote, so they run only once the work is verifiably committed somewhere. A
+// preserve that failed, and a sweep that started with no branch to preserve to,
+// must leave the tree exactly as the attempt left it.
+func TestPreserveAndCleanNeverSweepsUnpreservedWork(t *testing.T) {
+	const id = "COD-1477"
+	const branch = "feature/COD-1477-x"
+	rescue := "trau/rescue-" + id
+
+	cases := []struct {
+		name      string
+		branch    string
+		status    string
+		addErr    error
+		commitErr error
+		wantSwept bool
+		wantCut   string
+		wantWarn  string
+	}{
+		{
+			name:      "a preserved attempt is swept back to base",
+			branch:    branch,
+			status:    " M pipeline.go",
+			wantSwept: true,
+		},
+		{
+			name:     "a failed stage leaves the tree alone",
+			branch:   branch,
+			status:   "?? doctor_unix.go",
+			addErr:   errors.New("index.lock exists"),
+			wantWarn: branch,
+		},
+		{
+			name:      "a failed commit leaves the tree alone",
+			branch:    branch,
+			status:    "?? doctor_unix.go",
+			commitErr: errors.New("empty ident name"),
+			wantWarn:  branch,
+		},
+		{
+			name:      "work left on base is rescued onto its own branch",
+			branch:    "main",
+			status:    "?? doctor_unix.go",
+			wantSwept: true,
+			wantCut:   rescue,
+		},
+		{
+			name:      "a failed rescue commit leaves the tree alone",
+			branch:    "main",
+			status:    "?? doctor_unix.go",
+			commitErr: errors.New("gpg failed to sign the data"),
+			wantCut:   rescue,
+			wantWarn:  rescue,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &recordingGit{branch: tc.branch, status: tc.status, addErr: tc.addErr, commitErr: tc.commitErr}
+			rend := &logRenderer{}
+			p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+			p.Git = g
+			p.Remote = "origin"
+			p.Renderer = rend
+
+			p.preserveAndClean(context.Background(), id, "wip("+id+"): quarantined attempt")
+
+			if swept := g.count("clean") > 0; swept != tc.wantSwept {
+				t.Fatalf("tree cleaned = %v, want %v (git calls %v)", swept, tc.wantSwept, g.calls)
+			}
+			if !tc.wantSwept && g.count("checkout "+p.Base) > 0 {
+				t.Errorf("base was force-checked-out over unpreserved work: %v", g.calls)
+			}
+			if g.created != tc.wantCut {
+				t.Errorf("branch cut = %q, want %q", g.created, tc.wantCut)
+			}
+			if tc.wantWarn != "" && !rend.contains(tc.wantWarn) {
+				t.Errorf("no warning naming %s — the operator is never told where the work is", tc.wantWarn)
+			}
+		})
+	}
+}
+
+// TestExitCleanupPreservesANewFileOnlyTree guards the untracked-aware gate in exit
+// hygiene: a run whose only leftover is a file it created reads as clean to a
+// tracked-only status, and rode onto the user's checkout uncommitted.
+func TestExitCleanupPreservesANewFileOnlyTree(t *testing.T) {
+	g := &recordingGit{branch: "feature/COD-1477-x", status: "?? internal/doctor/doctor_unix.go"}
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.Git = g
+	p.exit.startBranch = "scratch"
+
+	p.ExitCleanup(context.Background())
+
+	if len(g.commitMsgs) != 1 {
+		t.Fatalf("commits = %v, want the new file preserved on %s", g.commitMsgs, g.branch)
 	}
 }
 

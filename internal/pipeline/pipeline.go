@@ -1167,7 +1167,7 @@ func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 func (p *Pipeline) stop(ctx context.Context, id string) error {
 	phase := p.State.Get(id, "PHASE")
 	label := NextPhaseLabel(phase)
-	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): stopped mid-run — rerun trau to resume", id))
+	p.preserveAndClean(ctx, id, fmt.Sprintf("wip(%s): stopped mid-run — rerun trau to resume", id))
 	_ = p.State.Set(id, "FAILURE_REASON", fmt.Sprintf("stopped during %s — work saved at the last checkpoint", label))
 	_ = p.State.Set(id, "FAILURE_CLASS", state.FailStopped)
 	p.logf("  ⏹ %s stopped during %s — work saved, ticket left resumable", id, label)
@@ -1193,15 +1193,22 @@ func detachedCleanup(ctx context.Context) (context.Context, context.CancelFunc) 
 
 // preserveAndClean saves whatever an aborted attempt left on the feature branch —
 // commit it under msg, push it best-effort — and returns the working tree to a
-// clean base.
-func (p *Pipeline) preserveAndClean(ctx context.Context, msg string) {
+// clean base. The sweep back is destructive, so it runs only behind a preserve that
+// verifiably emptied the tree: work still loose is the only copy there is, and it is
+// worth more than a tidy checkout.
+func (p *Pipeline) preserveAndClean(ctx context.Context, id, msg string) {
 	ctx, cancel := detachedCleanup(ctx)
 	defer cancel()
 
 	branch, _ := p.Git.CurrentBranch(ctx)
-	if !p.onBase(branch) {
-		_ = p.Git.AddAll(ctx)
-		_ = p.Git.Commit(ctx, msg, true)
+	if p.onBase(branch) {
+		if !p.rescueFromBase(ctx, id) {
+			return
+		}
+	} else {
+		if !p.preserveOnto(ctx, branch, msg) {
+			return
+		}
 		if p.pushPreserved(ctx) {
 			p.logf("  saved attempt to %s/%s", p.Remote, branch)
 		} else {
@@ -1210,6 +1217,59 @@ func (p *Pipeline) preserveAndClean(ctx context.Context, msg string) {
 	}
 	_, _ = p.checkoutBase(ctx, true)
 	_ = p.Git.Clean(ctx)
+}
+
+// preserveOnto commits the attempt onto branch, reporting whether the tree ended up
+// empty — the only state in which the caller's checkout -f and clean are safe. A
+// preserve can fail for reasons that have nothing to do with the work (a stale
+// index.lock, an unconfigured identity, a rejected signature), and sweeping past one
+// deletes every untracked file the agent wrote with nothing saved anywhere.
+func (p *Pipeline) preserveOnto(ctx context.Context, branch, msg string) bool {
+	if err := p.Git.AddAll(ctx); err != nil {
+		p.logf("  ⚠ couldn't stage the work left on %s (%v) — leaving it in the tree rather than sweeping it away", branch, err)
+		return false
+	}
+	// git refuses an empty commit, so the commit error alone does not say whether
+	// anything was lost — the state of the tree afterwards does.
+	commitErr := p.Git.Commit(ctx, msg, true)
+	loose, err := p.Git.WorktreeStatus(ctx)
+	switch {
+	case err != nil:
+		p.logf("  ⚠ couldn't confirm the work on %s was preserved (%v) — leaving the tree as it is rather than sweeping it away", branch, err)
+	case strings.TrimSpace(loose) == "":
+		return true
+	case commitErr != nil:
+		p.logf("  ⚠ couldn't commit the work left on %s (%v) — leaving it in the tree rather than sweeping it away", branch, commitErr)
+	default:
+		p.logf("  ⚠ %s still holds uncommitted work after the preserve commit — leaving it in the tree rather than sweeping it away", branch)
+	}
+	return false
+}
+
+// rescueFromBase preserves work a sweep finds while still on the base — a give-up
+// raised before the run ever cut its branch leaves the agent's files loose there, or
+// on the detached HEAD standing in for it — onto a rescue branch of its own, and
+// reports whether the tree is safe to sweep. The base is the user's and is never
+// committed to; the branch is cut at HEAD so claiming it moves no files.
+func (p *Pipeline) rescueFromBase(ctx context.Context, id string) bool {
+	loose, err := p.Git.WorktreeStatus(ctx)
+	if err != nil {
+		p.logf("  ⚠ couldn't tell whether %s left work on %s (%v) — leaving the tree as it is rather than sweeping it away", id, p.Base, err)
+		return false
+	}
+	if strings.TrimSpace(loose) == "" {
+		return true
+	}
+	branch := "trau/rescue-" + id
+	if err := p.Git.CreateBranch(ctx, branch, "HEAD"); err != nil {
+		p.logf("  ⚠ couldn't cut %s for the work left on %s (%v) — leaving it in the tree rather than sweeping it away", branch, p.Base, err)
+		return false
+	}
+	if !p.preserveOnto(ctx, branch, fmt.Sprintf("wip(%s): rescued from %s — the run ended before it had a branch", id, p.Base)) {
+		return false
+	}
+	p.logf("  saved the work %s left on %s to rescue branch %s", id, p.Base, branch)
+	return true
 }
 
 func (p *Pipeline) pushPreserved(ctx context.Context) bool {
@@ -1226,7 +1286,7 @@ func (p *Pipeline) pushPreserved(ctx context.Context) bool {
 // base — but it does NOT quarantine the ticket or file a bug, and it leaves PHASE
 // untouched so the ticket stays resumable.
 func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
-	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id))
+	p.preserveAndClean(ctx, id, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id))
 }
 
 // AsFault extracts the *FaultError from err (traversing wraps), or nil when err
@@ -1515,7 +1575,7 @@ func (p *Pipeline) setAsideWIP(ctx context.Context) error {
 	if err == nil {
 		if id := p.interruptedRunID(branch); id != "" {
 			p.logf("  ↻ %s left uncommitted work on %s when its run died — committing it there", id, branch)
-			p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): preserved after interrupted run", id))
+			p.preserveAndClean(ctx, id, fmt.Sprintf("wip(%s): preserved after interrupted run", id))
 			return nil
 		}
 	}
@@ -2543,7 +2603,7 @@ func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 }
 
 func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
-	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id))
+	p.preserveAndClean(ctx, id, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id))
 }
 
 // localDeliveryNote names the delivery mode a remote-less repo runs in, wherever a
