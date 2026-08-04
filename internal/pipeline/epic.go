@@ -413,7 +413,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 
 	if !p.AutoMerge {
 		p.markEpicAwaitingHuman()
-		merged, err := p.waitForManualMerge(ctx, p.EpicID, pr, prURL)
+		merged, err := p.waitForManualMerge(ctx, p.EpicID, pr, prURL, autoMergeOff)
 		if err != nil {
 			return false, err
 		}

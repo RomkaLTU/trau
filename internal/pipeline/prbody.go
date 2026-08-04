@@ -26,11 +26,35 @@ func (p *Pipeline) prBody(ctx context.Context, id, proofsSection string) string 
 	for _, line := range p.testingLines(ctx, id) {
 		b.WriteString("- " + line + "\n")
 	}
+	if section := unverifiedSection(p.unverifiedCriteria(id)); section != "" {
+		b.WriteString("\n" + section + "\n")
+	}
 	if proofsSection != "" {
 		b.WriteString("\n" + proofsSection + "\n")
 	}
 	b.WriteString("\n" + p.ticketRef(id) + "\n")
 	return b.String()
+}
+
+// unverifiedSection is the PR body's Unverified criteria block: each acceptance
+// criterion the verifier could not settle, with the reason it could not. It is what
+// the reviewer is left to check, and it says outright that this is why the PR was
+// not merged for them.
+func unverifiedSection(unverified []criterionResult) string {
+	if len(unverified) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Unverified criteria\n")
+	b.WriteString("Verify could not settle these acceptance criteria, so this PR was left for a human to merge:\n")
+	for _, c := range unverified {
+		line := "- " + sanitize.FeedLine(c.Text)
+		if note := sanitize.FeedLine(c.Note); note != "" {
+			line += " — " + note
+		}
+		b.WriteString(line + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // proofsSection publishes the run's verify screenshots to repoDir's trau-proofs

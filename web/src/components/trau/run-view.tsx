@@ -17,6 +17,7 @@ import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { Eyebrow, type EyebrowGlyph } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
 import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
+import { UnverifiedCriteriaBanner } from "@/components/trau/unverified-criteria-banner";
 import { OpenInEditor } from "@/components/trau/open-in-editor";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
@@ -184,6 +185,12 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyph: "⚠",
         glyphClass: "text-warn",
         text: ev.msg || "browser verify skipped on a UI slice",
+      };
+    case "criteria_unverified":
+      return {
+        glyph: "⚠",
+        glyphClass: "text-warn",
+        text: ev.msg || "shipped with acceptance criteria verify could not settle",
       };
     case "qa_roster":
       return {
@@ -699,6 +706,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const noBrowser = feed.events.some(
     (ev) => ev.kind === "verify_no_browser" && fieldStr(ev, "ticket") === ticket,
   );
+  const unverifiedCriteria = feed.events.some(
+    (ev) => ev.kind === "criteria_unverified" && fieldStr(ev, "ticket") === ticket,
+  );
   const syncLogs = (phaseLogs?.logs ?? [])
     .filter((log) => isSyncLog(log.phase))
     .sort((a, b) => a.phase.localeCompare(b.phase, undefined, { numeric: true }));
@@ -839,6 +849,8 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         {noSkills && <NoSkillsBanner />}
 
         {noBrowser && <NoBrowserBanner />}
+
+        {unverifiedCriteria && <UnverifiedCriteriaBanner />}
 
         {stop.error && (
           <p className="font-mono text-sm text-destructive">

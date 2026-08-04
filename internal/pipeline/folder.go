@@ -734,9 +734,9 @@ func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 			return p.giveUp(ctx, id, "CI not green in "+t.Name)
 		}
 	}
-	if !p.AutoMerge {
-		p.setPRStatus(id, prStatusAwaitingMerge)
-		p.logf("  ⏳ %s is green in every changed child repo — merge these yourself (AUTO_MERGE=0): %s", id, strings.Join(targetURLs(targets), ", "))
+	if hold := p.mergeHold(id); hold.held() {
+		p.handOverMerge(id, hold)
+		p.logf("  ⏳ %s is green in every changed child repo — merge these yourself (%s): %s", id, hold.Reason, strings.Join(targetURLs(targets), ", "))
 		return nil
 	}
 	p.setActivity(id, activity.Merge, "")
@@ -757,9 +757,9 @@ func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 // of them has landed.
 func (p *Pipeline) landFolderLocally(ctx context.Context, id string, targets []shipTarget) error {
 	branch := p.State.Get(id, "BRANCH")
-	if !p.AutoMerge {
-		p.setPRStatus(id, prStatusAwaitingMerge)
-		p.logf("  ⏳ %s is ready on %s in %s — merge them into each one's base yourself (AUTO_MERGE=0)", id, branch, strings.Join(targetNames(targets), ", "))
+	if hold := p.mergeHold(id); hold.held() {
+		p.handOverMerge(id, hold)
+		p.logf("  ⏳ %s is ready on %s in %s — merge them into each one's base yourself (%s)", id, branch, strings.Join(targetNames(targets), ", "), hold.Reason)
 		return nil
 	}
 	p.setActivity(id, activity.Merge, "")

@@ -2904,12 +2904,13 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 //
 // Every outcome that reached the base hands it to the hub reload step. An epic
 // slice is excluded: its PR targets the epic branch, so nothing reached the base
-// yet. So is a local run under AUTO_MERGE=0 — the only path that settles without
-// merging, since the remote one blocks in the manual-merge wait until the PR lands.
+// yet. So is a local run the operator has to merge — the only path that settles
+// without merging, since the remote one blocks in the manual-merge wait until the
+// PR lands.
 func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	err := p.ciAndMerge(ctx, id)
 	settled := err == nil || errors.Is(err, ErrAlreadyDone)
-	operatorMerges := !p.AutoMerge && p.localDelivery(ctx)
+	operatorMerges := p.mergeHold(id).held() && p.localDelivery(ctx)
 	if p.EpicID == "" && settled && !operatorMerges {
 		p.reloadHubOntoBase(ctx)
 	}
@@ -2941,8 +2942,8 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	if !green {
 		return p.giveUp(ctx, id, withRepairs("CI not green", "after", repairs))
 	}
-	if !p.AutoMerge {
-		return p.awaitManualMerge(ctx, id, pr)
+	if hold := p.mergeHold(id); hold.held() {
+		return p.awaitManualMerge(ctx, id, pr, hold)
 	}
 	if reason := p.foreignWorkInPR(ctx, id, pr); reason != "" {
 		p.logf("  ✗ merge gate: %s", reason)
@@ -2964,8 +2965,9 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 
 // landLocally closes a remote-less run: with no PR to gate and no CI to wait for,
 // the verified branch is squash-merged into its base right here and the ticket
-// settles Done. AUTO_MERGE=0 still means the operator lands it themselves, and a
-// merge git refuses is a dead end: give up, leaving the branch and its work intact.
+// settles Done. A merge the loop may not take — AUTO_MERGE=0, or criteria verify
+// could not settle — leaves the branch ready for the operator instead, and a merge
+// git refuses is a dead end: give up, leaving the branch and its work intact.
 func (p *Pipeline) landLocally(ctx context.Context, id string) error {
 	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
@@ -2978,9 +2980,9 @@ func (p *Pipeline) landLocally(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("merge %s: resolve base: %w", id, err)
 	}
-	if !p.AutoMerge {
-		p.setPRStatus(id, prStatusAwaitingMerge)
-		p.logf("  ⏳ %s is ready on %s — merge it into %s yourself (AUTO_MERGE=0)", id, branch, base)
+	if hold := p.mergeHold(id); hold.held() {
+		p.handOverMerge(id, hold)
+		p.logf("  ⏳ %s is ready on %s — merge it into %s yourself (%s)", id, branch, base, hold.Reason)
 		return nil
 	}
 
@@ -3072,14 +3074,63 @@ func (p *Pipeline) setPRStatus(id, status string) {
 	}
 }
 
-// awaitManualMerge is the AUTO_MERGE=0 ticket path: CI is green, so it waits for the
-// operator to merge the PR by hand. A merge marks the ticket Done; a close without
-// merge is a human rejection (give-up); a canceled context stops blamelessly. The
-// awaiting-merge status is stamped here rather than inside the shared wait so the
-// epic finalize path never opens a checkpoint under an epic id that has none.
-func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
+const autoMergeOff = "AUTO_MERGE=0"
+
+// mergeHold is who lands a ticket whose gate came back green. Its zero value is
+// the loop's merge to take; anything else is the operator's, with Reason naming
+// why in operator-facing words and Unverified carrying the criteria behind an
+// unverified hold.
+type mergeHold struct {
+	Reason     string
+	Unverified []criterionResult
+}
+
+func (h mergeHold) held() bool { return h.Reason != "" }
+
+// mergeHold resolves that question for one ticket. AUTO_MERGE=0 hands over every
+// merge; a verdict carrying acceptance criteria the verifier could not settle hands
+// over this one, so the PR still ships and stays reviewable while work nobody could
+// check never lands unattended. Pure — announcing the hold is handOverMerge's job,
+// so a caller may ask twice without emitting twice.
+func (p *Pipeline) mergeHold(id string) mergeHold {
+	if unverified := p.unverifiedCriteria(id); len(unverified) > 0 {
+		return mergeHold{Reason: "unverified acceptance criteria: " + criteriaLine(unverified), Unverified: unverified}
+	}
+	if !p.AutoMerge {
+		return mergeHold{Reason: autoMergeOff}
+	}
+	return mergeHold{}
+}
+
+// handOverMerge leaves the merge with the operator: it stamps the awaiting-merge
+// status every hold shares, then announces a hold on criteria verify could not
+// settle with a console line plus, in serve mode, the durable event the web UI
+// raises its run-detail banner from. Mirrors warnNoBrowser, and adds nothing to a
+// hold that is merely AUTO_MERGE=0 beyond its caller's own line.
+func (p *Pipeline) handOverMerge(id string, hold mergeHold) {
 	p.setPRStatus(id, prStatusAwaitingMerge)
-	merged, err := p.waitForManualMerge(ctx, id, pr, p.State.Get(id, "PR_URL"))
+	if len(hold.Unverified) == 0 {
+		return
+	}
+	msg := "this PR will not auto-merge — verify could not settle " + criteriaLine(hold.Unverified)
+	p.logf("  ⚠ %s", msg)
+	if p.Events != nil {
+		p.Events.Emit(event.KindCriteriaUnverified, "merge", msg, map[string]any{
+			"ticket":   id,
+			"criteria": criteriaTexts(hold.Unverified),
+		})
+	}
+}
+
+// awaitManualMerge is the operator-merge ticket path: CI is green, so it waits for
+// the operator to merge the PR by hand for the reason the hold carries. A merge
+// marks the ticket Done; a close without merge is a human rejection (give-up); a
+// canceled context stops blamelessly. The hand-over runs here rather than inside the
+// shared wait so the epic finalize path never opens a checkpoint under an epic id
+// that has none.
+func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string, hold mergeHold) error {
+	p.handOverMerge(id, hold)
+	merged, err := p.waitForManualMerge(ctx, id, pr, p.State.Get(id, "PR_URL"), hold.Reason)
 	if err != nil {
 		return err
 	}
@@ -3090,16 +3141,16 @@ func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
 	return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
 }
 
-// waitForManualMerge is the shared AUTO_MERGE=0 wait for a human to merge a green
-// PR. It enters the "awaiting manual merge" activity, fires the one-time notification
-// carrying the PR number and URL, then polls PRState at the CI cadence with no
-// timeout: true once the PR merges, false on a close without merge. A canceled
-// context returns its error (blameless stop); a transient lookup error never ends the
-// wait. Both the ticket and epic finalize paths drive their own terminal handling off
-// the returned outcome.
-func (p *Pipeline) waitForManualMerge(ctx context.Context, id, pr, url string) (bool, error) {
+// waitForManualMerge is the shared wait for a human to merge a green PR, naming
+// the reason the merge is theirs. It enters the "awaiting manual merge" activity,
+// fires the one-time notification carrying the PR number and URL, then polls
+// PRState at the CI cadence with no timeout: true once the PR merges, false on a
+// close without merge. A canceled context returns its error (blameless stop); a
+// transient lookup error never ends the wait. Both the ticket and epic finalize
+// paths drive their own terminal handling off the returned outcome.
+func (p *Pipeline) waitForManualMerge(ctx context.Context, id, pr, url, reason string) (bool, error) {
 	p.setActivity(id, activity.MergeWait, "")
-	p.logf("  ⏳ green CI — awaiting manual merge of PR #%s (AUTO_MERGE=0)", pr)
+	p.logf("  ⏳ green CI — awaiting manual merge of PR #%s (%s)", pr, reason)
 	p.emitAwaitingMerge(id, pr, url)
 	warnedLookup := false
 	for {
@@ -5054,6 +5105,35 @@ func foldViolations(v verdict) verdict {
 		}
 	}
 	return v
+}
+
+// unverifiedCriteria returns the acceptance criteria the run's recorded verdict
+// could not settle. They never fail a slice on their own — a coverage gap is not a
+// defect — but they are what keeps the merge with a human.
+func (p *Pipeline) unverifiedCriteria(id string) []criterionResult {
+	v, ok := p.sliceVerdict(id)
+	if !ok {
+		return nil
+	}
+	var out []criterionResult
+	for _, c := range v.Criteria {
+		if criterionStatus(c.Status) == criterionUnverified {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func criteriaLine(criteria []criterionResult) string {
+	return strings.Join(criteriaTexts(criteria), "; ")
+}
+
+func criteriaTexts(criteria []criterionResult) []string {
+	out := make([]string, 0, len(criteria))
+	for _, c := range criteria {
+		out = append(out, sanitize.FeedLine(c.Text))
+	}
+	return out
 }
 
 // checkResult is one verify-check outcome the cold verifier reports back inside

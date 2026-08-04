@@ -402,6 +402,28 @@ func TestRunDetailSurfacesNoBrowserWarning(t *testing.T) {
 	}
 }
 
+// TestRunDetailSurfacesUnverifiedCriteria covers the run-detail side of the
+// no-auto-merge rule: a run with a criteria_unverified event in the table carries
+// unverified_criteria so the page can flag it for review, and one without does not.
+func TestRunDetailSurfacesUnverifiedCriteria(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-220", map[string]string{"PHASE": state.PROpen})
+	seedCheckpoint(t, runsDir, "COD-221", map[string]string{"PHASE": state.PROpen})
+
+	ts := instancesServer(t, home)
+	postEvents(t, ts, "acme",
+		hubclient.Event{Kind: event.KindCriteriaUnverified, Phase: "merge", Fields: `{"ticket":"COD-220"}`},
+	)
+
+	if d := getRunDetail(t, ts, "acme", "COD-220"); !d.UnverifiedCriteria {
+		t.Error("unverified_criteria = false, want the unchecked criteria surfaced")
+	}
+	if d := getRunDetail(t, ts, "acme", "COD-221"); d.UnverifiedCriteria {
+		t.Error("unverified_criteria = true for an unflagged run, want false")
+	}
+}
+
 // TestRunDetailServesHubOnlyCheckpoint covers the post-cutover run: a ticket that
 // exists only as an authoritative checkpoint row, with no legacy state file on
 // disk, still resolves to a 200 detail carrying its phase, branch, and PR — the
