@@ -154,6 +154,32 @@ How to run this unattended pass:
 - Reaching that proposal without ever having to park a question is the best outcome of this pass.
 Always include a short summary of what you found. Nothing is written to the tracker until the user approves.`
 
+const grillFixDefault = `You are diagnosing why an autonomous coding agent's attempt at a software issue failed, so the next attempt can succeed. You are running inside the repository the attempt ran in.
+
+The issue the attempt was working:
+{{.ID}}{{if .Title}} — {{.Title}}{{end}}
+
+{{.Body}}
+{{.Attachments}}
+How the attempt ended:
+{{.Failure}}
+
+The evidence:
+- The failure dossier is at {{.Dossier}} — it names the failure, carries the run's artifacts and the lessons it recorded, and lists the absolute path of every phase log written beside it. Read the index first, then open the logs it points at.
+{{if .Branch}}- The WIP branch {{.Branch}} preserves the failed attempt exactly as it was left. Inspect its diff: what the attempt actually changed is as much evidence as what it logged.
+{{end}}
+How to run the session:
+- Diagnose before you ask. Repo facts — what the code does today, what the attempt changed, what the logs say — are yours to settle by reading; never ask the user for one. Settle external facts about libraries, vendor APIs or platforms with your web search and fetch tools rather than from memory, and if you have no web-capable tools say so explicitly instead of guessing.
+- Call ask_user only for genuine product or taste decisions the evidence cannot settle: what the feature should actually do, which trade-off to live with, whether the scope the attempt tripped over should change. Ask ONE question at a time and only through the tool, never in plain assistant text, and wait for each answer before asking the next.
+- Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why. Omit the recommendation only for pure-preference questions where no option is objectively better.
+{{if .AutoAccept}}- Your recommendations are auto-accepted as the answer: a question carrying recommended is answered with it at once and never reaches the user, so omit recommended only where the choice genuinely needs their taste — that is the only way a question gets asked.
+{{end}}- If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
+- When you know why the attempt failed, call finish_session:
+  - "rewrite" — the common case. Pass proposed_description as a complete replacement for the issue description: keep the original goal intact, add a "What the failed attempt revealed" section giving the diagnosis and the evidence behind it, and close with the explicit instructions the next attempt must follow to avoid the same failure. Write it for an agent that will never see this conversation.
+  - "no_change" — the honest answer is that the attempt only needs re-running: a transient fault, a flake, an outage upstream. Say so in summary rather than inventing a fix.
+  - "research" — the failure cannot be resolved inside the repository without a human acting outside it (a missing credential, an access decision, a broken dependency). Pass the whole investigation as findings, a Markdown report covering what failed, what you ruled out, and what the human has to do.
+  Always include a short summary of your diagnosis. Nothing is written to the tracker until the user approves.`
+
 var grillContextPlaceholders = []Placeholder{
 	{Field: "ID", Description: "issue id under discussion", Required: true, Sample: "COD-4242"},
 	{Field: "Title", Description: "issue title; empty drops the dash", Sample: "Toolbar collapses on narrow screens"},
@@ -191,6 +217,16 @@ var grillResearchPlaceholders = []Placeholder{
 	{Field: "Idea", Description: "question an unanchored session was opened with; empty opens by asking what to research", Sample: "Which OAuth flow the desktop client should use."},
 	grillAutoAcceptPlaceholder,
 }
+
+// A fix session always anchors to the failed run's ticket, so it carries the issue
+// context and the run's own fields instead of a focus note.
+var grillFixPlaceholders = append(
+	slices.Clone(grillContextPlaceholders),
+	Placeholder{Field: "Failure", Description: "how the attempt ended: its failure class and the reason recorded with it", Required: true, Sample: "gave_up — verify failed three times on the same assertion"},
+	Placeholder{Field: "Dossier", Description: "absolute path of the compiled failure dossier index", Required: true, Sample: "/tmp/trau-attachments-COD-4242/dossier.md"},
+	Placeholder{Field: "Branch", Description: "WIP branch preserving the failed attempt; empty when the run faulted before one was cut", Sample: "feature/COD-4242-toolbar-collapse"},
+	grillAutoAcceptPlaceholder,
+)
 
 var registry = []Prompt{
 	{
@@ -476,5 +512,12 @@ var registry = []Prompt{
 		Description:  "First-turn prompt for the unattended Ask-ahead pass over an issue.",
 		Placeholders: grillContextPlaceholders,
 		Default:      grillPregrillDefault,
+	},
+	{
+		Name:         "grill_fix",
+		Title:        "Interview: propose fix",
+		Description:  "First-turn prompt diagnosing a quarantined or faulted run from its failure dossier.",
+		Placeholders: grillFixPlaceholders,
+		Default:      grillFixDefault,
 	},
 }

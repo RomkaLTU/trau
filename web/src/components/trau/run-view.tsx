@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
 import {
   ChevronRight,
@@ -9,6 +9,7 @@ import {
   ScrollText,
   Square,
   SquareTerminal,
+  Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -21,6 +22,10 @@ import { OpenInEditor } from "@/components/trau/open-in-editor";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import { RunDiff } from "@/components/trau/run-diff";
+import {
+  proposeFixable,
+  useProposeFix,
+} from "@/components/grill/propose-fix";
 import { RunPageHeader } from "@/components/trau/run-page-header";
 import {
   SegmentedControl,
@@ -591,6 +596,7 @@ function StartingPlaceholder() {
 
 export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const now = useNow(1000);
   const [stopOpen, setStopOpen] = useState(false);
   const [takeoverUnsupported, setTakeoverUnsupported] = useState(false);
@@ -683,6 +689,15 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     },
   });
 
+  const fixable = proposeFixable(run?.failure_class, live);
+  const proposeFix = useProposeFix({
+    repo,
+    ticket,
+    enabled: fixable,
+    onStarted: () =>
+      void navigate({ to: "/inbox", search: { issue: ticket, repo } }),
+  });
+
   const elapsedMs = deriveElapsedMs(feed.events, ticket);
   const recapElapsed = elapsedMs !== null ? formatDuration(elapsedMs) : null;
   // A live takeover is the header's state, so the stored recap stays out of the
@@ -709,6 +724,38 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       </Button>
     ) : null;
   const prBadge = <PRStatusBadge status={run?.pr_status} />;
+  const proposeFixAction = fixable ? (
+    proposeFix.session ? (
+      <Button asChild variant="outline" size="sm" className="font-mono">
+        <Link to="/inbox" search={{ issue: ticket, repo }}>
+          <Wrench className="size-4" aria-hidden="true" />
+          Open fix session
+        </Link>
+      </Button>
+    ) : (
+      <>
+        <Button
+          variant="outline"
+          size="sm"
+          className="font-mono"
+          disabled={proposeFix.starting}
+          onClick={proposeFix.start}
+        >
+          {proposeFix.starting ? (
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Wrench className="size-4" aria-hidden="true" />
+          )}
+          {proposeFix.starting ? "Starting…" : "Propose fix"}
+        </Button>
+        {proposeFix.error ? (
+          <span className="font-sans text-xs text-fail">
+            {proposeFix.error}
+          </span>
+        ) : null}
+      </>
+    )
+  ) : null;
   const viewLog = (
     <Button asChild variant="outline" size="sm" className="font-mono">
       <Link to="/runs/$repo/$ticket" params={{ repo, ticket }}>
@@ -748,6 +795,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         }
         actions={
           <>
+            {proposeFixAction}
             {root !== "" && <OpenInEditor root={root} />}
             {instData?.takeover_supported && !takeoverUnsupported && (
               <Button
