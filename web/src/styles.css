@@ -248,6 +248,100 @@ body::before {
   }
 }
 
+/* Printing drops the app around the report document and flattens the frame it sits in:
+   the absolutely positioned, scrolling boxes would otherwise clip it to one screen.
+   Colours are forced black on white, so a dark app prints the same document a light
+   one does. */
+@media print {
+  @page {
+    margin: 16mm;
+  }
+
+  html,
+  body {
+    height: auto;
+    background: #fff;
+    color: #000;
+  }
+
+  body::before {
+    display: none !important;
+  }
+
+  body:has(.report-document)
+    *:not(:has(.report-document)):not(.report-document):not(.report-document *) {
+    display: none !important;
+  }
+
+  body:has(.report-document) *:has(.report-document) {
+    display: block !important;
+    position: static !important;
+    overflow: visible !important;
+    width: auto !important;
+    height: auto !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: none !important;
+  }
+
+  .report-document {
+    max-width: none !important;
+    padding: 0 !important;
+    font-size: 11pt;
+    line-height: 1.55;
+  }
+
+  .report-document,
+  .report-document * {
+    color: #000 !important;
+    background: none !important;
+    box-shadow: none !important;
+    border-color: #d4d4d4 !important;
+  }
+
+  .report-document h1 {
+    font-size: 20pt;
+  }
+  .report-document h2 {
+    font-size: 14pt;
+  }
+  .report-document h3,
+  .report-document h4 {
+    font-size: 12pt;
+  }
+  .report-document h1,
+  .report-document h2,
+  .report-document h3,
+  .report-document h4 {
+    break-after: avoid;
+  }
+  .report-document p {
+    orphans: 3;
+    widows: 3;
+  }
+  .report-document blockquote,
+  .report-document pre,
+  .report-document table {
+    break-inside: avoid;
+  }
+  .report-document a {
+    text-decoration: underline;
+  }
+  /* A printed link cannot be followed, so it carries its target in the text. */
+  .report-document a[href^="http"]::after {
+    content: " (" attr(href) ")";
+    font-size: 9pt;
+    word-break: break-all;
+  }
+  .report-document code,
+  .report-document pre {
+    background: #f4f4f5 !important;
+    print-color-adjust: exact;
+  }
+}
+
 .atlas-canvas .react-flow__node,
 .atlas-canvas .react-flow__edge {
   transition: opacity 0.2s ease;

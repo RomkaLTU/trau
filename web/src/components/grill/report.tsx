@@ -1,10 +1,22 @@
+import { useEffect, useState } from "react";
+import { Check, Copy, Download, Printer, TriangleAlert } from "lucide-react";
+
 import { noReport, WarningList } from "@/components/grill/outcome-review";
 import { Markdown } from "@/components/markdown";
+import { Button } from "@/components/ui/button";
+import { copyText } from "@/lib/clipboard";
 import {
   type GrillSession,
   type OutcomePayload,
   type ReportSource,
 } from "@/lib/grill";
+import {
+  composeReportMarkdown,
+  downloadMarkdown,
+  reportFileName,
+  reportTitle,
+} from "@/lib/report-export";
+import { cn } from "@/lib/utils";
 
 // ReportDocument reads a finished research session as what it produced: a titled
 // document with the report as its body, rather than a proposal card with the findings
@@ -23,8 +35,9 @@ export function ReportDocument({
   const summary = outcome.summary.trim();
   const sources = outcome.sources ?? [];
   return (
-    <article className="mx-auto flex w-full max-w-[72ch] flex-col gap-5 px-6 py-8">
+    <article className="report-document mx-auto flex w-full max-w-[72ch] flex-col gap-5 px-6 py-8">
       <header className="flex flex-col gap-2">
+        <ReportActions session={session} outcome={outcome} />
         <h1 className="text-balance text-2xl font-semibold leading-tight tracking-tight text-foreground">
           {reportTitle(session, outcome)}
         </h1>
@@ -90,14 +103,69 @@ function sourceHost(raw: string): string {
   }
 }
 
-// reportTitle is the title the agent gave the report; a session finished before
-// titles were required has none and is still named by its seed question.
-function reportTitle(
-  session: GrillSession,
-  outcome: OutcomePayload,
-): string {
+const COPY_FEEDBACK = {
+  idle: { icon: Copy, label: "Copy", tone: "" },
+  copied: { icon: Check, label: "Copied", tone: "text-done" },
+  failed: { icon: TriangleAlert, label: "Copy failed", tone: "text-destructive" },
+} as const;
+
+// Every action runs off what the client already holds; the PDF is the browser's own
+// print pipeline, which styles.css narrows to the report document alone.
+function ReportActions({
+  session,
+  outcome,
+}: {
+  session: GrillSession;
+  outcome: OutcomePayload;
+}) {
+  const [state, setState] = useState<keyof typeof COPY_FEEDBACK>("idle");
+  const { icon: CopyIcon, label, tone } = COPY_FEEDBACK[state];
+
+  useEffect(() => {
+    if (state === "idle") return;
+    const timer = setTimeout(() => setState("idle"), 1600);
+    return () => clearTimeout(timer);
+  }, [state]);
+
   return (
-    outcome.title?.trim() || session.issue_title?.trim() || "Untitled research"
+    <div className="flex flex-wrap items-center justify-end gap-1 print:hidden">
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => {
+          void copyText(composeReportMarkdown(session, outcome)).then((ok) =>
+            setState(ok ? "copied" : "failed"),
+          );
+        }}
+      >
+        <CopyIcon className={cn("size-3.5", tone)} aria-hidden="true" />
+        {label}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() =>
+          downloadMarkdown(
+            reportFileName(session, outcome),
+            composeReportMarkdown(session, outcome),
+          )
+        }
+      >
+        <Download className="size-3.5" aria-hidden="true" />
+        Download .md
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        onClick={() => window.print()}
+      >
+        <Printer className="size-3.5" aria-hidden="true" />
+        Export PDF
+      </Button>
+    </div>
   );
 }
 

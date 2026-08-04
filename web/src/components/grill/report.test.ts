@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { GrillSession, OutcomePayload } from "@/lib/grill";
 
@@ -40,6 +40,14 @@ async function render(
     root.render(createElement(ReportDocument, props));
   });
   return () => root.unmount();
+}
+
+function buttonNamed(container: HTMLElement, label: string): HTMLButtonElement {
+  const button = [...container.querySelectorAll("button")].find(
+    (b) => b.textContent?.trim() === label,
+  );
+  if (!button) throw new Error(`no ${label} button`);
+  return button;
 }
 
 describe("ReportDocument", () => {
@@ -123,6 +131,67 @@ describe("ReportDocument", () => {
     });
     expect(container.textContent).not.toContain("Sources");
     expect(container.querySelector("ol")).toBeNull();
+    unmount();
+  });
+
+  it("copies the composed Markdown, and confirms it", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome,
+      warnings: [],
+    });
+    const copy = buttonNamed(container, "Copy");
+    await act(async () => copy.click());
+    expect(writeText).toHaveBeenCalledTimes(1);
+    const written = writeText.mock.calls[0][0] as string;
+    expect(written).toContain("# How the SDK retries");
+    expect(written).toContain("Exponential backoff.");
+    expect(buttonNamed(container, "Copied")).toBeDefined();
+    unmount();
+  });
+
+  it("downloads the report as a dated .md file", async () => {
+    const created = vi.fn().mockReturnValue("blob:report");
+    URL.createObjectURL = created;
+    URL.revokeObjectURL = vi.fn();
+    const clicked: HTMLAnchorElement[] = [];
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(function (this: HTMLAnchorElement) {
+        clicked.push(this);
+      });
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome,
+      warnings: [],
+    });
+    await act(async () => buttonNamed(container, "Download .md").click());
+    expect(clicked).toHaveLength(1);
+    expect(clicked[0].download).toBe("2026-07-19-how-the-sdk-retries.md");
+    expect(created.mock.calls[0][0]).toBeInstanceOf(Blob);
+    expect(document.querySelector("a[download]")).toBeNull();
+    click.mockRestore();
+    unmount();
+  });
+
+  it("exports a PDF through the browser's print dialog", async () => {
+    const print = vi.fn();
+    window.print = print;
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome,
+      warnings: [],
+    });
+    await act(async () => buttonNamed(container, "Export PDF").click());
+    expect(print).toHaveBeenCalledTimes(1);
     unmount();
   });
 
