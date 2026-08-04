@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
@@ -24,6 +24,7 @@ import {
   useActiveRepo,
 } from "@/components/trau";
 import {
+  isAwaitingAnswer,
   researchGrillSessionsQueryOptions,
   startGrillSession,
   startModelOptions,
@@ -32,22 +33,27 @@ import {
   type GrillSession,
 } from "@/lib/grill";
 import { inboxPill, type InboxPillTone } from "@/lib/inbox";
+import { repoScopeSwitch } from "@/lib/notification-center";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
 import { useProjectRepo } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
 interface ResearchSearch {
   session?: string;
+  repo?: string;
 }
 
 export const Route = createFileRoute("/research")({
   component: ResearchPage,
-  // session selects a report to read (or new to open the composer), read at runtime
-  // through nuqs so a link can point straight at one.
+  // session selects a report to read (or new to open the composer) and repo names the
+  // project it belongs to — both read at runtime through nuqs so the dock and a pushed
+  // notification can point straight at a waiting session.
   validateSearch: (search: Record<string, unknown>): ResearchSearch => {
     const out: ResearchSearch = {};
     if (typeof search.session === "string" && search.session !== "")
       out.session = search.session;
+    if (typeof search.repo === "string" && search.repo !== "")
+      out.repo = search.repo;
     return out;
   },
 });
@@ -74,11 +80,16 @@ interface ResearchStart {
   onModelChange: (model: string) => void;
 }
 
-// researchTitle names a session in the rail. The hub's join falls back to the seed —
-// the question the session opened on — which is the only title an issue-less research
-// session ever has.
+// researchTitle names a session in the rail: the title the agent gave its report,
+// once it has written one. Until then — and for a report finished before titles were
+// required — the hub's join falls back to the seed, the question the session opened
+// on, which is the only title an issue-less research session ever has.
 function researchTitle(session: GrillSession): string {
-  return session.issue_title?.trim() || "Untitled research";
+  return (
+    session.report_title?.trim() ||
+    session.issue_title?.trim() ||
+    "Untitled research"
+  );
 }
 
 // A report is read long after the day it was written, so a row carries its date.
@@ -91,10 +102,21 @@ function researchDate(iso: string): string {
 
 function ResearchPage() {
   usePageTitle(standardTitle("Research"));
-  const { repo: activeRepo, repos } = useActiveRepo();
+  const { repo: activeRepo, repos, setRepo } = useActiveRepo();
   const repo = useProjectRepo(activeRepo ?? "", repos);
   const queryClient = useQueryClient();
   const list = useQuery(researchGrillSessionsQueryOptions(repo));
+
+  // A link into a waiting session carries the project it belongs to, because the page
+  // is built from the active scope and not from the link. The scope adopts it once the
+  // repo list is in, then the param is dropped so the switcher stays in charge.
+  const [linkedRepo, setLinkedRepo] = useQueryState("repo", parseAsString);
+  useEffect(() => {
+    if (!linkedRepo || repos.length === 0) return;
+    const adopt = repoScopeSwitch(linkedRepo, activeRepo, repos);
+    if (adopt) setRepo(adopt);
+    void setLinkedRepo(null);
+  }, [linkedRepo, activeRepo, repos, setRepo, setLinkedRepo]);
 
   // An abandoned session was ended with nothing to show, so it leaves the page
   // entirely; everything else — still running, waiting on an answer, or applied —
@@ -141,8 +163,9 @@ function ResearchPage() {
     void queryClient.invalidateQueries({ queryKey: ["grill", repo, "research"] });
   }
 
-  // Discarding abandons the session, which drops it off the page — the selection
-  // falls back to the newest report rather than a row that is no longer there.
+  // Discarding abandons the session and deleting removes it outright; either way it
+  // drops off the page, so the selection falls back to the newest report rather than
+  // a row that is no longer there.
   function onDiscarded() {
     void setPeek(null);
     refreshList();
@@ -222,10 +245,10 @@ function ResearchPage() {
   );
 }
 
-// SessionColumn is the chat zone: the session bar over the conversation, which runs
-// the question-and-answer turns while the session is live and shows the findings
-// review once it finishes. An applied session opens here read-only, its report
-// rendered by the same review.
+// SessionColumn is the report zone: the session bar over the conversation, which runs
+// the question-and-answer turns while the session is live and turns into the report
+// document once it finishes. An applied session opens on that same document, its
+// transcript tucked behind the disclosure.
 function SessionColumn({
   repo,
   session,
@@ -277,6 +300,8 @@ function SessionColumn({
           key={session.id}
           repo={repo}
           initial={session}
+          report
+          autoFocus={isAwaitingAnswer(session.state)}
           onStatus={onStatus}
           onApplied={onApplied}
           onDiscarded={onDiscarded}
@@ -454,6 +479,11 @@ function SessionRow({
           >
             {researchDate(session.created_at)}
           </span>
+          {session.issue_id && (
+            <span className="truncate font-mono text-xs text-faint">
+              {session.issue_id}
+            </span>
+          )}
           <span
             className={cn(
               "ml-auto shrink-0 font-mono text-[0.65rem]",

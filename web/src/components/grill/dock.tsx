@@ -37,7 +37,6 @@ import {
   type GrillSession,
 } from "@/lib/grill";
 import { formatAge } from "@/lib/ledger";
-import { draftItemId } from "@/lib/inbox";
 import {
   hasUnseenSession,
   useSeenMarks,
@@ -45,6 +44,7 @@ import {
 } from "@/lib/inbox-seen";
 import { readKeyStroke } from "@/lib/keys";
 import {
+  grillSessionTarget,
   useNotificationEvents,
   useNotificationNavigate,
 } from "@/lib/notification-center";
@@ -125,21 +125,26 @@ export function InterviewDock() {
     read(session);
   };
 
+  const letGo = () => {
+    setEngaged(null);
+    setExpanded(false);
+  };
+
   const activate = (session: GrillAwaitingSession) => {
+    const target = grillSessionTarget(session);
+    // A research question is answered next to its report, which the panel has no
+    // room for, so the dock hands the session over instead of holding it.
+    if (target.kind === "research") {
+      read(session);
+      letGo();
+      focusInPage(target);
+      return;
+    }
     if (!onInbox) {
       open(session);
       return;
     }
-    focusInPage({
-      kind: "inbox",
-      repo: session.repo,
-      issue: session.issue_id || draftItemId(session.id),
-    });
-  };
-
-  const letGo = () => {
-    setEngaged(null);
-    setExpanded(false);
+    focusInPage(target);
   };
 
   // The tab leads with the session the dock holds, so what the user was last in stays
@@ -425,11 +430,7 @@ function InterviewPanel({
 
   const review = () => {
     onDismiss();
-    navigateToNotification({
-      kind: "inbox",
-      repo: session.repo,
-      issue: session.issue_id || draftItemId(session.id),
-    });
+    navigateToNotification(grillSessionTarget(session));
   };
 
   const step = (by: number) => {

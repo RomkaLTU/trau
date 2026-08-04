@@ -27,13 +27,15 @@ export type GrillMode = 'interview' | 'research'
 // instead of the picker default, and apply_warnings carries the caveats that apply
 // reported, so the same remount raises them again. auto_accept marks a session
 // answering its own recommendations, so only a question needing the user's taste is
-// ever asked.
+// ever asked. report_title is the title a research outcome gave its report, which the
+// Research page names the session by; a session finished without one keeps the seed.
 export interface GrillSession {
   id: string
   repo: string
   issue_id?: string
   issue_destination?: GrillDestination
   issue_title?: string
+  report_title?: string
   apply_warnings?: string[]
   state: GrillState
   session_chain?: string
@@ -198,14 +200,23 @@ export interface SubIssueProposal {
   blocked_by?: number[]
 }
 
+// ReportSource is one source a research report consulted. Research settled inside
+// the repository consults none, so a report carrying no sources is normal.
+export interface ReportSource {
+  title: string
+  url: string
+  note?: string
+}
+
 export interface OutcomePayload {
   disposition: string
   // title and labels are carried by a create outcome — the new issue's title and its
   // labels (a single issue defaults to ready-for-agent server-side).
   title?: string
   proposed_description?: string
-  // findings is the research outcome's Markdown report.
+  // findings is the research outcome's Markdown report, sources the ones it cited.
   findings?: string
+  sources?: ReportSource[]
   labels?: string[]
   sub_issues?: SubIssueProposal[]
   summary: string
@@ -272,6 +283,12 @@ function base(repo: string): string {
   return `/api/v1/repos/${encodeURIComponent(repo)}/grill`
 }
 
+// A failure names the session type the surface asked for, so the Research page never
+// reports on an interview it never ran.
+function modeNoun(mode?: GrillMode): string {
+  return mode === 'research' ? 'research' : 'interview'
+}
+
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const detail = (await res.json().catch(() => null)) as {
     error?: string
@@ -289,7 +306,8 @@ async function fetchGrillSessions(
   if (mode) query.set('mode', mode)
   const q = query.toString()
   const res = await apiFetch(q ? `${base(repo)}?${q}` : base(repo))
-  if (!res.ok) throw new Error(await errorMessage(res, 'list interview sessions failed'))
+  if (!res.ok)
+    throw new Error(await errorMessage(res, `list ${modeNoun(mode)} sessions failed`))
   return res.json()
 }
 
@@ -528,7 +546,7 @@ export async function startGrillSession(
   })
   if (!res.ok) {
     throw new GrillStartError(
-      await errorMessage(res, 'start interview session failed'),
+      await errorMessage(res, `start ${modeNoun(opening.mode)} session failed`),
       res.status,
     )
   }
@@ -698,6 +716,27 @@ export async function abandonGrill(sid: string): Promise<GrillSession> {
   return res.json()
 }
 
+// renameGrillReport gives a research report the title the user chose. It outranks the
+// one the agent proposed for good, so a follow-up turn never takes the name back.
+export async function renameGrillReport(sid: string, title: string): Promise<GrillSession> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/title`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'rename report failed'))
+  return res.json()
+}
+
+// deleteGrillReport drops a settled research report and its transcript. Reports are
+// exempt from the hub's retention pruning, so this is the only way one goes away.
+export async function deleteGrillReport(sid: string): Promise<void> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'delete report failed'))
+}
+
 export function grillStreamURL(sid: string): string {
   return `/api/v1/grill/${encodeURIComponent(sid)}/stream`
 }
@@ -792,11 +831,21 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
     proposed_description:
       typeof p.proposed_description === 'string' ? p.proposed_description : undefined,
     findings: typeof p.findings === 'string' ? p.findings : undefined,
+    sources: Array.isArray(p.sources) ? p.sources.map(parseSource) : undefined,
     labels: Array.isArray(p.labels)
       ? p.labels.filter((l): l is string => typeof l === 'string')
       : undefined,
     sub_issues: Array.isArray(p.sub_issues) ? p.sub_issues.map(parseSubIssue) : undefined,
     summary: typeof p.summary === 'string' ? p.summary : '',
+  }
+}
+
+function parseSource(raw: unknown): ReportSource {
+  const p = (raw ?? {}) as Partial<ReportSource>
+  return {
+    title: typeof p.title === 'string' ? p.title : '',
+    url: typeof p.url === 'string' ? p.url : '',
+    note: typeof p.note === 'string' ? p.note : undefined,
   }
 }
 

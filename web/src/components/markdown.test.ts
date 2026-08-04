@@ -180,4 +180,30 @@ describe("Markdown", () => {
     expect(container.querySelector("code")?.textContent).toBe("[a](b)");
     unmount();
   });
+
+  it("renders headings as paragraphs by default", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      children: "# Top\n\n## Sources",
+    });
+    expect(container.querySelector("h1, h2, h3, h4")).toBeNull();
+    expect(container.querySelectorAll("p")).toHaveLength(2);
+    unmount();
+  });
+
+  it("renders document headings as h2-h4 with anchors", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      children: "# Top\n\n## Sources read\n\n### Detail\n\n#### Deeper",
+      document: true,
+    });
+    expect(container.querySelector("h2")?.getAttribute("id")).toBe("top");
+    expect(container.querySelector("h3")?.getAttribute("id")).toBe(
+      "sources-read",
+    );
+    expect(
+      [...container.querySelectorAll("h4")].map((h) => h.getAttribute("id")),
+    ).toEqual(["detail", "deeper"]);
+    unmount();
+  });
 });

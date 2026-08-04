@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -97,6 +98,14 @@ type grillSubIssue struct {
 	BlockedBy   []int    `json:"blocked_by,omitempty"`
 }
 
+// grillSource is one source a research report consulted. Research that never left
+// the repository has none, so the list is optional throughout.
+type grillSource struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	Note  string `json:"note,omitempty"`
+}
+
 // GrillApplyStep is one apply step's outcome. Error is set only when Status is
 // failed.
 type GrillApplyStep struct {
@@ -122,6 +131,7 @@ type grillOutcome struct {
 	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
 	Findings            string          `json:"findings"`
+	Sources             []grillSource   `json:"sources"`
 	Labels              []string        `json:"labels"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
 	Summary             string          `json:"summary"`
@@ -189,15 +199,8 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	// keeps the report on the session and never reaches the tracker.
 	archivesOnly := outcome.Disposition == grillDispResearch && strings.TrimSpace(sess.IssueID) == ""
 	if outcome.Disposition == grillDispNoChange || archivesOnly {
-		// A draft interview may still finish on a research disposition, and its report
-		// is read on the Research page, so the session is stamped to match before it
-		// settles rather than dropping out of both lists.
-		if archivesOnly && sess.Mode != hubstore.GrillModeResearch {
-			if stamped, _, err := s.stores.Grill().SetMode(sess.ID, hubstore.GrillModeResearch); err != nil {
-				logger.Verbosef("grill apply %d: stamp research mode: %v", sess.ID, err)
-			} else {
-				sess = stamped
-			}
+		if archivesOnly {
+			s.stampGrillResearchMode(&sess)
 		}
 		s.settleGrillApplied(w, &sess, nil, nil)
 		return
@@ -287,8 +290,11 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			r.Context(),
 			writer,
 			sess.IssueID,
-			composeGrillFindings(outcome.Findings, comment),
+			composeGrillFindings(outcome.Findings, comment, outcome.Sources),
 		)
+		if applied {
+			s.stampGrillResearchMode(&sess)
+		}
 	default:
 		issueID, ok := grillAnchoredIssue(w, sess)
 		if !ok {
@@ -336,6 +342,21 @@ func (s *Server) recordGrillWarnings(sess *hubstore.GrillSession, warnings []str
 		*sess = stamped
 	} else {
 		logger.Verbosef("grill apply %d: record warnings: %v", sess.ID, err)
+	}
+}
+
+// stampGrillResearchMode lists a session that settled on a research report where
+// research is read — an interview that ends in findings would otherwise leave its
+// report on the tracker comment alone, and be pruned with the other settled
+// interviews. A failure is only logged: the writes it follows have already landed.
+func (s *Server) stampGrillResearchMode(sess *hubstore.GrillSession) {
+	if sess.Mode == hubstore.GrillModeResearch {
+		return
+	}
+	if stamped, _, err := s.stores.Grill().SetMode(sess.ID, hubstore.GrillModeResearch); err != nil {
+		logger.Verbosef("grill apply %d: stamp research mode: %v", sess.ID, err)
+	} else {
+		*sess = stamped
 	}
 }
 
@@ -1002,9 +1023,24 @@ func composeGrillSummary(summary string, msgs []hubstore.GrillMessage) string {
 }
 
 // composeGrillFindings builds the research comment: the report, then the usual
-// summary comment, so the clarifications that shaped the research stay attached.
-func composeGrillFindings(findings, summary string) string {
-	return "## Research findings\n\n" + strings.TrimSpace(findings) + "\n\n---\n\n" + summary
+// summary comment, so the clarifications that shaped the research stay attached,
+// and last the sources the report cited when it consulted any.
+func composeGrillFindings(findings, summary string, sources []grillSource) string {
+	var b strings.Builder
+	b.WriteString("## Research findings\n\n")
+	b.WriteString(strings.TrimSpace(findings))
+	b.WriteString("\n\n---\n\n")
+	b.WriteString(summary)
+	if len(sources) > 0 {
+		b.WriteString("\n\n### Sources\n")
+		for i, src := range sources {
+			fmt.Fprintf(&b, "\n%d. [%s](%s)", i+1, src.Title, src.URL)
+			if src.Note != "" {
+				b.WriteString(" — " + src.Note)
+			}
+		}
+	}
+	return b.String()
 }
 
 type grillQA struct{ question, answer string }

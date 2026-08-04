@@ -997,6 +997,60 @@ func TestGrillApplyResearchCommentsOnTheAnchoredIssue(t *testing.T) {
 	if !strings.Contains(body, "answered the retry question") {
 		t.Errorf("comment = %q, want the grilling summary alongside the report", body)
 	}
+	if out.Session.Mode != hubstore.GrillModeResearch {
+		t.Errorf("applied session mode = %q, want research", out.Session.Mode)
+	}
+	listed, err := stores.Grill().List(root, "", hubstore.GrillModeResearch)
+	if err != nil {
+		t.Fatalf("list research: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != sid || listed[0].IssueID != "COD-1" {
+		t.Fatalf("research list = %+v, want the settled interview anchored to COD-1", listed)
+	}
+}
+
+func TestGrillApplyResearchCommentEndsInTheSources(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition: grillDispResearch,
+		Findings:    "## Conclusion\n\nExponential backoff.",
+		Summary:     "answered the retry question",
+		Sources: []grillSource{
+			{Title: "Retry docs", URL: "https://sdk.example/retries", Note: "the backoff table"},
+			{Title: "Release notes", URL: "https://sdk.example/changelog"},
+		},
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied {
+		t.Fatalf("apply result = %+v, want applied", out)
+	}
+	body := fake.comments[0].body
+	want := "\n\n### Sources\n" +
+		"\n1. [Retry docs](https://sdk.example/retries) — the backoff table" +
+		"\n2. [Release notes](https://sdk.example/changelog)"
+	if !strings.HasSuffix(body, want) {
+		t.Fatalf("comment = %q, want it to end in the sources list %q", body, want)
+	}
+}
+
+func TestGrillApplyResearchWithoutSourcesHasNoSourcesSection(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition: grillDispResearch,
+		Findings:    "## Conclusion\n\nIt reads the known set first.",
+		Summary:     "answered from the repository alone",
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied {
+		t.Fatalf("apply result = %+v, want applied", out)
+	}
+	if body := fake.comments[0].body; strings.Contains(body, "Sources") {
+		t.Fatalf("comment = %q, want no sources heading", body)
+	}
 }
 
 func TestGrillApplyResearchAuthoringWritesNothing(t *testing.T) {
@@ -1065,10 +1119,16 @@ func TestGrillApplyResearchCommentFailureIsReported(t *testing.T) {
 	if len(out.Steps) != 1 || out.Steps[0].Status != grillStepFailed || out.Steps[0].Error != "linear: 502" {
 		t.Fatalf("steps = %+v, want the failed findings step carrying the error", out.Steps)
 	}
+	if stored, _, _ := stores.Grill().Session(sid); stored.Mode == hubstore.GrillModeResearch {
+		t.Errorf("stored mode = research, want it stamped only once the comment lands")
+	}
 
 	fake.commentErr = nil
 	if _, out = applyGrill(t, ts, sid, GrillApplyRequest{}); !out.Applied {
 		t.Fatalf("re-apply = %+v, want applied", out)
+	}
+	if out.Session.Mode != hubstore.GrillModeResearch {
+		t.Errorf("re-applied session mode = %q, want research", out.Session.Mode)
 	}
 }
 

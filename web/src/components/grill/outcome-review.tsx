@@ -58,7 +58,7 @@ import { issueQueryOptions } from "@/lib/issues";
 import { enqueueOnce, publishQueue, type EnqueueRequest } from "@/lib/queue";
 import { cn } from "@/lib/utils";
 
-const noReport = "This session recorded no report.";
+export const noReport = "This session recorded no report.";
 
 export function OutcomeProposal({ outcome }: { outcome: OutcomePayload }) {
   return (
@@ -112,6 +112,7 @@ export function OutcomeReview({
   issueId,
   session,
   outcome,
+  reportShown = false,
   onSession,
   onApplied,
   onDiscarded,
@@ -121,6 +122,9 @@ export function OutcomeReview({
   issueId: string;
   session: GrillSession;
   outcome: OutcomePayload;
+  // reportShown marks a host already showing the outcome as a document, so the card
+  // is the decision alone rather than a second copy of the report and its summary.
+  reportShown?: boolean;
   onSession: (session: GrillSession) => void;
   onApplied?: (applied: GrillAppliedOutcome) => void;
   onDiscarded?: () => void;
@@ -347,6 +351,7 @@ export function OutcomeReview({
         <ResearchBody
           findings={outcome.findings ?? ""}
           anchored={issueId !== ""}
+          reportShown={reportShown}
         />
       ) : (
         <p className="text-xs leading-relaxed text-muted-foreground">
@@ -356,7 +361,7 @@ export function OutcomeReview({
         </p>
       )}
 
-      <SummaryPreview summary={outcome.summary} />
+      {!reportShown && <SummaryPreview summary={outcome.summary} />}
 
       {(isCreate || detachable) && tracker !== "" && (
         <DestinationPicker
@@ -943,15 +948,26 @@ function NewBody({
   );
 }
 
-// ResearchBody renders the report read-only — it is delivered as written.
+// ResearchBody renders the report read-only — it is delivered as written. A host
+// showing the document itself keeps only the note saying what approving does.
 function ResearchBody({
   findings,
   anchored,
+  reportShown,
 }: {
   findings: string;
   anchored: boolean;
+  reportShown: boolean;
 }) {
   const report = findings.trim();
+  const note = anchored
+    ? "Posts the report as a comment on the issue. The description and labels are left unchanged."
+    : "Keeps the report on this session — nothing is written to the tracker.";
+  if (reportShown) {
+    return (
+      <p className="text-xs leading-relaxed text-muted-foreground">{note}</p>
+    );
+  }
   return (
     <div className="flex flex-col gap-2">
       <span className="text-xs font-medium text-muted-foreground">
@@ -966,11 +982,7 @@ function ResearchBody({
           <Markdown>{report}</Markdown>
         </div>
       )}
-      <p className="text-xs leading-relaxed text-muted-foreground">
-        {anchored
-          ? "Posts the report as a comment on the issue. The description and labels are left unchanged."
-          : "Keeps the report on this session — nothing is written to the tracker."}
-      </p>
+      <p className="text-xs leading-relaxed text-muted-foreground">{note}</p>
     </div>
   );
 }
@@ -1318,7 +1330,7 @@ function StepList({ steps }: { steps: GrillApplyStep[] }) {
 // WarningList raises what the apply could not do on the side but never gated on —
 // a detached ticket the tracker refused the superseded note on. The outcome landed,
 // so these read as caveats rather than failures.
-function WarningList({ warnings }: { warnings: string[] }) {
+export function WarningList({ warnings }: { warnings: string[] }) {
   return (
     <div className="flex flex-col gap-1.5 rounded-md border bg-card px-3 py-2">
       {warnings.map((warning) => (

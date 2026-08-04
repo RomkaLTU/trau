@@ -26,13 +26,16 @@ const notificationReadRetention = 200
 // Notification is one durable needs-attention record: a grilling session awaiting
 // the user or a run that paused, faulted, or was quarantined. Ref is the grilling
 // session id or the run's ticket; IssueID names the tracker issue when there is
-// one. ReadAt is empty while the notification is unread.
+// one. Mode is the grilling session's type, so a research question routes to its
+// report rather than to an inbox row that does not exist; the run kinds leave it
+// empty. ReadAt is empty while the notification is unread.
 type Notification struct {
 	ID        int64  `json:"id"`
 	Repo      string `json:"repo"`
 	Kind      string `json:"kind"`
 	Ref       string `json:"ref"`
 	IssueID   string `json:"issue_id,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 	Title     string `json:"title"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"created_at"`
@@ -52,7 +55,7 @@ type Notifications struct {
 // NewNotifications returns a Notifications store over db.
 func NewNotifications(db *sql.DB) *Notifications { return &Notifications{db: db} }
 
-const notificationSelect = `SELECT id, repo, kind, ref, COALESCE(issue_id, ''), title, body,
+const notificationSelect = `SELECT id, repo, kind, ref, COALESCE(issue_id, ''), mode, title, body,
 		created_at, updated_at, COALESCE(read_at, '')
 	 FROM notifications`
 
@@ -62,7 +65,7 @@ const notificationSelect = `SELECT id, repo, kind, ref, COALESCE(issue_id, ''), 
 // new one is supplied — rather than stacking a second row, so a session shows at
 // most one unread entry. A session whose last notification was already read
 // inserts a fresh unread one.
-func (n *Notifications) NotifyGrillQuestion(repo string, sessionID int64, issueID, title, body string) (Notification, error) {
+func (n *Notifications) NotifyGrillQuestion(repo string, sessionID int64, issueID, mode, title, body string) (Notification, error) {
 	ref := strconv.FormatInt(sessionID, 10)
 	now := formatNotificationTime(time.Now())
 	tx, err := n.db.Begin()
@@ -76,7 +79,7 @@ func (n *Notifications) NotifyGrillQuestion(repo string, sessionID int64, issueI
 	).Scan(&id)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		id, err = insertNotification(tx, repo, NotificationGrillQuestion, ref, issueID, title, body, now)
+		id, err = insertNotification(tx, repo, NotificationGrillQuestion, ref, issueID, mode, title, body, now)
 		if err != nil {
 			return Notification{}, errors.Join(err, tx.Rollback())
 		}
@@ -104,7 +107,7 @@ func (n *Notifications) NotifyRunAttention(repo, kind, runID, issueID, title, bo
 	if err != nil {
 		return Notification{}, err
 	}
-	id, err := insertNotification(tx, repo, kind, runID, issueID, title, body, now)
+	id, err := insertNotification(tx, repo, kind, runID, issueID, "", title, body, now)
 	if err != nil {
 		return Notification{}, errors.Join(err, tx.Rollback())
 	}
@@ -186,11 +189,11 @@ func (n *Notifications) byID(id int64) (Notification, error) {
 	return rows[0], nil
 }
 
-func insertNotification(tx *sql.Tx, repo, kind, ref, issueID, title, body, now string) (int64, error) {
+func insertNotification(tx *sql.Tx, repo, kind, ref, issueID, mode, title, body, now string) (int64, error) {
 	res, err := tx.Exec(
-		`INSERT INTO notifications(repo, kind, ref, issue_id, title, body, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		repo, kind, ref, issueID, title, body, now, now,
+		`INSERT INTO notifications(repo, kind, ref, issue_id, mode, title, body, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, kind, ref, issueID, mode, title, body, now, now,
 	)
 	if err != nil {
 		return 0, err
@@ -208,7 +211,7 @@ func (n *Notifications) scan(query string, args ...any) (out []Notification, err
 	for q.Next() {
 		var nt Notification
 		if err := q.Scan(
-			&nt.ID, &nt.Repo, &nt.Kind, &nt.Ref, &nt.IssueID, &nt.Title, &nt.Body,
+			&nt.ID, &nt.Repo, &nt.Kind, &nt.Ref, &nt.IssueID, &nt.Mode, &nt.Title, &nt.Body,
 			&nt.CreatedAt, &nt.UpdatedAt, &nt.ReadAt,
 		); err != nil {
 			return nil, err

@@ -25,7 +25,10 @@ const grillDefaultProvider = "claude"
 
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
-// carries the session's seed so the queue can title an issue-less draft.
+// carries the session's seed so the queue can title an issue-less draft. ReportTitle
+// is the report's title — the one a rename gave it, else the one its research outcome
+// proposed — which the Research page reads in place of the seed; it is absent until
+// the session is renamed or finishes with one.
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
 // reverting to the picker default, and ApplyWarnings the caveats that apply carried,
@@ -38,6 +41,7 @@ type GrillSessionView struct {
 	IssueID          string   `json:"issue_id,omitempty"`
 	IssueDestination string   `json:"issue_destination,omitempty"`
 	IssueTitle       string   `json:"issue_title,omitempty"`
+	ReportTitle      string   `json:"report_title,omitempty"`
 	State            string   `json:"state"`
 	SessionChain     string   `json:"session_chain,omitempty"`
 	Mode             string   `json:"mode"`
@@ -163,6 +167,11 @@ type GrillModelRequest struct {
 // GrillAutoAcceptRequest is the body of POST /grill/{sid}/auto-accept.
 type GrillAutoAcceptRequest struct {
 	Enabled bool `json:"enabled"`
+}
+
+// GrillTitleRequest is the body of POST /grill/{sid}/title.
+type GrillTitleRequest struct {
+	Title string `json:"title"`
 }
 
 // GrillAnswerResponse acknowledges an answer with the resulting session state and
@@ -324,13 +333,21 @@ func (s *Server) grillQuestionPreview(sess hubstore.GrillSession) string {
 	return truncateBody(strings.TrimSpace(line), notificationBodyMax)
 }
 
-// handleGrillSession serves one session and its full conversation (GET /grill/{sid}).
+// handleGrillSession serves one session and its full conversation (GET) and drops a
+// research report for good (DELETE).
 func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	switch r.Method {
+	case http.MethodGet:
+		s.getGrillSession(w, r)
+	case http.MethodDelete:
+		s.deleteGrillSession(w, r)
+	default:
+		w.Header().Set("Allow", "GET, DELETE")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
 	}
+}
+
+func (s *Server) getGrillSession(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.loadGrillSession(w, r)
 	if !ok {
 		return
@@ -344,6 +361,82 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 		Session:  s.grillSessionView("", sess),
 		Messages: grillMessageViews(msgs),
 	})
+}
+
+// deleteGrillSession drops a research report and its transcript for good. Applied
+// research is exempt from retention pruning, so this is the only way one leaves the
+// store; a session still live is refused rather than killed out from under its turn.
+func (s *Server) deleteGrillSession(w http.ResponseWriter, r *http.Request) {
+	sess, ok := s.loadResearchSession(w, r)
+	if !ok {
+		return
+	}
+	switch sess.State {
+	case hubstore.GrillApplied, hubstore.GrillAbandoned:
+	default:
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is still live"})
+		return
+	}
+	deleted, err := s.stores.Grill().Delete(sess.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete grill session: " + err.Error()})
+		return
+	}
+	if !deleted {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGrillTitle renames a research report (POST). The name the user chose outranks
+// the one the outcome proposed from here on, so a follow-up turn never takes it back.
+func (s *Server) handleGrillTitle(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sess, ok := s.loadResearchSession(w, r)
+	if !ok {
+		return
+	}
+	var req GrillTitleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
+		return
+	}
+	updated, found, err := s.stores.Grill().SetTitle(sess.ID, title)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "set title failed"})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
+		return
+	}
+	s.publishGrillState(updated)
+	writeJSON(w, http.StatusOK, s.grillSessionView("", updated))
+}
+
+// loadResearchSession loads the session a report-management route addresses, answering
+// 404 for an interview id: renaming and deleting belong to the reports the research
+// page keeps, and the Inbox keeps its own retention semantics.
+func (s *Server) loadResearchSession(w http.ResponseWriter, r *http.Request) (hubstore.GrillSession, bool) {
+	sess, ok := s.loadGrillSession(w, r)
+	if !ok {
+		return hubstore.GrillSession{}, false
+	}
+	if grillEffectiveMode(sess.Mode) != hubstore.GrillModeResearch {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not a research session"})
+		return hubstore.GrillSession{}, false
+	}
+	return sess, true
 }
 
 // handleGrillAnswer appends a user's message and resumes the session (POST). A running
@@ -929,6 +1022,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		IssueID:          sess.IssueID,
 		IssueDestination: sess.IssueDestination,
 		IssueTitle:       sess.IssueTitle,
+		ReportTitle:      sess.ReportTitle,
 		State:            sess.State,
 		SessionChain:     sess.SessionChain,
 		Mode:             grillEffectiveMode(sess.Mode),

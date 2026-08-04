@@ -59,7 +59,7 @@ func TestPurgeRemovesEveryLocalTraceAndTombstones(t *testing.T) {
 	if err := s.Grill().MarkBlockRelation(root, "COD-2", "COD-1"); err != nil {
 		t.Fatalf("mark block relation: %v", err)
 	}
-	if _, err := s.Notifications().NotifyGrillQuestion(root, sess.ID, "COD-1", "waiting", "answer me"); err != nil {
+	if _, err := s.Notifications().NotifyGrillQuestion(root, sess.ID, "COD-1", GrillModeInterview, "waiting", "answer me"); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
 	att, err := s.Attachments().Create(Attachment{
