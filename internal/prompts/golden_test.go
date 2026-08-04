@@ -28,6 +28,8 @@ const (
 	goldenGrillAttachments = "\n--- Attachments ---\n/tmp/trau-attachments-COD-123/shot.png — shot.png (image/png, 2.0KB)\nThese are local copies of the ticket's files. Images may show UI states or error screenshots that matter for this task — read them.\n"
 	goldenGrillFocus       = "Whether the collapse threshold should be configurable."
 	goldenGrillQuestion    = "Which OAuth flow the desktop client should use."
+	goldenGrillFailure     = "gave_up at phase verify — verify failed three times on the same assertion"
+	goldenGrillDossier     = "/tmp/trau-attachments-COD-123/dossier.md"
 )
 
 func goldenRepairData(codeStyle, handoff, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) RepairData {
@@ -63,6 +65,15 @@ func grillIssueAutoAccept() GrillIssueData {
 	data := grillIssueFocused(goldenGrillFocus)
 	data.AutoAccept = true
 	return data
+}
+
+func grillFix(branch string) GrillFixData {
+	return GrillFixData{
+		GrillIssueData: grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments),
+		Failure:        goldenGrillFailure,
+		Dossier:        goldenGrillDossier,
+		Branch:         branch,
+	}
 }
 
 type goldenCase struct {
@@ -168,6 +179,13 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"grill_issue_auto_accept", "grill_issue", grillIssueAutoAccept()},
 		{"grill_authoring_auto_accept", "grill_authoring", GrillAuthoringData{Idea: "A dark-mode toggle in the toolbar.", AutoAccept: true}},
 		{"grill_research_auto_accept", "grill_research", GrillResearchData{GrillIssueData: grillIssueAutoAccept()}},
+		{"grill_fix", "grill_fix", grillFix(goldenBranch)},
+		{"grill_fix_no_branch", "grill_fix", grillFix("")},
+		{"grill_fix_auto_accept", "grill_fix", func() GrillFixData {
+			data := grillFix(goldenBranch)
+			data.AutoAccept = true
+			return data
+		}()},
 	}
 	assertGoldens(t, cases)
 }
@@ -242,8 +260,8 @@ func TestResearchPromptRequiresPlanApproval(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	cat := Catalog()
-	if len(cat) != 25 {
-		t.Fatalf("catalog has %d prompts, want 25", len(cat))
+	if len(cat) != 26 {
+		t.Fatalf("catalog has %d prompts, want 26", len(cat))
 	}
 	seen := map[string]bool{}
 	for _, p := range cat {

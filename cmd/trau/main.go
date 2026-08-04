@@ -165,7 +165,7 @@ func main() {
 	if errors.As(err, &se) {
 		os.Exit(se.code)
 	}
-	fmt.Fprintln(os.Stderr, "trau:", console.FormatActionable(err))
+	fmt.Fprintln(os.Stderr, console.ErrorPrefix+console.FormatActionable(err))
 	fmt.Fprintln(os.Stderr, "  → run `trau doctor` to check your setup, or add `--verbose` / `--debug` for more detail")
 	os.Exit(1)
 }
@@ -453,10 +453,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			id, verb = opts.RequeueID, "requeue"
 		}
 		if phase := pipe.State.Get(id, "PHASE"); phase == state.Merged && !opts.Force {
-			return console.Actionable(
-				fmt.Errorf("%s is already shipped (phase: %s)", id, phase),
-				verb+" "+id,
-				fmt.Sprintf("its code is already merged — pass --force to %s it anyway", verb))
+			return pipeline.RefuseShipped(verb, id, "phase: "+phase)
 		}
 		if opts.RequeueID != "" {
 			return pipe.Requeue(ctx, id, opts.Force)

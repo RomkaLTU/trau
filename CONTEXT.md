@@ -177,6 +177,10 @@ _Avoid_: stuck (informal), broken, error queue
 Destructively re-queue a ticket: delete its feature branch (local + remote) and artifacts, drop the Checkpoint, and re-open the tracker ticket to ready so the picker starts it clean. The recovery for a Quarantined dead end, or a Faulted ticket that Resume can't save.
 _Avoid_: clear (that keeps branch + tracker), forget, resume, retry
 
+**Requeue** (a ticket):
+Undo a quarantine in one step so the picker can take the ticket again: restore the tracker labels and status (quarantine label off, ready on, back to To Do), close the attempt PR, delete the attempt branch local and remote, and drop the Checkpoint. Every step is skipped when it has nothing left to do, so a second requeue changes nothing and says so. It refuses a ticket whose attempt PR already merged — only the CLI's `--force` overrides that. Where Reset is the destructive gesture aimed at a dead end, a requeue is what a rewritten ticket earns: the guidance changed, so the same ticket is worth another attempt.
+_Avoid_: retry, restart, reset (that's the destructive branch-delete + re-queue)
+
 **Clear** (aka forget):
 Drop only the Checkpoint, leaving the git branch and tracker untouched; the next pick rebuilds from scratch with no git or tracker side effects. A lighter forget than Reset.
 _Avoid_: reset (that's destructive + re-queues), delete, wipe
@@ -224,6 +228,10 @@ _Avoid_: new issue (that's the entry action), authoring session (the mechanism, 
 **Start over** (an Interview):
 Abandon the current Interview and immediately begin a fresh one on the same Inbox item, in one deliberate click — the old thread settles as abandoned and is never shown again. Touches only the session; the issue, its labels, and anything already applied are untouched.
 _Avoid_: reset (that's the destructive ticket action), restart, retry, discard (that's abandoning without starting anew)
+
+**Propose fix**:
+The one-click act offered on a quarantined or faulted run that opens an Inbox Interview over the ticket, seeded with the run's whole failure dossier — checkpoint, phase logs, artifacts, and the lessons the run taught — and pointed at the WIP branch still holding the attempt. It runs on Ask ahead's contract, reaching the user only for a decision that needs their taste, and ends in a proposed rewrite that keeps the original goal, states what the failed attempt revealed, and instructs the next one. It re-describes the ticket and nothing else: handing it back to the picker is still Requeue's job.
+_Avoid_: diagnose (the agent's activity, not the act), retry (that's Requeue), fix it, handle
 
 **Atlas**:
 The per-Repo web page of agent-generated architecture Views, scoped to the Active repo like every screen. Everything it shows is derived from the Repo's code at a stamped commit — never hand-drawn, never edited in place. When merges land after that commit the Atlas is stale and says so; only a deliberate Regenerate refreshes it.

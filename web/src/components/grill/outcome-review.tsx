@@ -13,6 +13,7 @@ import {
   MessageCirclePlus,
   Pencil,
   Plus,
+  RotateCcw,
   Trash2,
   TriangleAlert,
   X,
@@ -50,12 +51,14 @@ import {
   type GrillApplyStep,
   type GrillAppliedOutcome,
   type GrillDestination,
+  type GrillMode,
   type GrillSession,
   type OutcomePayload,
   type SubIssueProposal,
 } from "@/lib/grill";
 import { issueQueryOptions } from "@/lib/issues";
 import { enqueueOnce, publishQueue, type EnqueueRequest } from "@/lib/queue";
+import { requeueRun } from "@/lib/rundetail";
 import { cn } from "@/lib/utils";
 
 export const noReport = "This session recorded no report.";
@@ -282,7 +285,9 @@ export function OutcomeReview({
   if (session.state === "applied") {
     return (
       <AppliedCard
+        repo={repo}
         issueId={session.issue_id ?? ""}
+        mode={session.mode}
         outcome={outcome}
         steps={apply.data?.steps ?? []}
         warnings={session.apply_warnings ?? []}
@@ -1351,13 +1356,17 @@ export function WarningList({ warnings }: { warnings: string[] }) {
 // marks an outcome the review just wrote to the internal backlog, so the card does
 // not claim a tracker write that never happened.
 function AppliedCard({
+  repo,
   issueId,
+  mode,
   outcome,
   steps,
   warnings,
   internal,
 }: {
+  repo: string;
   issueId: string;
+  mode?: GrillMode;
   outcome: OutcomePayload;
   steps: GrillApplyStep[];
   warnings: string[];
@@ -1412,6 +1421,79 @@ function AppliedCard({
       )}
       {steps.length > 0 && <StepList steps={steps} />}
       {warnings.length > 0 && <WarningList warnings={warnings} />}
+      {mode === "fix" && issueId !== "" && (
+        <RequeueAction repo={repo} ticket={issueId} />
+      )}
+    </div>
+  );
+}
+
+// RequeueAction is what an applied fix session earns: the guidance is rewritten,
+// so the ticket can go back to the loop without a trip to the CLI. It drives the
+// same trau --requeue — quarantine label off, attempt PR closed, branches
+// dropped, checkpoint cleared — and settles into a receipt of what changed.
+// Starting the loop stays the Loop page's gesture (ADR 0034), so the receipt
+// links there rather than arming the drain itself.
+function RequeueAction({ repo, ticket }: { repo: string; ticket: string }) {
+  const queryClient = useQueryClient();
+  const requeue = useMutation({
+    mutationFn: () => requeueRun(repo, ticket),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["runs", repo] });
+      void queryClient.invalidateQueries({ queryKey: ["run", repo, ticket] });
+      void queryClient.invalidateQueries({ queryKey: ["queue", repo] });
+    },
+  });
+
+  if (requeue.data) {
+    return (
+      <div
+        role="status"
+        className="flex flex-col gap-1.5 rounded-md border bg-card px-3 py-2 text-xs"
+      >
+        {requeue.data.changed.map((change) => (
+          <div key={change} className="flex items-start gap-2">
+            <Check
+              className="mt-0.5 size-3.5 shrink-0 text-done"
+              aria-hidden="true"
+            />
+            <span className="text-muted-foreground">{change}</span>
+          </div>
+        ))}
+        <p className="text-muted-foreground">
+          <span className="font-mono text-foreground">{ticket}</span> is
+          eligible again —{" "}
+          <Link
+            to="/loop"
+            className="font-medium text-primary underline-offset-2 hover:underline"
+          >
+            Start the loop
+          </Link>{" "}
+          to pick it up
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Button
+        size="sm"
+        className="self-start font-mono"
+        onClick={() => requeue.mutate()}
+        disabled={requeue.isPending}
+      >
+        <RotateCcw
+          className={cn("size-3.5", requeue.isPending && "animate-spin")}
+          aria-hidden="true"
+        />
+        {requeue.isPending ? "Requeueing…" : `Requeue ${ticket}`}
+      </Button>
+      {requeue.error && (
+        <p role="status" className="text-xs text-fail">
+          {(requeue.error as Error).message}
+        </p>
+      )}
     </div>
   );
 }

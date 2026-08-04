@@ -223,6 +223,18 @@ type GrillResearchData struct {
 	Idea string
 }
 
+// GrillFixData feeds the grill_fix prompt, which diagnoses a quarantined or faulted
+// run. Failure is how the attempt ended — its class and the reason recorded with it;
+// Dossier is the absolute path of the compiled failure dossier, whose index lists
+// every phase log beside it; Branch is the WIP branch still holding the attempt,
+// empty when the run faulted before one was cut.
+type GrillFixData struct {
+	GrillIssueData
+	Failure string
+	Dossier string
+	Branch  string
+}
+
 var templateFuncs = template.FuncMap{"join": strings.Join}
 
 var templates = func() map[string]*template.Template {

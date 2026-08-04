@@ -4,7 +4,14 @@ import {
   QueryClient,
   QueryClientProvider,
 } from "@tanstack/react-query";
-import { act, createElement, Fragment } from "react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterContextProvider,
+} from "@tanstack/react-router";
+import { act, createElement, Fragment, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Toaster } from "sonner";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -100,6 +107,17 @@ let root: Root | undefined;
 let host: HTMLElement | undefined;
 let client: QueryClient | undefined;
 
+// A Link builds its href off the router in context, so the card's receipt needs
+// one mounted even though nothing here navigates.
+const rootRoute = createRootRoute();
+const testRouter = createRouter({
+  routeTree: rootRoute.addChildren([
+    createRoute({ getParentRoute: () => rootRoute, path: "/loop" }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/backlog" }),
+  ]),
+  history: createMemoryHistory({ initialEntries: ["/"] }),
+}) as unknown as ComponentProps<typeof RouterContextProvider>["router"];
+
 const azureOptions: AzureCreateOptions = {
   types: ["User Story", "Bug"],
   features: [{ id: "70", title: "Checkout" }],
@@ -136,29 +154,33 @@ function renderReview(
   document.body.appendChild(host);
   const mounted = createRoot(host);
   root = mounted;
+  const tree = createElement(
+    QueryClientProvider,
+    { client: seeded },
+    createElement(
+      CreatedBannerProvider,
+      null,
+      createElement(
+        Fragment,
+        null,
+        createElement(OutcomeReview, {
+          repo: "loop",
+          issueId: "COD-42",
+          session: open,
+          outcome,
+          reportShown,
+          onSession: () => {},
+        }),
+        createElement(Toaster),
+      ),
+    ),
+  );
   act(() => {
     mounted.render(
-      createElement(
-        QueryClientProvider,
-        { client: seeded },
-        createElement(
-          CreatedBannerProvider,
-          null,
-          createElement(
-            Fragment,
-            null,
-            createElement(OutcomeReview, {
-              repo: "loop",
-              issueId: "COD-42",
-              session: open,
-              outcome,
-              reportShown,
-              onSession: () => {},
-            }),
-            createElement(Toaster),
-          ),
-        ),
-      ),
+      createElement(RouterContextProvider, {
+        router: testRouter,
+        children: tree,
+      }),
     );
   });
   return host;
@@ -538,5 +560,73 @@ describe("OutcomeReview applied card", () => {
 
     expect(el.textContent).toContain("ACME-1 in the internal backlog");
     expect(el.textContent).toContain("the superseded note failed: linear: 503");
+  });
+});
+
+describe("OutcomeReview requeue", () => {
+  const appliedFix: GrillSession = {
+    ...session,
+    mode: "fix",
+    state: "applied",
+  };
+
+  // A transient failure the diagnosis found nothing to rewrite for is exactly the
+  // one worth retrying, so the disposition never gates the offer.
+  it("offers the requeue on an applied fix session whatever it decided", () => {
+    renderReview(
+      { disposition: "no_change", summary: "transient CI flake" },
+      "linear",
+      "linear",
+      appliedFix,
+    );
+
+    expect(button("Requeue COD-42")).toBeDefined();
+  });
+
+  it("withholds it from a session that was not diagnosing a failure", () => {
+    const el = renderReview(rewrite, "linear", "linear", {
+      ...appliedFix,
+      mode: "interview",
+    });
+
+    expect(el.textContent).not.toContain("Requeue COD-42");
+  });
+
+  it("settles into a receipt of what the requeue changed", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        ticket: "COD-42",
+        changed: ["closed the attempt PR 42", "cleared the saved checkpoint"],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const el = renderReview(rewrite, "linear", "linear", appliedFix);
+
+    await act(async () => button("Requeue COD-42").click());
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/repos/loop/runs/COD-42/requeue",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(el.textContent).toContain("closed the attempt PR 42");
+    expect(el.textContent).toContain("COD-42 is eligible again");
+    expect(buttons().some((b) => b.textContent?.includes("Requeue"))).toBe(
+      false,
+    );
+  });
+
+  it("keeps the button for a retry when the hub refuses", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(409, {
+        error: "COD-42 is already shipped (PR 42 is merged)",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const el = renderReview(rewrite, "linear", "linear", appliedFix);
+
+    await act(async () => button("Requeue COD-42").click());
+
+    expect(el.textContent).toContain("COD-42 is already shipped");
+    expect(button("Requeue COD-42")).toBeDefined();
   });
 });

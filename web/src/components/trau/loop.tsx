@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
@@ -20,6 +20,7 @@ import {
   Square,
   SquareTerminal,
   TriangleAlert,
+  Wrench,
   X,
 } from "lucide-react";
 import { parseAsString, useQueryState } from "nuqs";
@@ -33,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { IssueDrawer } from "@/components/issue-drawer";
 import { MakeStartableButton } from "@/components/make-startable-button";
+import { useProposeFix } from "@/components/grill/propose-fix";
 import { useActiveRepo } from "@/components/trau/active-repo";
 import { AddTicketDialog } from "@/components/trau/add-ticket-dialog";
 import { MemberRepoField } from "@/components/trau/member-repo-picker";
@@ -2752,6 +2754,10 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
             {tickets.map((ticket) => (
               <HaltLink key={ticket} repo={repo} ticket={ticket} />
             ))}
+            {halt.ticket &&
+            (halt.kind === "quarantined" || halt.kind === "fault") ? (
+              <ProposeFixAction repo={repo} ticket={halt.ticket} />
+            ) : null}
             {halt.kind === "quarantined" && halt.ticket ? (
               <RequeueAction repo={repo} ticket={halt.ticket} />
             ) : null}
@@ -2796,6 +2802,51 @@ function RequeueAction({ repo, ticket }: { repo: string; ticket: string }) {
             ? requeue.error.message
             : "requeue failed"}
         </span>
+      ) : null}
+    </>
+  );
+}
+
+// ProposeFixAction is the halt banner's other way forward: instead of re-running the
+// same attempt, it opens an Inbox session that diagnoses the failure from the run's
+// dossier and rewrites the ticket for the next one.
+function ProposeFixAction({ repo, ticket }: { repo: string; ticket: string }) {
+  const navigate = useNavigate();
+  const proposeFix = useProposeFix({
+    repo,
+    ticket,
+    enabled: true,
+    onStarted: () =>
+      void navigate({ to: "/inbox", search: { issue: ticket, repo } }),
+  });
+  if (proposeFix.session) {
+    return (
+      <Link
+        to="/inbox"
+        search={{ issue: ticket, repo }}
+        className="inline-flex w-fit items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+      >
+        <Wrench className="size-3.5" aria-hidden="true" />
+        Open fix session
+      </Link>
+    );
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={proposeFix.start}
+        disabled={proposeFix.starting}
+        className="inline-flex w-fit cursor-pointer items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline disabled:cursor-default disabled:opacity-60"
+      >
+        <Wrench
+          className={cn("size-3.5", proposeFix.starting && "animate-pulse")}
+          aria-hidden="true"
+        />
+        {proposeFix.starting ? "Starting…" : `Propose fix for ${ticket}`}
+      </button>
+      {proposeFix.error ? (
+        <span className="font-sans text-xs text-fail">{proposeFix.error}</span>
       ) : null}
     </>
   );

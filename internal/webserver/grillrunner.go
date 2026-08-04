@@ -291,6 +291,11 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 	}
 	in.focus = r.openingNote(sess.ID)
 	in.autoAccept = sess.AutoAccept
+	if sess.Mode == hubstore.GrillModeFix {
+		run, _ := r.srv.grillFailedRunFor(repo.Root, sess.IssueID)
+		run.Ticket = sess.IssueID
+		return grillFixPrompt(renderer, in, run)
+	}
 	if research {
 		return grillResearchPrompt(renderer, in)
 	}
