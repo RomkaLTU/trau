@@ -997,6 +997,16 @@ func TestGrillApplyResearchCommentsOnTheAnchoredIssue(t *testing.T) {
 	if !strings.Contains(body, "answered the retry question") {
 		t.Errorf("comment = %q, want the grilling summary alongside the report", body)
 	}
+	if out.Session.Mode != hubstore.GrillModeResearch {
+		t.Errorf("applied session mode = %q, want research", out.Session.Mode)
+	}
+	listed, err := stores.Grill().List(root, "", hubstore.GrillModeResearch)
+	if err != nil {
+		t.Fatalf("list research: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != sid || listed[0].IssueID != "COD-1" {
+		t.Fatalf("research list = %+v, want the settled interview anchored to COD-1", listed)
+	}
 }
 
 func TestGrillApplyResearchCommentEndsInTheSources(t *testing.T) {
@@ -1109,10 +1119,16 @@ func TestGrillApplyResearchCommentFailureIsReported(t *testing.T) {
 	if len(out.Steps) != 1 || out.Steps[0].Status != grillStepFailed || out.Steps[0].Error != "linear: 502" {
 		t.Fatalf("steps = %+v, want the failed findings step carrying the error", out.Steps)
 	}
+	if stored, _, _ := stores.Grill().Session(sid); stored.Mode == hubstore.GrillModeResearch {
+		t.Errorf("stored mode = research, want it stamped only once the comment lands")
+	}
 
 	fake.commentErr = nil
 	if _, out = applyGrill(t, ts, sid, GrillApplyRequest{}); !out.Applied {
 		t.Fatalf("re-apply = %+v, want applied", out)
+	}
+	if out.Session.Mode != hubstore.GrillModeResearch {
+		t.Errorf("re-applied session mode = %q, want research", out.Session.Mode)
 	}
 }
 

@@ -497,7 +497,7 @@ func (g *Grill) SetAutoAccept(id int64, enabled bool) (GrillSession, bool, error
 }
 
 // SetMode records the session type and bumps the session's updated_at. The mode is
-// otherwise locked at create; apply restamps a draft interview that settled with a
+// otherwise locked at create; apply restamps an interview that settled with a
 // research report so it is listed where research is read. It reports whether the
 // session exists.
 func (g *Grill) SetMode(id int64, mode string) (GrillSession, bool, error) {

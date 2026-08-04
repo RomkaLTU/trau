@@ -199,15 +199,8 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	// keeps the report on the session and never reaches the tracker.
 	archivesOnly := outcome.Disposition == grillDispResearch && strings.TrimSpace(sess.IssueID) == ""
 	if outcome.Disposition == grillDispNoChange || archivesOnly {
-		// A draft interview may still finish on a research disposition, and its report
-		// is read on the Research page, so the session is stamped to match before it
-		// settles rather than dropping out of both lists.
-		if archivesOnly && sess.Mode != hubstore.GrillModeResearch {
-			if stamped, _, err := s.stores.Grill().SetMode(sess.ID, hubstore.GrillModeResearch); err != nil {
-				logger.Verbosef("grill apply %d: stamp research mode: %v", sess.ID, err)
-			} else {
-				sess = stamped
-			}
+		if archivesOnly {
+			s.stampGrillResearchMode(&sess)
 		}
 		s.settleGrillApplied(w, &sess, nil, nil)
 		return
@@ -299,6 +292,9 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			sess.IssueID,
 			composeGrillFindings(outcome.Findings, comment, outcome.Sources),
 		)
+		if applied {
+			s.stampGrillResearchMode(&sess)
+		}
 	default:
 		issueID, ok := grillAnchoredIssue(w, sess)
 		if !ok {
@@ -346,6 +342,21 @@ func (s *Server) recordGrillWarnings(sess *hubstore.GrillSession, warnings []str
 		*sess = stamped
 	} else {
 		logger.Verbosef("grill apply %d: record warnings: %v", sess.ID, err)
+	}
+}
+
+// stampGrillResearchMode lists a session that settled on a research report where
+// research is read — an interview that ends in findings would otherwise leave its
+// report on the tracker comment alone, and be pruned with the other settled
+// interviews. A failure is only logged: the writes it follows have already landed.
+func (s *Server) stampGrillResearchMode(sess *hubstore.GrillSession) {
+	if sess.Mode == hubstore.GrillModeResearch {
+		return
+	}
+	if stamped, _, err := s.stores.Grill().SetMode(sess.ID, hubstore.GrillModeResearch); err != nil {
+		logger.Verbosef("grill apply %d: stamp research mode: %v", sess.ID, err)
+	} else {
+		*sess = stamped
 	}
 }
 

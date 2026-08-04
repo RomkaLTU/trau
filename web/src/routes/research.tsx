@@ -478,6 +478,11 @@ function SessionRow({
           >
             {researchDate(session.created_at)}
           </span>
+          {session.issue_id && (
+            <span className="truncate font-mono text-xs text-faint">
+              {session.issue_id}
+            </span>
+          )}
           <span
             className={cn(
               "ml-auto shrink-0 font-mono text-[0.65rem]",
