@@ -2020,7 +2020,7 @@ function RemainingAction({
   onRunNext,
 }: {
   id: string;
-  first: boolean;
+  first?: boolean;
   busy: boolean;
   onRunNext: (id: string) => void;
 }) {
@@ -2049,10 +2049,10 @@ function PendingTicketRow({
 }: {
   ticket: TimelineTicket;
   item?: QueueItem;
-  first: boolean;
+  first?: boolean;
   busy: boolean;
   onPeek: (id: string) => void;
-  onRunNext: (id: string) => void;
+  onRunNext?: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
   const pill = ticketPill(ticket);
@@ -2071,12 +2071,14 @@ function PendingTicketRow({
       <ProviderTag provider={ticket.provider} pin={ticket.providerPin} />
       <BacklogPRBadge status={ticket.prStatus} />
       <StatusPill state={pill.state} label={pill.label} className="shrink-0" />
-      <RemainingAction
-        id={ticket.id}
-        first={first}
-        busy={busy}
-        onRunNext={onRunNext}
-      />
+      {onRunNext ? (
+        <RemainingAction
+          id={ticket.id}
+          first={first}
+          busy={busy}
+          onRunNext={onRunNext}
+        />
+      ) : null}
       {item ? (
         <RemoveFromQueueButton item={item} disabled={busy} onRemove={onRemove} />
       ) : null}
@@ -2095,10 +2097,10 @@ function PendingEpicGroup({
 }: {
   entry: Extract<PendingEntry, { kind: "epic" }>;
   item?: QueueItem;
-  first: boolean;
+  first?: boolean;
   busy: boolean;
   onPeek: (id: string) => void;
-  onRunNext: (id: string) => void;
+  onRunNext?: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
   const paused = item?.status === "paused";
@@ -2127,12 +2129,14 @@ function PendingEpicGroup({
           }
           className="shrink-0"
         />
-        <RemainingAction
-          id={entry.id}
-          first={first}
-          busy={busy}
-          onRunNext={onRunNext}
-        />
+        {onRunNext ? (
+          <RemainingAction
+            id={entry.id}
+            first={first}
+            busy={busy}
+            onRunNext={onRunNext}
+          />
+        ) : null}
         {item ? (
           <RemoveFromQueueButton
             item={item}
@@ -2400,6 +2404,43 @@ function RunningQueueView({
               />
             )}
           </section>
+
+          {timeline.outside.length > 0 ? (
+            <section className="flex flex-col gap-2">
+              <Eyebrow glyph="idle">
+                OUTSIDE THIS BATCH · {timeline.outside.length}
+              </Eyebrow>
+              <div className="overflow-hidden rounded-md border border-border opacity-60">
+                <ul className="flex flex-col">
+                  {timeline.outside.map((entry) =>
+                    entry.kind === "epic" ? (
+                      <PendingEpicGroup
+                        key={entry.id}
+                        entry={entry}
+                        item={itemsById.get(entry.id)}
+                        busy={rowBusy}
+                        onPeek={onPeek}
+                        onRemove={askRemove}
+                      />
+                    ) : (
+                      <PendingTicketRow
+                        key={entry.ticket.id}
+                        ticket={entry.ticket}
+                        item={itemsById.get(entry.ticket.id)}
+                        busy={rowBusy}
+                        onPeek={onPeek}
+                        onRemove={askRemove}
+                      />
+                    ),
+                  )}
+                </ul>
+              </div>
+              <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                These stay queued — the batch runs its members, then the loop
+                stops. Remove takes one out of the queue for good.
+              </p>
+            </section>
+          ) : null}
 
           {timeline.finished.length > 0 ? (
             <FinishedSection

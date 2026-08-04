@@ -727,6 +727,106 @@ describe('buildTimeline', () => {
 
     expect(buildTimeline(items, []).total).toBe(2)
   })
+
+  it('leaves the outside list empty when the drain is not batch-scoped', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'COD-1', status: 'running', batch: 'api-polish' }),
+        item({ id: 'COD-2', status: 'pending' }),
+      ],
+      [],
+    )
+
+    expect(tl.outside).toEqual([])
+  })
+
+  it('lists the queue outside the batch in snapshot order', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'COD-1', status: 'running', batch: 'api-polish' }),
+        item({ id: 'COD-2', status: 'pending' }),
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          title: 'Epic',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'todo' },
+          ],
+        }),
+        item({ id: 'COD-3', status: 'pending' }),
+      ],
+      [],
+      undefined,
+      undefined,
+      'api-polish',
+    )
+
+    expect(
+      tl.outside.map((e) => (e.kind === 'ticket' ? e.ticket.id : e.id)),
+    ).toEqual(['COD-2', 'COD-9', 'COD-3'])
+    const epic = tl.outside[1]
+    expect(epic.kind).toBe('epic')
+    if (epic.kind === 'epic') {
+      expect(epic.done).toBe(1)
+      expect(epic.total).toBe(2)
+      expect(epic.children.map((c) => c.id)).toEqual(['COD-11'])
+    }
+    expect(tl.pending).toEqual([])
+  })
+
+  it('drops the settled rows outside the batch, keeping the ones with work left', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'COD-1', status: 'running', batch: 'api-polish' }),
+        item({ id: 'COD-2', status: 'done' }),
+        item({ id: 'COD-3', status: 'skipped' }),
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          title: 'Epic',
+          status: 'done',
+          sub_issues: [{ id: 'COD-10', title: 'a', state: 'done' }],
+        }),
+        item({ id: 'COD-4', status: 'pending' }),
+      ],
+      [run({ ticket: 'COD-2', terminal: true, phase: 'merged' })],
+      undefined,
+      undefined,
+      'api-polish',
+    )
+
+    expect(
+      tl.outside.map((e) => (e.kind === 'ticket' ? e.ticket.id : e.id)),
+    ).toEqual(['COD-4'])
+  })
+
+  it('keeps a ticket paused by an earlier drain outside the batch, still paused', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'COD-1', status: 'running', batch: 'api-polish' }),
+        item({ id: 'COD-2', status: 'paused' }),
+      ],
+      [
+        run({
+          ticket: 'COD-2',
+          failure_class: 'paused',
+          failure_reason: 'needs a decision',
+        }),
+      ],
+      undefined,
+      undefined,
+      'api-polish',
+    )
+
+    expect(tl.outside).toHaveLength(1)
+    const entry = tl.outside[0]
+    expect(entry.kind).toBe('ticket')
+    if (entry.kind === 'ticket') {
+      expect(entry.ticket.status).toBe('paused')
+      expect(entry.ticket.reason).toBe('needs a decision')
+    }
+  })
 })
 
 describe('finishedView', () => {

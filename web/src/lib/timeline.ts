@@ -71,7 +71,7 @@ export interface FinalizeEntry {
 // not count toward done/total — only leaf tickets do. elapsedAnchor is when the
 // run in flight started: the drain's arm stamp, or the loop process's own start
 // for a CLI run the hub never armed. A batch-scoped drain covers its members
-// alone, so the timeline is built from those rows and no other.
+// alone, so every count and bucket is built from those rows and no other.
 export interface Timeline {
   total: number
   done: number
@@ -85,6 +85,10 @@ export interface Timeline {
   running?: TimelineTicket
   finalize?: FinalizeEntry
   pending: PendingEntry[]
+  // outside is the rest of the queue a batch-scoped drain never reaches: rows
+  // that still hold work but sit outside the batch, in snapshot order. It is
+  // empty for a full-queue drain, which already covers everything.
+  outside: PendingEntry[]
   elapsedAnchor?: string
 }
 
@@ -293,6 +297,64 @@ function epicFinalize(
   return undefined
 }
 
+// group turns queue rows into the entries the pending list renders, keeping
+// snapshot order. A runnable epic keeps its row with nothing left under it: the
+// drain re-attempts the finalize its pause parked on, which runs no leaf of its
+// own.
+function group(
+  items: QueueItem[],
+  byId: Map<string, TimelineTicket>,
+  remains: (t: TimelineTicket | undefined) => t is TimelineTicket,
+): PendingEntry[] {
+  const entries: PendingEntry[] = []
+  for (const item of items) {
+    if (item.kind === 'epic') {
+      const subs = item.sub_issues ?? []
+      const children = subs.map((s) => byId.get(s.id)).filter(remains)
+      if (children.length > 0 || queueStatusRunnable(item.status)) {
+        const done = subs.filter(
+          (s) => byId.get(s.id)?.status === 'done',
+        ).length
+        entries.push({
+          kind: 'epic',
+          id: item.id,
+          title: item.title ?? '',
+          source: item.source,
+          active: item.status === 'running',
+          done,
+          total: subs.length,
+          children,
+        })
+      }
+      continue
+    }
+    const t = byId.get(item.id)
+    if (remains(t)) entries.push({ kind: 'ticket', ticket: t })
+  }
+  return entries
+}
+
+// outsideBatch resolves the queue rows a batch-scoped drain leaves untouched
+// through the same runs the batch's own rows go through, so a leftover pause or
+// fault wears the pill it wears everywhere else.
+function outsideBatch(
+  items: QueueItem[],
+  byTicket: Map<string, Run>,
+  instance?: Instance,
+): PendingEntry[] {
+  const leaves = flatten(items)
+  const byId = new Map(
+    leaves.map((leaf) => {
+      const t = resolve(leaf, byTicket.get(leaf.id), instance)
+      return [t.id, t] as const
+    }),
+  )
+  const queued = runOrder(leaves, byId)
+  const remains = (t: TimelineTicket | undefined): t is TimelineTicket =>
+    t !== undefined && (queued.has(t.id) || !isSettled(t.status))
+  return group(items, byId, remains)
+}
+
 export function buildTimeline(
   items: QueueItem[],
   runs: Run[],
@@ -353,35 +415,6 @@ export function buildTimeline(
     t !== running &&
     (queued.has(t.id) || !isSettled(t.status))
 
-  const pending: PendingEntry[] = []
-  for (const item of scope) {
-    if (item.kind === 'epic') {
-      const subs = item.sub_issues ?? []
-      const children = subs.map((s) => byId.get(s.id)).filter(remains)
-      // A runnable epic keeps its row with nothing left under it: the drain
-      // re-attempts the finalize its pause parked on, which runs no leaf of its
-      // own.
-      if (children.length > 0 || queueStatusRunnable(item.status)) {
-        const done = subs.filter(
-          (s) => byId.get(s.id)?.status === 'done',
-        ).length
-        pending.push({
-          kind: 'epic',
-          id: item.id,
-          title: item.title ?? '',
-          source: item.source,
-          active: item.status === 'running',
-          done,
-          total: subs.length,
-          children,
-        })
-      }
-      continue
-    }
-    const t = byId.get(item.id)
-    if (remains(t)) pending.push({ kind: 'ticket', ticket: t })
-  }
-
   return {
     total: tickets.length,
     done: tickets.filter((t) => t.status === 'done').length,
@@ -389,7 +422,14 @@ export function buildTimeline(
     finished,
     running,
     finalize,
-    pending,
+    pending: group(scope, byId, remains),
+    outside: batch
+      ? outsideBatch(
+          items.filter((it) => it.batch !== batch),
+          byTicket,
+          instance,
+        )
+      : [],
     elapsedAnchor: drainingSince ?? instance?.started_at,
   }
 }
