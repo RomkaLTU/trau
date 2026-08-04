@@ -5,19 +5,19 @@
       "source": "jezweb/claude-skills",
       "sourceType": "github",
       "skillPath": "plugins/dev-tools/skills/github-release/SKILL.md",
-      "computedHash": "22c9bdb77bed4a64d13b3f6bfa63f057b60fd3c3b8749acc6e43a38799276647"
+      "computedHash": "105d59393b2ebed453d148294cbd59ec1e19acceb9283c26d55ad96742372c9d"
     },
     "golang-code-style": {
       "source": "samber/cc-skills-golang",
       "sourceType": "github",
       "skillPath": "skills/golang-code-style/SKILL.md",
-      "computedHash": "6943200b1a7acc8dd4a31cbc4ee775c50a8fa0f9192ca25470e7bff2c7f529ad"
+      "computedHash": "1c949d9721fac34faf39e640a08c9f17b6449a64183824ac99d2e3785b1fef57"
     },
     "golang-error-handling": {
       "source": "samber/cc-skills-golang",
       "sourceType": "github",
       "skillPath": "skills/golang-error-handling/SKILL.md",
-      "computedHash": "60693d2dbf405fba79e8807f0288625bcf3068df66aec8b14363c0ab0f2c9c09"
+      "computedHash": "1601d92a30a221903d024d4ad470595c3c6141d14a5b274a446394adefc83a52"
     },
     "golang-patterns": {
       "source": "affaan-m/everything-claude-code",
@@ -29,31 +29,31 @@
       "source": "samber/cc-skills-golang",
       "sourceType": "github",
       "skillPath": "skills/golang-performance/SKILL.md",
-      "computedHash": "83ff8bad73107ddb84035013a3d467140bbbdaacf8e004b84cca3bfffc220e78"
+      "computedHash": "56a9621bfd52c2674a27217f8e223df117b605b15fe06be8ec666c5d2c02604e"
     },
     "golang-pro": {
       "source": "jeffallan/claude-skills",
       "sourceType": "github",
       "skillPath": "skills/golang-pro/SKILL.md",
-      "computedHash": "dc87ea17b2dff33b3833cf42d167876d2bd68170831e7c5062b739868b99ee2c"
+      "computedHash": "12b4cac8f65228f82cbc26f0da9232aba87ffa45ccd01afa3998fb8ec61dc288"
     },
     "goreleaser": {
       "source": "aaronflorey/agent-skills",
       "sourceType": "github",
       "skillPath": "skills/goreleaser/SKILL.md",
-      "computedHash": "0498f31df4cacf27eb2857b4b0ee578554d60643024aec882e96f43c74b70d33"
+      "computedHash": "8b3c3f0e5a00d10b5928cf9ddc95efe85bfb86c412692a36142182ea6d34b315"
     },
     "homebrew-formula-maintenance": {
       "source": "bobmatnyc/claude-mpm-skills",
       "sourceType": "github",
       "skillPath": "toolchains/universal/infrastructure/homebrew-formula-maintenance/SKILL.md",
-      "computedHash": "622e70ccb4905a6c12dd87dfdebf220619f0911cbffd6f70cf9e8aa4705cd7e5"
+      "computedHash": "bc00963f0a742d144e2a23fac089d36b50e0cc4db9ba2e2d83013f704b2b4b3d"
     },
     "mcp-builder": {
       "source": "anthropics/skills",
       "sourceType": "github",
       "skillPath": "skills/mcp-builder/SKILL.md",
-      "computedHash": "6498a736a8dc5c645047c8a875b8ea7417e2ad97146f005200e50d20a9337ada"
+      "computedHash": "826e46adf81e1372282e205c34e1a2ee876e72148007726e4a2512599d2fef7b"
     }
   }
 }
