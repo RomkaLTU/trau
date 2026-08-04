@@ -92,23 +92,42 @@ func (p *Pipeline) restoreRubric(id string) {
 // it is corrupt/empty. Phase prompts use the path to point the agent at the
 // rubric and omit the reference entirely when ok is false.
 func (p *Pipeline) activeRubric(id string) (path string, ok bool) {
+	path, _, ok = p.activeRubricFile(id)
+	return path, ok
+}
+
+// activeRubricFile is activeRubric with the parsed rubric alongside the path, so
+// callers that need its contents do not read and parse the file a second time.
+func (p *Pipeline) activeRubricFile(id string) (path string, r rubric, ok bool) {
 	p.restoreRubric(id)
 	r, parsed := readRubric(rubricPath(id))
 	if !parsed || !rubricValid(r) {
-		return "", false
+		return "", rubric{}, false
 	}
-	return rubricPath(id), true
+	return rubricPath(id), r, true
+}
+
+// sliceCriteria returns the acceptance criteria gateCriteria grades the verdict
+// against — the shape the verify prompt asks the agent to fill in — or nil when
+// no valid rubric is on disk, which leaves the verdict ungraded per criterion.
+func (p *Pipeline) sliceCriteria(id string) []string {
+	_, r, ok := p.activeRubricFile(id)
+	if !ok {
+		return nil
+	}
+	return r.AcceptanceCriteria
 }
 
 // verifyRubricNote tells the cold verifier to grade against the structured
-// rubric. Empty when path is "" (no valid rubric — verify falls back to the
-// prose brief), so an absent rubric never injects a dangling file reference.
+// rubric, one recorded outcome per acceptance criterion. Empty when path is ""
+// (no valid rubric — verify falls back to the prose brief), so an absent rubric
+// never injects a dangling file reference.
 func verifyRubricNote(path string) string {
 	if path == "" {
 		return ""
 	}
 	return " A structured acceptance rubric for this slice is at " + path +
-		" (JSON: acceptance_criteria, non_goals, required_tests, ui_paths, fail_conditions). Grade every acceptance_criteria entry against the code on disk, run the required_tests, exercise the ui_paths when present, and fail the verdict if any fail_conditions hold or any non_goals were implemented. Treat the rubric and the QA brief together as the contract."
+		" (JSON: acceptance_criteria, non_goals, required_tests, ui_paths, fail_conditions). Grade every acceptance_criteria entry against the code on disk — one \"criteria\" entry in the verdict per entry, in the same order — run the required_tests, exercise the ui_paths when present, and fail the verdict if any fail_conditions hold or any non_goals were implemented. Treat the rubric and the QA brief together as the contract."
 }
 
 // repairRubricNote points a repair/bugfix pass at the rubric so the fix targets

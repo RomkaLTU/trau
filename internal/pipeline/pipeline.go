@@ -4952,10 +4952,11 @@ func ciRepairInstruction(r prompts.Renderer, id, prURL, branch string) string {
 }
 
 type verdict struct {
-	Pass     bool          `json:"pass"`
-	Summary  string        `json:"summary"`
-	Failures []string      `json:"failures"`
-	Checks   []checkResult `json:"checks,omitempty"`
+	Pass     bool              `json:"pass"`
+	Summary  string            `json:"summary"`
+	Failures []string          `json:"failures"`
+	Criteria []criterionResult `json:"criteria,omitempty"`
+	Checks   []checkResult     `json:"checks,omitempty"`
 	// Browser is the verifier's self-reported browser-QA outcome: "driven",
 	// "skipped", or "not-applicable". Recorded for accounting only — the pipeline
 	// classifies the slice as UI deterministically and never lets this value
@@ -4976,6 +4977,83 @@ func browserOutcome(v verdict) string {
 	default:
 		return "skipped"
 	}
+}
+
+// The three grades a rubric acceptance criterion can carry. satisfied is the only
+// one that asserts an observation the verifier actually made; unverified is the
+// honest outcome when the decisive observation could not be made at all — browser
+// QA undriven, a tool missing, an environment unreachable.
+const (
+	criterionSatisfied  = "satisfied"
+	criterionViolated   = "violated"
+	criterionUnverified = "unverified"
+)
+
+// criterionResult is one acceptance criterion's grade. Text echoes the rubric
+// entry so a stored verdict reads on its own without the rubric beside it, and
+// Note carries the evidence or the concrete reason the criterion could not be
+// settled.
+type criterionResult struct {
+	Text   string `json:"text"`
+	Status string `json:"status"`
+	Note   string `json:"note,omitempty"`
+}
+
+// criterionStatus normalizes a reported grade. Only the two decided grades are
+// trusted verbatim; anything else — including an empty field from a pre-field
+// verdict — reads as unverified, so a missing grade can never masquerade as an
+// observation. Mirrors browserOutcome's fail-closed shape.
+func criterionStatus(s string) string {
+	switch s {
+	case criterionSatisfied, criterionViolated:
+		return s
+	default:
+		return criterionUnverified
+	}
+}
+
+// gateCriteria aligns the verifier's per-criterion grades with the rubric,
+// mirroring gateChecks. Grades are positional — the prompt asks for one entry per
+// acceptance_criteria item in rubric order — and a criteria array that is short,
+// missing, or carries an unknown status fails closed to unverified rather than
+// reading as satisfied.
+func gateCriteria(criteria []string, v verdict) verdict {
+	if len(criteria) == 0 {
+		return v
+	}
+	graded := make([]criterionResult, 0, len(criteria))
+	for i, text := range criteria {
+		c := criterionResult{Text: text, Status: criterionUnverified}
+		if i < len(v.Criteria) {
+			c.Status = criterionStatus(v.Criteria[i].Status)
+			c.Note = v.Criteria[i].Note
+		}
+		graded = append(graded, c)
+	}
+	v.Criteria = graded
+	return foldViolations(v)
+}
+
+// foldViolations fails any verdict carrying a violated criterion even when the
+// agent set pass=true or a lenient panel policy merged to a pass, folding each
+// violation into Failures so repair sees it; unverified never flips pass on its
+// own, being a coverage gap rather than a defect. Idempotent, so applying it
+// again after a merge cannot duplicate a line.
+func foldViolations(v verdict) verdict {
+	for _, c := range v.Criteria {
+		if c.Status != criterionViolated {
+			continue
+		}
+		line := "[criterion] " + c.Text
+		if note := strings.TrimSpace(c.Note); note != "" {
+			line += " — " + note
+		}
+		v.Pass = false
+		if !containsLine(v.Failures, line) {
+			v.Failures = append(v.Failures, line)
+		}
+	}
+	return v
 }
 
 // checkResult is one verify-check outcome the cold verifier reports back inside
@@ -5104,6 +5182,7 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	for _, w := range warnings {
 		p.logf("  ⚠ %s", w)
 	}
+	v = gateCriteria(p.sliceCriteria(id), v)
 	_ = writeVerdictFile(verdictPath, v)
 	return v, nil
 }
@@ -5119,6 +5198,9 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // timeout/crash counts as that member failing.
 func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string, proofsOn bool) (verdict, error) {
 	results := make([]panelResult, len(p.VerifyPanel))
+	// Resolved once: sliceCriteria restores the rubric file when /tmp lost it, and
+	// members may run concurrently.
+	criteria := p.sliceCriteria(id)
 	member := func(ctx context.Context, i int) error {
 		m := p.VerifyPanel[i]
 		memberPath := verifyMemberPath(id, m.Name)
@@ -5143,6 +5225,7 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNot
 		for _, w := range warnings {
 			p.logf("  ⚠ %s: %s", m.Name, w)
 		}
+		v = gateCriteria(criteria, v)
 		results[i] = panelResult{Name: m.Name, Verdict: v}
 		p.logf("  ↳ %s: %s", m.Name, passFailLine(v))
 		return nil
@@ -5203,7 +5286,8 @@ func passFailLine(v verdict) string {
 // mergeVerdicts folds the panel members' (already check-gated) verdicts into one
 // by policy. The merged verdict fails closed: when it does not pass, every
 // dissenting member's failures are carried over (tagged by member) so the repair
-// prompt has the full cross-vendor picture.
+// prompt has the full cross-vendor picture, and a violation surviving the merge
+// re-fails the result so a lenient policy can never persist a pass beside one.
 func mergeVerdicts(policy string, results []panelResult) verdict {
 	total := len(results)
 	passes := 0
@@ -5230,14 +5314,47 @@ func mergeVerdicts(policy string, results []panelResult) verdict {
 	if len(failers) > 0 {
 		summary += " (dissent: " + strings.Join(failers, ", ") + ")"
 	}
-	merged := verdict{Pass: pass, Summary: summary}
+	merged := verdict{Pass: pass, Summary: summary, Criteria: mergeCriteria(results)}
 	if !pass {
 		if len(failLines) == 0 {
 			failLines = []string{summary}
 		}
 		merged.Failures = failLines
 	}
+	return foldViolations(merged)
+}
+
+// mergeCriteria folds the members' per-criterion grades into one row per
+// criterion, most severe wins: violated beats unverified beats satisfied, so a
+// single member that observed a violation — or could not observe at all — is
+// never averaged away by members that graded the same criterion satisfied.
+// gateCriteria has already aligned every member to the rubric, so index i names
+// the same criterion in each; the winning member's note travels with its grade.
+func mergeCriteria(results []panelResult) []criterionResult {
+	var merged []criterionResult
+	for _, r := range results {
+		for i, c := range r.Verdict.Criteria {
+			if i >= len(merged) {
+				merged = append(merged, c)
+				continue
+			}
+			if criterionSeverity(c.Status) > criterionSeverity(merged[i].Status) {
+				merged[i] = c
+			}
+		}
+	}
 	return merged
+}
+
+func criterionSeverity(status string) int {
+	switch criterionStatus(status) {
+	case criterionViolated:
+		return 2
+	case criterionUnverified:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // panelPasses decides the merged outcome under a policy. unanimous (the default,

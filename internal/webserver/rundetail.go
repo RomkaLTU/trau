@@ -81,15 +81,24 @@ type RubricView struct {
 
 // VerdictView is the cold verifier's graded outcome, read from the artifact
 // store: whether the slice passed, a one-line summary, the concrete failures, the
-// gated check results, and the self-reported browser-QA outcome (driven, skipped,
-// or not-applicable) with its notes.
+// per-acceptance-criterion grades, the gated check results, and the self-reported
+// browser-QA outcome (driven, skipped, or not-applicable) with its notes.
 type VerdictView struct {
-	Pass         bool        `json:"pass"`
-	Summary      string      `json:"summary,omitempty"`
-	Failures     []string    `json:"failures,omitempty"`
-	Checks       []CheckView `json:"checks,omitempty"`
-	Browser      string      `json:"browser,omitempty"`
-	BrowserNotes string      `json:"browser_notes,omitempty"`
+	Pass         bool            `json:"pass"`
+	Summary      string          `json:"summary,omitempty"`
+	Failures     []string        `json:"failures,omitempty"`
+	Criteria     []CriterionView `json:"criteria,omitempty"`
+	Checks       []CheckView     `json:"checks,omitempty"`
+	Browser      string          `json:"browser,omitempty"`
+	BrowserNotes string          `json:"browser_notes,omitempty"`
+}
+
+// CriterionView is one rubric acceptance criterion's grade: satisfied, violated,
+// or unverified — the last meaning the decisive observation was never made.
+type CriterionView struct {
+	Text   string `json:"text"`
+	Status string `json:"status"`
+	Note   string `json:"note,omitempty"`
 }
 
 // CheckView is one verify-check outcome carried inside the verdict.

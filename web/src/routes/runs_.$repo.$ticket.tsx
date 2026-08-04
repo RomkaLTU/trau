@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  CriteriaChecklist,
   NoSkillsBanner,
   NoBrowserBanner,
   PRStatusBadge,
@@ -262,6 +263,9 @@ function VerdictView({ verdict, present }: { verdict?: Verdict; present: boolean
             </li>
           ))}
         </ul>
+      )}
+      {verdict.criteria && verdict.criteria.length > 0 && (
+        <CriteriaChecklist criteria={verdict.criteria} />
       )}
       {verdict.checks && verdict.checks.length > 0 && (
         <ul className="flex flex-col gap-1.5 border-t border-border/60 pt-3 font-mono text-sm">
