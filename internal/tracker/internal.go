@@ -235,6 +235,15 @@ func (in *Internal) FileBug(ctx context.Context, id, verdictPath string) (string
 	return iss.ID, nil
 }
 
+// PostQANote leaves the run's QA report as a comment on an internal issue. Images
+// are ignored: the Runs web UI already shows the run's verify screenshots.
+func (in *Internal) PostQANote(ctx context.Context, id string, note QANote) error {
+	_, err := in.Hub.TransitionInternalIssue(ctx, in.Repo, id, hubclient.Transition{
+		Comment: strings.TrimSpace(note.Body),
+	})
+	return err
+}
+
 // AddLabel adds one label to an internal issue, keeping its others.
 func (in *Internal) AddLabel(ctx context.Context, id, label string) error {
 	if strings.TrimSpace(label) == "" {

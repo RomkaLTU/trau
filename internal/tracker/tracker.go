@@ -211,6 +211,31 @@ type IssueLabelRemover interface {
 	RemoveLabel(ctx context.Context, id, label string) error
 }
 
+// QANote is the QA report a run posts on its ticket: a Markdown body and the
+// verify screenshots for providers that can carry them. Providers that cannot
+// post images ignore Images.
+type QANote struct {
+	Body   string
+	Images []QAImage
+}
+
+// QAImage is one verify screenshot: its bytes for native-upload providers and
+// its published trau-proofs URLs for providers that embed by link.
+type QAImage struct {
+	Name    string // stable filename, e.g. proof-1.png
+	Mime    string
+	Caption string
+	Bytes   []byte
+	RawURL  string // raw.githubusercontent embed URL (public repo), "" when unpublished
+	BlobURL string // github.com blob link (private repo), "" when unpublished
+}
+
+// QANotePoster is the optional capability of posting a QA note as a comment on
+// an issue. A tracker that cannot answer makes the post a no-op.
+type QANotePoster interface {
+	PostQANote(ctx context.Context, id string, note QANote) error
+}
+
 // IssueStatus is the normalized lifecycle bucket of a tracker issue, used by
 // --status to reconcile stale local checkpoints. Each tracker maps its native
 // workflow states onto these.

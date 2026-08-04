@@ -1202,3 +1202,34 @@ func TestWorkspaceOverride(t *testing.T) {
 		}
 	})
 }
+
+func TestQANotesKey(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+		read string
+	}{
+		{"unset defaults to on", "", true, "1"},
+		{"0 disables", "QA_NOTES=0\n", false, "0"},
+		{"1 keeps it on", "QA_NOTES=1\n", true, "1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "trau.ini")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.QANotes != tc.want {
+				t.Errorf("QANotes = %v, want %v", cfg.QANotes, tc.want)
+			}
+			if got := keyValue(cfg, "QA_NOTES"); got != tc.read {
+				t.Errorf("keyValue(QA_NOTES) = %q, want %q", got, tc.read)
+			}
+		})
+	}
+}

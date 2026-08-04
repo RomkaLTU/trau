@@ -19,6 +19,7 @@ var (
 	_ IssueStatuser = (*Internal)(nil)
 	_ IssueParenter = (*Internal)(nil)
 	_ IssueLabeler  = (*Internal)(nil)
+	_ QANotePoster  = (*Internal)(nil)
 )
 
 type recordedTransition struct {
@@ -224,5 +225,30 @@ func TestInternalSubIssuesFiltersByParent(t *testing.T) {
 func TestInternalEnsureLabelsIsNoop(t *testing.T) {
 	if err := newInternal(newFakeHub()).EnsureLabels(context.Background()); err != nil {
 		t.Fatalf("ensure labels = %v, want nil no-op", err)
+	}
+}
+
+// The internal provider's QA report is a plain comment on the issue row, written
+// through the same transition the rest of its write path uses.
+func TestInternalPostQANoteCommentsThroughTheHub(t *testing.T) {
+	hub := newFakeHub()
+	body := "## Trau QA report\n\nVerify passed: green\nPR: https://github.test/pr/3\n"
+
+	err := newInternal(hub).PostQANote(context.Background(), "LOOP-7", QANote{
+		Body:   body,
+		Images: []QAImage{{Name: "proof-1.png", Mime: "image/png"}},
+	})
+	if err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if len(hub.transitions) != 1 {
+		t.Fatalf("wrote %d transitions, want exactly 1", len(hub.transitions))
+	}
+	got := hub.transitions[0]
+	if got.id != "LOOP-7" || got.t.Comment != strings.TrimSpace(body) {
+		t.Errorf("transition = %+v, want the report commented on LOOP-7", got)
+	}
+	if got.t.State != "" || len(got.t.AddLabels) != 0 || len(got.t.RemoveLabels) != 0 {
+		t.Errorf("transition = %+v, want a comment-only write", got)
 	}
 }

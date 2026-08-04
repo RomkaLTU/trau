@@ -581,7 +581,11 @@ type Pipeline struct {
 	// AppURLs maps a workspace to its app URL (config APP_URLS) so browser verify
 	// drives the app the slice actually changed in a multi-app monorepo; AppURL
 	// covers slices that match no workspace.
-	AppURLs     map[string]string
+	AppURLs map[string]string
+	// QANotes posts the run's QA report as a comment on the ticket it delivered or
+	// gave up on (config QA_NOTES). A tracker without the comment capability skips
+	// it, and a failed post only warns.
+	QANotes     bool
 	AutoMerge   bool
 	MergeMethod string
 	// DeliveredState is the tracker status merged work moves to (config
@@ -2328,6 +2332,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		if bug != "" {
 			reason += "; filed HITL blocker " + bug
 		}
+		p.postQANote(ctx, id, failureQANote(lastFail, bug))
 		return p.giveUp(ctx, id, reason)
 	}
 	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx); err != nil {
@@ -2662,6 +2667,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInReview, "Attach this PR link to the issue: "+prURL+"."); err != nil {
 		p.logf("  status (In Review) error: %v", err)
 	}
+	p.postQANote(ctx, id, p.deliveryQANote(ctx, id, prURL))
 	return nil
 }
 
