@@ -69,6 +69,33 @@ func TestUnverifiedCriterionShipsThePRButBlocksAutoMerge(t *testing.T) {
 	}
 }
 
+// A grade trau does not recognise is not an observation either: it normalizes to
+// unverified, so the hold applies rather than the merge slipping through on a word
+// the verifier made up.
+func TestUnrecognizedCriterionGradeHoldsTheMerge(t *testing.T) {
+	id := "COD-91484"
+	gh := &waitGitHub{replies: []prReply{{state: "OPEN"}, {state: "MERGED"}}}
+	p := newWaitPipeline(t, gh, &fakeTracker{})
+	p.AutoMerge = true
+	writeSliceVerdict(t, id, verdict{
+		Pass:     true,
+		Summary:  "totals compute correctly",
+		Browser:  "not-applicable",
+		Criteria: []criterionResult{{Text: "cart empties on checkout", Status: "partial"}},
+	})
+	seedPROpen(t, p, id, "84", "feature/COD-91484-x")
+
+	if body := p.prBody(context.Background(), id, ""); !strings.Contains(body, "## Unverified criteria") {
+		t.Errorf("PR body missing the unverified criteria section:\n%s", body)
+	}
+	if err := p.CIAndMerge(context.Background(), id); err != nil {
+		t.Fatalf("CIAndMerge = %v, want nil", err)
+	}
+	if gh.mergeCalls != 0 {
+		t.Errorf("Merge called %d times, want 0 (an unrecognised grade settles nothing)", gh.mergeCalls)
+	}
+}
+
 // A verdict that settled every criterion is untouched by the hold: green CI
 // auto-merges exactly as before, and the PR body carries no unverified section.
 func TestFullySatisfiedVerdictStillAutoMerges(t *testing.T) {

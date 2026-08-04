@@ -84,6 +84,34 @@ check):
   existing self-heal/repair path, exactly like any other verify failure.
 - A failing **`warn`** check is logged as a warning and does **not** block the merge.
 
+## Unverified acceptance criteria never auto-merge
+
+Alongside `checks`, the verdict grades every acceptance criterion from the slice's
+rubric `satisfied`, `violated` or `unverified`. A grade trau does not recognise —
+including a missing one — reads as `unverified`, so an absent observation can never
+pass for one that was made.
+
+The three grades gate differently:
+
+- **`violated`** fails the verdict and routes the slice to repair, like a failing
+  `error` check.
+- **`unverified`** means the deciding observation could not be made at all (browser
+  QA undriven, a tool missing, an environment unreachable). That is a coverage gap
+  rather than a defect, so it never fails the slice on its own — but it does keep
+  the merge with a human.
+- **`satisfied`** is the only grade that asserts trau actually checked the thing.
+
+So a green slice carrying at least one `unverified` criterion still ships
+everything: the branch is pushed, the PR opens with an **Unverified criteria**
+section naming each one and why it could not be settled, and the run then waits in
+the manual-merge wait exactly as `AUTO_MERGE=0` does. **This holds regardless of
+`AUTO_MERGE`** — setting it to `1` does not buy an unattended merge of work nobody
+could verify. Merge the PR yourself and the ticket completes normally.
+
+The hold covers local delivery and folder repos too, so it cannot be sidestepped by
+running without a remote. Epic finalize is a separate unit and gates only on
+`AUTO_MERGE`.
+
 ## Built-in defaults
 
 When a repo declares no custom checks, this set runs (the "Ralph prompt stdlib").

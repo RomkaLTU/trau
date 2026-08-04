@@ -2910,8 +2910,7 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	err := p.ciAndMerge(ctx, id)
 	settled := err == nil || errors.Is(err, ErrAlreadyDone)
-	hold, _ := p.mergeHold(id)
-	operatorMerges := hold != "" && p.localDelivery(ctx)
+	operatorMerges := p.mergeHold(id).held() && p.localDelivery(ctx)
 	if p.EpicID == "" && settled && !operatorMerges {
 		p.reloadHubOntoBase(ctx)
 	}
@@ -2943,8 +2942,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	if !green {
 		return p.giveUp(ctx, id, withRepairs("CI not green", "after", repairs))
 	}
-	if hold, unverified := p.mergeHold(id); hold != "" {
-		p.flagUnverifiedMerge(id, unverified)
+	if hold := p.mergeHold(id); hold.held() {
 		return p.awaitManualMerge(ctx, id, pr, hold)
 	}
 	if reason := p.foreignWorkInPR(ctx, id, pr); reason != "" {
@@ -2982,10 +2980,9 @@ func (p *Pipeline) landLocally(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("merge %s: resolve base: %w", id, err)
 	}
-	if hold, unverified := p.mergeHold(id); hold != "" {
-		p.flagUnverifiedMerge(id, unverified)
-		p.setPRStatus(id, prStatusAwaitingMerge)
-		p.logf("  ⏳ %s is ready on %s — merge it into %s yourself (%s)", id, branch, base, hold)
+	if hold := p.mergeHold(id); hold.held() {
+		p.handOverMerge(id, hold)
+		p.logf("  ⏳ %s is ready on %s — merge it into %s yourself (%s)", id, branch, base, hold.Reason)
 		return nil
 	}
 
@@ -3079,49 +3076,61 @@ func (p *Pipeline) setPRStatus(id, status string) {
 
 const autoMergeOff = "AUTO_MERGE=0"
 
-// mergeHold decides who lands a ticket whose gate came back green: it returns the
-// operator-facing reason the merge is theirs — empty when the loop may take it —
-// together with the criteria behind an unverified hold. AUTO_MERGE=0 hands over
-// every merge; a verdict carrying acceptance criteria the verifier could not settle
-// hands over this one, so the PR still ships and stays reviewable while work nobody
-// could check never lands unattended.
-func (p *Pipeline) mergeHold(id string) (string, []criterionResult) {
-	if unverified := p.unverifiedCriteria(id); len(unverified) > 0 {
-		return "unverified acceptance criteria: " + criteriaLine(unverified), unverified
-	}
-	if !p.AutoMerge {
-		return autoMergeOff, nil
-	}
-	return "", nil
+// mergeHold is who lands a ticket whose gate came back green. Its zero value is
+// the loop's merge to take; anything else is the operator's, with Reason naming
+// why in operator-facing words and Unverified carrying the criteria behind an
+// unverified hold.
+type mergeHold struct {
+	Reason     string
+	Unverified []criterionResult
 }
 
-// flagUnverifiedMerge announces a merge held on criteria verify could not settle: a
-// console line plus, in serve mode, the durable event the web UI raises its
-// run-detail banner from. Mirrors warnNoBrowser, and is a no-op for a hold that is
-// merely AUTO_MERGE=0.
-func (p *Pipeline) flagUnverifiedMerge(id string, unverified []criterionResult) {
-	if len(unverified) == 0 {
+func (h mergeHold) held() bool { return h.Reason != "" }
+
+// mergeHold resolves that question for one ticket. AUTO_MERGE=0 hands over every
+// merge; a verdict carrying acceptance criteria the verifier could not settle hands
+// over this one, so the PR still ships and stays reviewable while work nobody could
+// check never lands unattended. Pure — announcing the hold is handOverMerge's job,
+// so a caller may ask twice without emitting twice.
+func (p *Pipeline) mergeHold(id string) mergeHold {
+	if unverified := p.unverifiedCriteria(id); len(unverified) > 0 {
+		return mergeHold{Reason: "unverified acceptance criteria: " + criteriaLine(unverified), Unverified: unverified}
+	}
+	if !p.AutoMerge {
+		return mergeHold{Reason: autoMergeOff}
+	}
+	return mergeHold{}
+}
+
+// handOverMerge leaves the merge with the operator: it stamps the awaiting-merge
+// status every hold shares, then announces a hold on criteria verify could not
+// settle with a console line plus, in serve mode, the durable event the web UI
+// raises its run-detail banner from. Mirrors warnNoBrowser, and adds nothing to a
+// hold that is merely AUTO_MERGE=0 beyond its caller's own line.
+func (p *Pipeline) handOverMerge(id string, hold mergeHold) {
+	p.setPRStatus(id, prStatusAwaitingMerge)
+	if len(hold.Unverified) == 0 {
 		return
 	}
-	msg := "this PR will not auto-merge — verify could not settle " + criteriaLine(unverified)
+	msg := "this PR will not auto-merge — verify could not settle " + criteriaLine(hold.Unverified)
 	p.logf("  ⚠ %s", msg)
 	if p.Events != nil {
 		p.Events.Emit(event.KindCriteriaUnverified, "merge", msg, map[string]any{
 			"ticket":   id,
-			"criteria": criteriaTexts(unverified),
+			"criteria": criteriaTexts(hold.Unverified),
 		})
 	}
 }
 
 // awaitManualMerge is the operator-merge ticket path: CI is green, so it waits for
-// the operator to merge the PR by hand for the reason the caller resolved. A merge
+// the operator to merge the PR by hand for the reason the hold carries. A merge
 // marks the ticket Done; a close without merge is a human rejection (give-up); a
-// canceled context stops blamelessly. The awaiting-merge status is stamped here
-// rather than inside the shared wait so the epic finalize path never opens a
-// checkpoint under an epic id that has none.
-func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr, reason string) error {
-	p.setPRStatus(id, prStatusAwaitingMerge)
-	merged, err := p.waitForManualMerge(ctx, id, pr, p.State.Get(id, "PR_URL"), reason)
+// canceled context stops blamelessly. The hand-over runs here rather than inside the
+// shared wait so the epic finalize path never opens a checkpoint under an epic id
+// that has none.
+func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string, hold mergeHold) error {
+	p.handOverMerge(id, hold)
+	merged, err := p.waitForManualMerge(ctx, id, pr, p.State.Get(id, "PR_URL"), hold.Reason)
 	if err != nil {
 		return err
 	}
@@ -5108,7 +5117,7 @@ func (p *Pipeline) unverifiedCriteria(id string) []criterionResult {
 	}
 	var out []criterionResult
 	for _, c := range v.Criteria {
-		if c.Status == criterionUnverified {
+		if criterionStatus(c.Status) == criterionUnverified {
 			out = append(out, c)
 		}
 	}
