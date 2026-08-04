@@ -35,6 +35,7 @@ import {
   pendingQuestion,
   publishGrillSession,
   questionPayload,
+  researchGrillSessionsQueryOptions,
   setGrillAutoAccept,
   sortAwaiting,
   startGrillSession,
@@ -254,6 +255,19 @@ describe('grillSessionsQueryOptions', () => {
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe(
       '/api/v1/repos/loop/grill?mode=interview',
     )
+  })
+
+  it('names research when the research feed fails without a reason', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: false, status: 500, json: async () => ({}) } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const err = await Promise.resolve(
+      researchGrillSessionsQueryOptions('loop').queryFn?.({} as never),
+    ).catch((e: unknown) => e)
+
+    expect((err as Error).message).toBe('list research sessions failed: 500')
   })
 })
 
@@ -1188,6 +1202,17 @@ describe('startGrillSession', () => {
 
     expect((err as Error).message).toBe('no interviewer configured')
     expect(isActiveSessionConflict(err)).toBe(false)
+  })
+
+  it('names the research session type when a refusal carries no reason', async () => {
+    stubStart(503, {})
+
+    const err = await startGrillSession('loop', '', {
+      seed: 'which oauth flow?',
+      mode: 'research',
+    }).catch((e: unknown) => e)
+
+    expect((err as Error).message).toBe('start research session failed: 503')
   })
 })
 

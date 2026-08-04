@@ -27,13 +27,15 @@ export type GrillMode = 'interview' | 'research'
 // instead of the picker default, and apply_warnings carries the caveats that apply
 // reported, so the same remount raises them again. auto_accept marks a session
 // answering its own recommendations, so only a question needing the user's taste is
-// ever asked.
+// ever asked. report_title is the title a research outcome gave its report, which the
+// Research page names the session by; a session finished without one keeps the seed.
 export interface GrillSession {
   id: string
   repo: string
   issue_id?: string
   issue_destination?: GrillDestination
   issue_title?: string
+  report_title?: string
   apply_warnings?: string[]
   state: GrillState
   session_chain?: string
@@ -272,6 +274,12 @@ function base(repo: string): string {
   return `/api/v1/repos/${encodeURIComponent(repo)}/grill`
 }
 
+// A failure names the session type the surface asked for, so the Research page never
+// reports on an interview it never ran.
+function modeNoun(mode?: GrillMode): string {
+  return mode === 'research' ? 'research' : 'interview'
+}
+
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const detail = (await res.json().catch(() => null)) as {
     error?: string
@@ -289,7 +297,8 @@ async function fetchGrillSessions(
   if (mode) query.set('mode', mode)
   const q = query.toString()
   const res = await apiFetch(q ? `${base(repo)}?${q}` : base(repo))
-  if (!res.ok) throw new Error(await errorMessage(res, 'list interview sessions failed'))
+  if (!res.ok)
+    throw new Error(await errorMessage(res, `list ${modeNoun(mode)} sessions failed`))
   return res.json()
 }
 
@@ -528,7 +537,7 @@ export async function startGrillSession(
   })
   if (!res.ok) {
     throw new GrillStartError(
-      await errorMessage(res, 'start interview session failed'),
+      await errorMessage(res, `start ${modeNoun(opening.mode)} session failed`),
       res.status,
     )
   }

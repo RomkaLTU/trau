@@ -19,6 +19,11 @@ const EMPTY_URL_MAP: MarkdownUrlMap = {};
 
 const UrlMapContext = createContext<MarkdownUrlMap>(EMPTY_URL_MAP);
 
+// Document mode is what a report is read in: headings become real elements with
+// anchors, so the body has an outline to link into and to print from. Chat bubbles
+// and issue descriptions stay on the flat default.
+const DocumentContext = createContext(false);
+
 type Block =
   | { kind: "heading"; level: number; text: string }
   | { kind: "code"; text: string }
@@ -337,10 +342,45 @@ const headingClass: Record<number, string> = {
   3: "text-sm font-semibold",
 };
 
+const documentHeadingClass: Record<number, string> = {
+  2: "mt-8 text-lg font-semibold",
+  3: "mt-6 text-base font-semibold",
+  4: "mt-5 text-sm font-semibold",
+};
+
+function headingId(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// The document's own title is the h1, so the body starts at h2 and everything deeper
+// than an h3 flattens onto h4 rather than opening levels nothing renders differently.
+function DocumentHeading({ level, text }: { level: number; text: string }) {
+  const depth = Math.min(level + 1, 4);
+  const Tag = `h${depth}` as "h2" | "h3" | "h4";
+  const id = headingId(text);
+  return (
+    <Tag
+      id={id || undefined}
+      className={cn(
+        "scroll-mt-4 first:mt-0 text-foreground",
+        documentHeadingClass[depth],
+      )}
+    >
+      {renderInline(text)}
+    </Tag>
+  );
+}
+
 function Block({ block }: { block: Block }) {
+  const asDocument = useContext(DocumentContext);
   switch (block.kind) {
     case "heading":
-      return (
+      return asDocument ? (
+        <DocumentHeading level={block.level} text={block.text} />
+      ) : (
         <p
           className={cn(
             "mt-4 first:mt-0 text-foreground",
@@ -429,19 +469,23 @@ export function Markdown({
   children,
   className,
   urlMap = EMPTY_URL_MAP,
+  document = false,
 }: {
   children: string;
   className?: string;
   urlMap?: MarkdownUrlMap;
+  document?: boolean;
 }) {
   const blocks = parseBlocks(children);
   return (
     <UrlMapContext.Provider value={urlMap}>
-      <div className={cn("text-sm text-muted-foreground", className)}>
-        {blocks.map((block, i) => (
-          <Block key={i} block={block} />
-        ))}
-      </div>
+      <DocumentContext.Provider value={document}>
+        <div className={cn("text-sm text-muted-foreground", className)}>
+          {blocks.map((block, i) => (
+            <Block key={i} block={block} />
+          ))}
+        </div>
+      </DocumentContext.Provider>
     </UrlMapContext.Provider>
   );
 }

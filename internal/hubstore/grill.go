@@ -69,7 +69,9 @@ var grillTransitions = map[string]map[string]bool{
 // sessions that anchor to the repo alone. IssueTitle is read from the issue the
 // session grills — so a settled session still names its issue after apply drops the
 // triage labels the board queries key on — falling back to the authoring seed for an
-// issue-less session. IssueDestination records where a create-apply filed the
+// issue-less session. ReportTitle is the title a research outcome gave its report,
+// empty for every other session and for research sessions finished before titles were
+// required. IssueDestination records where a create-apply filed the
 // anchored issue; empty for anchors that predate destination tracking.
 // ApplyWarnings carries what the apply that settled the session could not do but
 // never gated on. AutoAccept answers a question carrying a recommended option with
@@ -80,6 +82,7 @@ type GrillSession struct {
 	IssueID          string
 	IssueDestination string
 	IssueTitle       string
+	ReportTitle      string
 	State            string
 	SessionChain     string
 	Mode             string
@@ -184,12 +187,20 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 // the issue's identifier, so the join keys on (repo, identifier) — the unique index
 // issues already has. An authoring session's empty issue_id matches no issue and
 // falls back to its seed — the one-line idea stored as the opening info message —
-// so an issue-less session still names itself in the queue.
+// so an issue-less session still names itself in the queue. A research outcome
+// names its own report, read off the latest one so a superseded proposal's title
+// never outlives it; sessions whose outcome carries none keep the fallback.
 const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination,
 	        COALESCE(NULLIF(i.title, ''), (
 	            SELECT json_extract(m.payload, '$.text') FROM grill_messages m
 	            WHERE m.session_id = g.id AND m.role = 'user' AND m.kind = 'info'
 	            ORDER BY m.id LIMIT 1
+	        ), ''),
+	        COALESCE((
+	            SELECT json_extract(m.payload, '$.title') FROM grill_messages m
+	            WHERE m.session_id = g.id AND m.kind = 'outcome'
+	              AND json_extract(m.payload, '$.disposition') = 'research'
+	            ORDER BY m.id DESC LIMIT 1
 	        ), ''), g.state,
 	        g.session_chain, g.mode, g.provider, g.model, g.auto_accept, g.parked_reason,
 	        g.apply_warnings, g.created_at, g.updated_at
@@ -634,7 +645,7 @@ func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err
 			warnings   string
 		)
 		if err := q.Scan(
-			&s.ID, &s.Repo, &s.IssueID, &s.IssueDestination, &s.IssueTitle, &s.State,
+			&s.ID, &s.Repo, &s.IssueID, &s.IssueDestination, &s.IssueTitle, &s.ReportTitle, &s.State,
 			&s.SessionChain, &s.Mode, &s.Provider, &s.Model, &autoAccept,
 			&s.ParkedReason, &warnings, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {

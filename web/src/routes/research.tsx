@@ -74,11 +74,16 @@ interface ResearchStart {
   onModelChange: (model: string) => void;
 }
 
-// researchTitle names a session in the rail. The hub's join falls back to the seed —
-// the question the session opened on — which is the only title an issue-less research
-// session ever has.
+// researchTitle names a session in the rail: the title the agent gave its report,
+// once it has written one. Until then — and for a report finished before titles were
+// required — the hub's join falls back to the seed, the question the session opened
+// on, which is the only title an issue-less research session ever has.
 function researchTitle(session: GrillSession): string {
-  return session.issue_title?.trim() || "Untitled research";
+  return (
+    session.report_title?.trim() ||
+    session.issue_title?.trim() ||
+    "Untitled research"
+  );
 }
 
 // A report is read long after the day it was written, so a row carries its date.
@@ -222,10 +227,10 @@ function ResearchPage() {
   );
 }
 
-// SessionColumn is the chat zone: the session bar over the conversation, which runs
-// the question-and-answer turns while the session is live and shows the findings
-// review once it finishes. An applied session opens here read-only, its report
-// rendered by the same review.
+// SessionColumn is the report zone: the session bar over the conversation, which runs
+// the question-and-answer turns while the session is live and turns into the report
+// document once it finishes. An applied session opens on that same document, its
+// transcript tucked behind the disclosure.
 function SessionColumn({
   repo,
   session,
@@ -277,6 +282,7 @@ function SessionColumn({
           key={session.id}
           repo={repo}
           initial={session}
+          report
           onStatus={onStatus}
           onApplied={onApplied}
           onDiscarded={onDiscarded}
