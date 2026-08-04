@@ -778,7 +778,19 @@ describe('streaming activity', () => {
     activity: NO_ACTIVITY,
   }
 
-  const tool = (seq: number, name: string): GrillActivity => ({ seq, kind: 'tool', name })
+  const tool = (seq: number, name: string, id?: string): GrillActivity => ({
+    seq,
+    kind: 'tool',
+    name,
+    ...(id ? { id } : {}),
+  })
+
+  const result = (seq: number, ok: boolean, id?: string): GrillActivity => ({
+    seq,
+    kind: 'result',
+    ok,
+    ...(id ? { id } : {}),
+  })
 
   const report = (state: GrillLive, ...frames: GrillActivity[]) =>
     frames.reduce((s, activity) => grillReducer(s, { type: 'activity', activity }), state)
@@ -789,7 +801,90 @@ describe('streaming activity', () => {
     expect(next.activity.seq).toBe(2)
   })
 
-  it('keeps only the last 50 frames', () => {
+  it('the call’s detail fills in the row it already opened', () => {
+    const next = report(
+      initial,
+      tool(1, 'Bash', 'toolu_1'),
+      { seq: 2, kind: 'tool', id: 'toolu_1', name: 'Bash', detail: 'go test ./...' },
+    )
+    expect(next.activity.items).toHaveLength(1)
+    expect(next.activity.items[0]).toEqual({
+      seq: 1,
+      kind: 'tool',
+      id: 'toolu_1',
+      name: 'Bash',
+      detail: 'go test ./...',
+    })
+  })
+
+  it('a result resolves the row it names, leaving the others running', () => {
+    const next = report(
+      initial,
+      tool(1, 'Bash', 'toolu_1'),
+      tool(2, 'Grep', 'toolu_2'),
+      result(3, false, 'toolu_2'),
+    )
+    expect(next.activity.items.map((a) => a.ok)).toEqual([undefined, false])
+  })
+
+  it('a result with no id settles the oldest row still running', () => {
+    const next = report(initial, tool(1, 'shell'), tool(2, 'web_search'), result(3, true))
+    expect(next.activity.items.map((a) => a.ok)).toEqual([true, undefined])
+  })
+
+  it('a result whose row has aged out of the ring settles nothing', () => {
+    const next = report(initial, tool(1, 'Bash', 'toolu_1'), result(2, true, 'toolu_9'))
+    expect(next.activity.items.map((a) => a.ok)).toEqual([undefined])
+  })
+
+  const thinking = (seq: number, text?: string): GrillActivity => ({
+    seq,
+    kind: 'thinking',
+    ...(text ? { text } : {}),
+  })
+
+  it('a stretch grows as the thinking behind it is written', () => {
+    const next = report(initial, thinking(1), thinking(2, 'weighing '), thinking(3, 'it up'))
+    expect(next.activity.items).toHaveLength(1)
+    expect(next.activity.items[0]).toEqual({ seq: 1, kind: 'thinking', text: 'weighing it up' })
+  })
+
+  it('a stretch marker starts a row rather than growing the last one', () => {
+    const next = report(initial, thinking(1), thinking(2, 'first'), thinking(3), thinking(4, 'second'))
+    expect(next.activity.items.map((a) => a.text)).toEqual(['first', 'second'])
+  })
+
+  it('thinking landing with no stretch open opens one', () => {
+    const next = report(initial, tool(1, 'Read'), thinking(2, 'weighing it'))
+    expect(next.activity.items.map((a) => a.kind)).toEqual(['tool', 'thinking'])
+    expect(next.activity.items[1].text).toBe('weighing it')
+  })
+
+  it('grows the stretch a later tool row sits above', () => {
+    const next = report(initial, thinking(1, 'weighing '), tool(2, 'Read'), thinking(3, 'it up'))
+    expect(next.activity.items.map((a) => a.kind)).toEqual(['thinking', 'tool'])
+    expect(next.activity.items[0].text).toBe('weighing it up')
+  })
+
+  it('keeps the tail of a stretch that runs long', () => {
+    const next = report(initial, thinking(1), thinking(2, 'x'.repeat(1990)), thinking(3, 'y'.repeat(30)))
+    const text = next.activity.items[0].text ?? ''
+    expect(text).toHaveLength(2000)
+    expect(text.endsWith('y'.repeat(30))).toBe(true)
+    expect(text.startsWith('x'.repeat(1970))).toBe(true)
+  })
+
+  it('a stretch that carries no text stays a bare row', () => {
+    const next = report(initial, thinking(1))
+    expect(next.activity.items).toEqual([{ seq: 1, kind: 'thinking' }])
+  })
+
+  it('a tool already back is born resolved', () => {
+    const next = report(initial, { seq: 1, kind: 'tool', name: 'read_file', ok: true })
+    expect(next.activity.items[0].ok).toBe(true)
+  })
+
+  it('keeps only the last 50 rows', () => {
     const frames = Array.from({ length: 60 }, (_, i) => tool(i + 1, `T${i + 1}`))
     const next = report(initial, ...frames)
     expect(next.activity.items).toHaveLength(50)

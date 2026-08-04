@@ -4,7 +4,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
-  Wrench,
+  Loader2,
   X,
   type LucideProps,
 } from "lucide-react";
@@ -22,30 +22,25 @@ const toneText: Record<Tone, string> = {
   danger: "text-fail",
 };
 
-interface KindMeta {
-  label: string;
+interface RowMark {
   icon: ComponentType<LucideProps>;
   tone: Tone;
+  spin?: boolean;
 }
 
-const KIND_META: Record<string, KindMeta> = {
-  tool: { label: "Tool", icon: Wrench, tone: "flow" },
-  thinking: { label: "Thinking…", icon: Brain, tone: "info" },
-  result: { label: "Done", icon: Check, tone: "success" },
-};
-
-function kindMeta(kind: string): KindMeta {
-  return KIND_META[kind] ?? { label: kind, icon: Wrench, tone: "flow" };
+// A tool row spins for as long as the call is out, then settles in place rather than
+// listing a second row.
+function rowMark(activity: GrillActivity): RowMark {
+  if (activity.kind === "thinking") return { icon: Brain, tone: "info" };
+  if (activity.ok === undefined) return { icon: Loader2, tone: "flow", spin: true };
+  return activity.ok
+    ? { icon: Check, tone: "success" }
+    : { icon: X, tone: "danger" };
 }
 
-function failed(activity: GrillActivity): boolean {
-  return activity.kind === "result" && activity.ok === false;
-}
-
-// A tool names itself; everything else reads off its kind.
-function activityLabel(activity: GrillActivity, meta: KindMeta): string {
-  if (failed(activity)) return "Failed";
-  return activity.name || meta.label;
+function rowLabel(activity: GrillActivity): string {
+  if (activity.kind === "thinking") return "Thinking…";
+  return activity.name || activity.kind;
 }
 
 // The ring holds more than anyone reads while the turn is still working, so the feed
@@ -82,25 +77,44 @@ export function ActivityFeed({ items }: { items: GrillActivity[] }) {
 }
 
 function ActivityRow({ activity }: { activity: GrillActivity }) {
-  const meta = kindMeta(activity.kind);
-  const Icon = failed(activity) ? X : meta.icon;
-  const tone = failed(activity) ? "danger" : meta.tone;
+  const { icon: Icon, tone, spin } = rowMark(activity);
+  const thinking = activity.kind === "thinking" ? activity.text : undefined;
 
   return (
     <div className="flex min-w-0 items-center gap-1.5 pl-1 text-xs">
       <Icon
-        className={cn("size-3 shrink-0", toneText[tone])}
+        className={cn("size-3 shrink-0", toneText[tone], spin && "animate-spin")}
         aria-hidden="true"
       />
-      <span className="shrink-0 font-mono text-muted-foreground">
-        {activityLabel(activity, meta)}
-      </span>
-      {activity.detail && (
-        <span className="truncate text-muted-foreground/70">
-          {activity.detail}
-        </span>
+      {thinking ? (
+        <ThinkingLine text={thinking} />
+      ) : (
+        <>
+          <span className="shrink-0 font-mono text-muted-foreground">
+            {rowLabel(activity)}
+          </span>
+          {activity.detail && (
+            <span className="truncate text-muted-foreground/70">
+              {activity.detail}
+            </span>
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+// The live edge of a stretch is its tail, so the line is clipped at its start rather
+// than its end: a nowrap span pushed to the end of an overflow-hidden box overflows
+// backwards, out of reach. The auto margin absorbs the slack until there is none, so a
+// stretch that still fits reads from the left like every other row.
+function ThinkingLine({ text }: { text: string }) {
+  return (
+    <span className="flex min-w-0 flex-1 justify-end overflow-hidden">
+      <span className="me-auto whitespace-nowrap italic text-muted-foreground/70">
+        {text}
+      </span>
+    </span>
   );
 }
 
