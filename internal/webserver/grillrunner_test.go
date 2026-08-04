@@ -143,6 +143,19 @@ func TestGrillActivityEvent(t *testing.T) {
 			want: `{"seq":0,"kind":"thinking"}`,
 		},
 		{
+			name: "thinking delta carries the stretch as it is written",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}}`,
+			want: `{"seq":0,"kind":"thinking","text":"weighing it"}`,
+		},
+		{
+			name: "signature delta closes thinking without adding to it",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eo0B"}}}`,
+		},
+		{
+			name: "an encrypted stretch's empty delta opens nothing",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}}}`,
+		},
+		{
 			name: "tool result",
 			line: `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"3 results"}]}}`,
 			want: `{"seq":0,"kind":"result","id":"toolu_1","ok":true}`,
@@ -570,9 +583,10 @@ func TestGrillRunnerStreamsActivity(t *testing.T) {
 
 	want := []string{
 		`{"seq":1,"kind":"thinking"}`,
-		`{"seq":2,"kind":"tool","id":"toolu_1","name":"WebSearch"}`,
-		`{"seq":3,"kind":"tool","id":"toolu_1","name":"WebSearch","detail":"sse frame contracts"}`,
-		`{"seq":4,"kind":"result","id":"toolu_1","ok":true}`,
+		`{"seq":2,"kind":"thinking","text":"weighing it"}`,
+		`{"seq":3,"kind":"tool","id":"toolu_1","name":"WebSearch"}`,
+		`{"seq":4,"kind":"tool","id":"toolu_1","name":"WebSearch","detail":"sse frame contracts"}`,
+		`{"seq":5,"kind":"result","id":"toolu_1","ok":true}`,
 	}
 	if !slices.Equal(activity, want) {
 		t.Errorf("activity = %v, want %v", activity, want)

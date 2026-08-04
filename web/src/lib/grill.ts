@@ -70,13 +70,16 @@ export interface GrillDelta {
 // GrillActivity is one thing the agent did mid-turn — live-stream only on the same
 // terms as a delta, and numbered on its own count. id ties a tool frame to the later
 // frames that fill it in and close it out. detail only ever summarizes a call (a path,
-// a query); the hub keeps whole tool inputs and results off the stream.
+// a query); the hub keeps whole tool inputs and results off the stream. text is the
+// agent's thinking as it is written: a thinking frame carrying none opens a stretch,
+// and every frame that follows grows it.
 export interface GrillActivity {
   seq: number
   kind: string
   id?: string
   name?: string
   detail?: string
+  text?: string
   ok?: boolean
 }
 
@@ -932,6 +935,8 @@ export const NO_ACTIVITY: LiveActivity = { seq: 0, items: [] }
 
 const ACTIVITY_RING = 50
 
+const THINKING_TEXT_MAX = 2000
+
 // GrillLive is the panel's merged view of one session: the authoritative session
 // plus its messages. live tracks whether a stream frame has set the session, so a
 // late GET hydrate never reverts a state the stream already advanced; hydrated
@@ -1053,7 +1058,9 @@ function appendActivity(
 // foldActivity keeps one row per call rather than one per frame: a tool frame either
 // opens a row or fills in the one its id already opened, and a result frame resolves
 // the row it closes. A result with no id — a provider that never named the call —
-// settles the oldest row still running.
+// settles the oldest row still running. Thinking is one row per stretch: the frame
+// that carries no text opens it and the deltas that follow grow it, so a stretch
+// attached to mid-stream grows the row it lands in rather than opening one per delta.
 function foldActivity(rows: GrillActivity[], frame: GrillActivity): GrillActivity[] {
   if (frame.kind === 'result') {
     const at = frame.id
@@ -1062,9 +1069,29 @@ function foldActivity(rows: GrillActivity[], frame: GrillActivity): GrillActivit
     if (at < 0) return rows
     return rows.map((row, i) => (i === at ? { ...row, ok: frame.ok } : row))
   }
+  if (frame.kind === 'thinking' && frame.text) {
+    const at = lastThinking(rows)
+    if (at < 0) return [...rows, frame].slice(-ACTIVITY_RING)
+    return rows.map((row, i) =>
+      i === at ? { ...row, text: thinkingTail((row.text ?? '') + frame.text) } : row,
+    )
+  }
   const at = frame.id ? rows.findIndex((row) => row.id === frame.id) : -1
   if (at < 0) return [...rows, frame].slice(-ACTIVITY_RING)
   return rows.map((row, i) => (i === at ? { ...row, ...frame, seq: row.seq } : row))
+}
+
+function lastThinking(rows: GrillActivity[]): number {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].kind === 'thinking') return i
+  }
+  return -1
+}
+
+// A stretch the agent spends thinking runs far past what one line shows, and the row
+// displays its tail, so an overlong one drops from the front.
+function thinkingTail(text: string): string {
+  return text.length > THINKING_TEXT_MAX ? text.slice(-THINKING_TEXT_MAX) : text
 }
 
 function holds(list: GrillMessage[], msg: GrillMessage): boolean {

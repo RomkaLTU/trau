@@ -78,6 +78,7 @@ export function ActivityFeed({ items }: { items: GrillActivity[] }) {
 
 function ActivityRow({ activity }: { activity: GrillActivity }) {
   const { icon: Icon, tone, spin } = rowMark(activity);
+  const thinking = activity.kind === "thinking" ? activity.text : undefined;
 
   return (
     <div className="flex min-w-0 items-center gap-1.5 pl-1 text-xs">
@@ -85,15 +86,35 @@ function ActivityRow({ activity }: { activity: GrillActivity }) {
         className={cn("size-3 shrink-0", toneText[tone], spin && "animate-spin")}
         aria-hidden="true"
       />
-      <span className="shrink-0 font-mono text-muted-foreground">
-        {rowLabel(activity)}
-      </span>
-      {activity.detail && (
-        <span className="truncate text-muted-foreground/70">
-          {activity.detail}
-        </span>
+      {thinking ? (
+        <ThinkingLine text={thinking} />
+      ) : (
+        <>
+          <span className="shrink-0 font-mono text-muted-foreground">
+            {rowLabel(activity)}
+          </span>
+          {activity.detail && (
+            <span className="truncate text-muted-foreground/70">
+              {activity.detail}
+            </span>
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+// The live edge of a stretch is its tail, so the line is clipped at its start rather
+// than its end: a nowrap span pushed to the end of an overflow-hidden box overflows
+// backwards, out of reach. The auto margin absorbs the slack until there is none, so a
+// stretch that still fits reads from the left like every other row.
+function ThinkingLine({ text }: { text: string }) {
+  return (
+    <span className="flex min-w-0 flex-1 justify-end overflow-hidden">
+      <span className="me-auto whitespace-nowrap italic text-muted-foreground/70">
+        {text}
+      </span>
+    </span>
   );
 }
 
