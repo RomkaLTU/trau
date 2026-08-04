@@ -732,11 +732,14 @@ func (j *Jira) quarantinePrompt(id, reason string) string {
 		id, j.ReadyLabel, j.QuarantineLabel, reason)
 }
 
-// PostQANote leaves the run's QA report as a comment on the issue. It uses the
-// REST API when a token is configured, falling back to the Rovo MCP on an
-// auth/not-enabled error. note.Images is ignored.
+// PostQANote leaves the run's QA report as a comment on the issue, with the
+// verify screenshots attached to the issue and embedded in that same comment. It
+// uses the REST API when a token is configured, falling back to the Rovo MCP on
+// an auth/not-enabled error; that path posts the report text alone, since a
+// prompt cannot carry image bytes.
 func (j *Jira) PostQANote(ctx context.Context, id string, note QANote) error {
-	if err := j.api().AddComment(ctx, id, note.Body); err == nil {
+	body, media := j.qaNoteMedia(ctx, id, note)
+	if err := j.api().AddCommentWithMedia(ctx, id, body, media); err == nil {
 		return nil
 	} else if !j.canFallback(err) {
 		return err
@@ -744,6 +747,46 @@ func (j *Jira) PostQANote(ctx context.Context, id string, note QANote) error {
 
 	_, err := j.Runner.Run(ctx, j.qaNotePrompt(id, note.Body), "qa_note")
 	return err
+}
+
+// qaAttachmentsNote points a reader at the issue's attachments when a screenshot
+// landed on it but could not be embedded in the comment.
+const qaAttachmentsNote = "Verify screenshots are attached to this issue."
+
+// qaNoteMedia uploads the note's screenshots as issue attachments and resolves
+// each one's media id, returning the comment body and the ids that comment
+// embeds. Resolving an id is a documented workaround (JRACLOUD-96384) rather than
+// a supported read, so an image it fails for stays an attachment and the body
+// gains a line saying so. An upload that fails costs that screenshot alone;
+// credentials the comment cannot use either are left to the MCP fallback.
+func (j *Jira) qaNoteMedia(ctx context.Context, id string, note QANote) (string, []string) {
+	if len(note.Images) == 0 {
+		return note.Body, nil
+	}
+	api := j.api()
+	media := make([]string, 0, len(note.Images))
+	attachedOnly := false
+	for _, img := range note.Images {
+		attachment, err := api.AddAttachment(ctx, id, img.Name, img.Bytes)
+		if err != nil {
+			if jiraShouldFallback(err) {
+				return note.Body, nil
+			}
+			logger.Printf("jira: %s QA note dropped screenshot %s: %v", id, img.Name, err)
+			continue
+		}
+		mediaID, err := api.MediaID(ctx, attachment)
+		if err != nil {
+			logger.Printf("jira: %s QA note attached %s without an inline embed: %v", id, img.Name, err)
+			attachedOnly = true
+			continue
+		}
+		media = append(media, mediaID)
+	}
+	if attachedOnly {
+		return strings.TrimRight(note.Body, "\n") + "\n\n" + qaAttachmentsNote, media
+	}
+	return note.Body, media
 }
 
 func (j *Jira) qaNotePrompt(id, body string) string {

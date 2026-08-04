@@ -540,15 +540,44 @@ func (a *AzureDevOps) Quarantine(ctx context.Context, id, reason string) error {
 		fmt.Sprintf("Trau loop stopped: %s (see this ticket's run in the trau web UI).", reason))
 }
 
-// PostQANote leaves the run's QA report on the work item's discussion. Discussion
-// bodies are HTML, so AddComment renders the Markdown on the way in.
-// note.Images is ignored.
+// PostQANote leaves the run's QA report on the work item's discussion, with the
+// verify screenshots uploaded to the work item and embedded in it. Discussion
+// bodies are HTML, so the Markdown is rendered on the way in. The uploads are
+// also listed under the item's Attachments, which survives a discussion renderer
+// that declines to show the images inline.
 func (a *AzureDevOps) PostQANote(ctx context.Context, id string, note QANote) error {
 	n, err := workItemID(id)
 	if err != nil {
 		return err
 	}
-	return a.api().AddComment(ctx, a.Project, n, note.Body)
+	files := a.uploadQAImages(ctx, id, note.Images)
+	if err := a.api().AddCommentWithImages(ctx, a.Project, n, note.Body, files); err != nil {
+		return err
+	}
+	if err := a.api().AttachFiles(ctx, a.Project, n, files); err != nil {
+		logger.Printf("azure: %s QA note screenshots not listed as attachments: %v", id, err)
+	}
+	return nil
+}
+
+// uploadQAImages stores the note's screenshots in the attachment store and
+// returns the ones that landed. An upload that fails costs that screenshot and
+// nothing else: the report still posts without it.
+func (a *AzureDevOps) uploadQAImages(ctx context.Context, id string, images []QAImage) []azureapi.Attachment {
+	if len(images) == 0 {
+		return nil
+	}
+	api := a.api()
+	files := make([]azureapi.Attachment, 0, len(images))
+	for _, img := range images {
+		at, err := api.UploadAttachment(ctx, a.Project, img.Name, img.Bytes)
+		if err != nil {
+			logger.Printf("azure: %s QA note dropped screenshot %s: %v", id, img.Name, err)
+			continue
+		}
+		files = append(files, azureapi.Attachment{URL: at, Caption: img.Caption})
+	}
+	return files
 }
 
 // FileBug files a NEW Bug work item as a last-resort HITL blocker for a QA

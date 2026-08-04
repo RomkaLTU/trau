@@ -419,6 +419,31 @@ func buildADF(text string) adfDoc {
 	return adfDoc{Type: "doc", Version: 1, Content: blocks}
 }
 
+// buildADFWithMedia is buildADF with the issue's uploaded images appended to the
+// document, one media node per Media Services id (see MediaID), so the rendered
+// comment shows them inline under its text.
+func buildADFWithMedia(text string, mediaIDs []string) adfDoc {
+	doc := buildADF(text)
+	for _, id := range mediaIDs {
+		doc.Content = append(doc.Content, mediaBlock(id))
+	}
+	return doc
+}
+
+// mediaBlock wraps one Media Services id in the mediaSingle/media pair ADF uses
+// for an image on a line of its own. The collection stays empty: an issue
+// attachment lives in the collection Jira resolves from the id itself.
+func mediaBlock(id string) adfBlock {
+	return adfBlock{
+		Type:  "mediaSingle",
+		Attrs: map[string]any{"layout": "center"},
+		Content: []adfBlock{{
+			Type:  "media",
+			Attrs: map[string]any{"type": "file", "id": id, "collection": ""},
+		}},
+	}
+}
+
 func markdownBlocks(lines []string) []adfBlock {
 	blocks := []adfBlock{}
 	for i := 0; i < len(lines); {
