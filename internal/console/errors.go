@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+// ErrorPrefix marks a fatal line on the CLI's stderr. A caller that reads a child
+// trau's stderr back strips it to recover the message on its own terms.
+const ErrorPrefix = "trau: "
+
 // ActionableError wraps an underlying error with a human-readable explanation
 // and an optional next-step suggestion. It is used at CLI boundaries so the
 // final error message can tell the user what failed and what to do about it.

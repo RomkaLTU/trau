@@ -11,13 +11,31 @@ import (
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
+// AlreadyShipped is the phrase every merged-attempt refusal carries. It is the
+// only part of the refusal that survives a trip through a child's stderr, so a
+// caller reading one back matches on it rather than on the surrounding prose.
+const AlreadyShipped = "is already shipped"
+
+// RefuseShipped refuses to requeue or reset an attempt whose code already landed,
+// naming the evidence — a merged PR, a merged checkpoint. --force is the override,
+// and it stays the CLI's alone (ADR 0034).
+func RefuseShipped(verb, id, evidence string) error {
+	return console.Actionable(
+		fmt.Errorf("%s %s (%s)", id, AlreadyShipped, evidence),
+		verb+" "+id,
+		fmt.Sprintf("its code is already merged — pass --force to %s it anyway", verb))
+}
+
 // Requeue makes a quarantined ticket eligible again in one command: it restores
 // the tracker labels and status, drops the saved checkpoint, closes the attempt PR
 // and deletes the attempt branch, local and remote. A folder run's attempt is every
 // child it shipped to, so all of its PRs close and all of its branches go. Every
 // step is skipped when it has nothing left to do, so a second call changes nothing
-// and says so. A ticket whose attempt PR already merged is refused unless force
-// overrides — the same guard --reset applies to a merged checkpoint.
+// and says so. The checkpoint goes last and only once every other step succeeded:
+// it is the failed run's record, and dropping it after a partial recovery would
+// leave the surviving attempt looking settled with no way back. A ticket whose
+// attempt PR already merged is refused unless force overrides — the same guard
+// --reset applies to a merged checkpoint.
 func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 	attempts := p.attempts(id)
 	states := make([]string, len(attempts))
@@ -27,10 +45,7 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 		}
 		states[i], _ = a.github.PRState(ctx, a.pr)
 		if states[i] == "MERGED" && !force {
-			return console.Actionable(
-				fmt.Errorf("%s is already shipped (PR %s is merged%s)", id, a.pr, a.inRepo()),
-				"requeue "+id,
-				"its code is already merged — pass --force to requeue it anyway")
+			return RefuseShipped("requeue", id, fmt.Sprintf("PR %s is merged%s", a.pr, a.inRepo()))
 		}
 	}
 	branch := p.featureBranch(ctx, id)
@@ -58,9 +73,11 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 		errs = append(errs, dropErrs...)
 	}
 
-	if phase := p.State.Get(id, "PHASE"); phase != "" {
-		p.clearLocalState(id)
-		changed = append(changed, "cleared the saved checkpoint (was "+phase+")")
+	if len(errs) == 0 {
+		if phase := p.State.Get(id, "PHASE"); phase != "" {
+			p.clearLocalState(id)
+			changed = append(changed, "cleared the saved checkpoint (was "+phase+")")
+		}
 	}
 
 	for _, line := range changed {

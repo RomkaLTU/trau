@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/state"
@@ -41,6 +42,7 @@ type requeueGit struct {
 	fakeGit
 	local       bool
 	pushed      bool
+	deleteErr   error
 	checkedOut  string
 	deleted     string
 	deletedPush string
@@ -58,6 +60,9 @@ func (g *requeueGit) Checkout(_ context.Context, branch string, _ bool) error {
 }
 
 func (g *requeueGit) DeleteBranch(_ context.Context, branch string) error {
+	if g.deleteErr != nil {
+		return g.deleteErr
+	}
 	g.deleted, g.local = branch, false
 	return nil
 }
@@ -188,6 +193,38 @@ func TestRequeueRefusesAMergedAttempt(t *testing.T) {
 	}
 	if phase := p.State.Get(id, "PHASE"); phase != "" {
 		t.Errorf("PHASE = %q under --force, want the checkpoint cleared", phase)
+	}
+}
+
+// TestRequeuePartialFailureKeepsTheCheckpoint covers the step that would not go —
+// a branch the working tree or the forge refuses to drop. The run stays failed,
+// checkpoint and all, so the retry has something left to drive and finishes what
+// the first call could not.
+func TestRequeuePartialFailureKeepsTheCheckpoint(t *testing.T) {
+	id := "COD-1203"
+	branch := "feature/COD-1203-stuck"
+	tr := &requeueTracker{labels: []string{requeueQuarantine}, status: tracker.StatusStarted}
+	g := &requeueGit{local: true, deleteErr: errors.New("permission denied")}
+	p, _ := newRequeuePipeline(t, tr, g, &epicGitHub{})
+	seedQuarantine(t, p, id, branch, "")
+
+	if err := p.Requeue(context.Background(), id, false); err == nil {
+		t.Fatal("Requeue err = nil, want the branch delete to fail")
+	}
+	if phase := p.State.Get(id, "PHASE"); phase != state.Quarantined {
+		t.Fatalf("PHASE = %q after a partial recovery, want the checkpoint kept for the retry", phase)
+	}
+
+	g.deleteErr = nil
+	if err := p.Requeue(context.Background(), id, false); err != nil {
+		t.Fatalf("retry Requeue: %v", err)
+	}
+
+	if g.deleted != branch {
+		t.Errorf("deleted branch %q on the retry, want %q", g.deleted, branch)
+	}
+	if phase := p.State.Get(id, "PHASE"); phase != "" {
+		t.Errorf("PHASE = %q after the retry, want the checkpoint cleared", phase)
 	}
 }
 
