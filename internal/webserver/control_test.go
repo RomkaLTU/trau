@@ -748,7 +748,8 @@ func stopWaitServer(t *testing.T, home string) (*Server, *fakeSupervisor) {
 
 func TestStopAndWaitGracefulExitNeverEscalates(t *testing.T) {
 	s, fake := stopWaitServer(t, t.TempDir())
-	pid := spawnSleeper(t, "0.05")
+	pid := spawnSleeper(t, "5")
+	fake.onStop = func(pid int) { _ = proc.StopGracefully(pid) }
 
 	if err := s.stopAndWait(pid, time.Second); err != nil {
 		t.Fatalf("stopAndWait: %v", err)
@@ -838,7 +839,7 @@ func TestStopAndWaitLeavesGracefullyDeregisteredRunUntouched(t *testing.T) {
 	home := t.TempDir()
 	s, fake := stopWaitServer(t, home)
 	repoRoot := filepath.Join(t.TempDir(), "acme")
-	pid := spawnSleeper(t, "0.05")
+	pid := spawnSleeper(t, "5")
 
 	writeEntry(t, home, registry.Entry{
 		PID:          pid,
@@ -851,10 +852,14 @@ func TestStopAndWaitLeavesGracefullyDeregisteredRunUntouched(t *testing.T) {
 	if err := s.stores.Checkpoints().Upsert(repoRoot, "COD-42", map[string]string{"PHASE": state.Building}); err != nil {
 		t.Fatalf("seed checkpoint: %v", err)
 	}
-	// The loop deregisters itself on a clean exit; simulate that from the stop
-	// signal itself, which stopAndWait sends before it settles, so the helper
-	// deterministically finds nothing left to do however loaded the runner is.
-	fake.onStop = func(int) { _ = s.stores.Instances().Remove(pid) }
+	// The loop deregisters itself and exits on the stop signal, which stopAndWait
+	// sends before it settles, so the ordering holds by construction rather than
+	// by a timer the runner's load can flip: the child outlives the setup above,
+	// so the signal always lands and the helper finds nothing left to do.
+	fake.onStop = func(pid int) {
+		_ = s.stores.Instances().Remove(pid)
+		_ = proc.StopGracefully(pid)
+	}
 
 	if err := s.stopAndWait(pid, time.Second); err != nil {
 		t.Fatalf("stopAndWait: %v", err)
