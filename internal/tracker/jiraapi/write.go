@@ -65,6 +65,12 @@ func labelOps(add, remove []string) []labelOp {
 // AddComment posts a standalone comment on an issue. The v3 comment body is an
 // ADF document built from the plain (possibly multi-line) text. Success is a 201.
 func (c *Client) AddComment(ctx context.Context, key, text string) error {
+	return c.AddCommentWithMedia(ctx, key, text, nil)
+}
+
+// AddCommentWithMedia is AddComment with images embedded under the text, one
+// media node per Media Services id of an attachment already on the issue.
+func (c *Client) AddCommentWithMedia(ctx context.Context, key, text string, mediaIDs []string) error {
 	if !c.enabled() {
 		return ErrNotEnabled
 	}
@@ -72,7 +78,7 @@ func (c *Client) AddComment(ctx context.Context, key, text string) error {
 	if key == "" {
 		return ErrNotFound
 	}
-	body, err := json.Marshal(commentRequest{Body: buildADF(text)})
+	body, err := json.Marshal(commentRequest{Body: buildADFWithMedia(text, mediaIDs)})
 	if err != nil {
 		return err
 	}
