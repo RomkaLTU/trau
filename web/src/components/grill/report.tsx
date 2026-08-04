@@ -1,12 +1,26 @@
 import { useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Check, Copy, Download, Printer, TriangleAlert } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Download,
+  Loader2,
+  Pencil,
+  Printer,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
+import { toast } from "sonner";
 
 import { noReport, WarningList } from "@/components/grill/outcome-review";
 import { Markdown } from "@/components/markdown";
+import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { copyText } from "@/lib/clipboard";
 import {
+  deleteGrillReport,
+  renameGrillReport,
   type GrillSession,
   type OutcomePayload,
   type ReportSource,
@@ -24,13 +38,19 @@ import { cn } from "@/lib/utils";
 // folded away. It is the primary surface both before approval and after — approving
 // writes a comment, it does not change what the report says.
 export function ReportDocument({
+  repo,
   session,
   outcome,
   warnings,
+  onSession,
+  onDeleted,
 }: {
+  repo: string;
   session: GrillSession;
   outcome: OutcomePayload;
   warnings: string[];
+  onSession?: (session: GrillSession) => void;
+  onDeleted?: () => void;
 }) {
   const findings = outcome.findings?.trim() ?? "";
   const summary = outcome.summary.trim();
@@ -38,10 +58,18 @@ export function ReportDocument({
   return (
     <article className="report-document mx-auto flex w-full max-w-[72ch] flex-col gap-5 px-6 py-8">
       <header className="flex flex-col gap-2">
-        <ReportActions session={session} outcome={outcome} />
-        <h1 className="text-balance text-2xl font-semibold leading-tight tracking-tight text-foreground">
-          {reportTitle(session, outcome)}
-        </h1>
+        <ReportActions
+          repo={repo}
+          session={session}
+          outcome={outcome}
+          onDeleted={onDeleted}
+        />
+        <ReportTitle
+          repo={repo}
+          session={session}
+          outcome={outcome}
+          onSession={onSession}
+        />
         <ReportMeta session={session} />
       </header>
       {findings === "" ? (
@@ -59,6 +87,91 @@ export function ReportDocument({
       )}
       {warnings.length > 0 && <WarningList warnings={warnings} />}
     </article>
+  );
+}
+
+const TITLE_CLASS =
+  "text-balance text-2xl font-semibold leading-tight tracking-tight text-foreground";
+
+// The title the agent chose is a first guess at what the report is about, so the
+// heading is editable in place. The rename outranks every later outcome, which is why
+// the hub is told rather than the document holding the new name locally.
+function ReportTitle({
+  repo,
+  session,
+  outcome,
+  onSession,
+}: {
+  repo: string;
+  session: GrillSession;
+  outcome: OutcomePayload;
+  onSession?: (session: GrillSession) => void;
+}) {
+  const queryClient = useQueryClient();
+  const current = reportTitle(session, outcome);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(current);
+
+  const rename = useMutation({
+    mutationFn: (title: string) => renameGrillReport(session.id, title),
+    onSuccess: (renamed) => {
+      onSession?.(renamed);
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  function commit() {
+    setEditing(false);
+    const next = draft.trim();
+    if (next === "" || next === current) {
+      setDraft(current);
+      return;
+    }
+    setDraft(next);
+    rename.mutate(next);
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        aria-label="Report title"
+        onFocus={(e) => e.currentTarget.select()}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") {
+            setDraft(current);
+            setEditing(false);
+          }
+        }}
+        className={cn(
+          TITLE_CLASS,
+          "w-full rounded border border-border bg-input px-2 py-1 outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
+        )}
+      />
+    );
+  }
+
+  return (
+    <h1 className={cn(TITLE_CLASS, "group flex items-start gap-2")}>
+      <span className="min-w-0">{rename.isPending ? draft : current}</span>
+      <button
+        type="button"
+        aria-label="Rename report"
+        disabled={rename.isPending}
+        onClick={() => {
+          setDraft(current);
+          setEditing(true);
+        }}
+        className="mt-1.5 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100 print:hidden"
+      >
+        <Pencil className="size-4" aria-hidden="true" />
+      </button>
+    </h1>
   );
 }
 
@@ -113,11 +226,15 @@ const COPY_FEEDBACK = {
 // Every action runs off what the client already holds; the PDF is the browser's own
 // print pipeline, which styles.css narrows to the report document alone.
 function ReportActions({
+  repo,
   session,
   outcome,
+  onDeleted,
 }: {
+  repo: string;
   session: GrillSession;
   outcome: OutcomePayload;
+  onDeleted?: () => void;
 }) {
   const [state, setState] = useState<keyof typeof COPY_FEEDBACK>("idle");
   const { icon: CopyIcon, label, tone } = COPY_FEEDBACK[state];
@@ -166,7 +283,67 @@ function ReportActions({
         <Printer className="size-3.5" aria-hidden="true" />
         Export PDF
       </Button>
+      {session.state === "applied" && (
+        <DeleteReport repo={repo} session={session} onDeleted={onDeleted} />
+      )}
     </div>
+  );
+}
+
+// A report is kept for good — the hub's retention sweep never prunes one — so deleting
+// it is the only way it goes away, and the confirmation says as much.
+function DeleteReport({
+  repo,
+  session,
+  onDeleted,
+}: {
+  repo: string;
+  session: GrillSession;
+  onDeleted?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+
+  const remove = useMutation({
+    mutationFn: () => deleteGrillReport(session.id),
+    // The rail is refetched before the host is told, so the selection it falls back
+    // to is a report that is still there.
+    onSuccess: async () => {
+      toast.success("Report deleted");
+      await queryClient.invalidateQueries({ queryKey: ["grill", repo] });
+      onDeleted?.();
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        disabled={remove.isPending}
+        onClick={() => setOpen(true)}
+        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+      >
+        {remove.isPending ? (
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+        ) : (
+          <Trash2 className="size-3.5" aria-hidden="true" />
+        )}
+        Delete
+      </Button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        windowTitle="delete report"
+        title="Delete this report?"
+        description="The report and the transcript behind it leave the hub for good. It cannot be recovered."
+        confirmLabel="Delete forever"
+        destructive
+        onConfirm={() => remove.mutate()}
+      />
+    </>
   );
 }
 

@@ -791,6 +791,77 @@ func TestGrillReportTitleFromResearchOutcome(t *testing.T) {
 	}
 }
 
+func TestGrillSetTitleOutranksOutcome(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	research, _ := g.Create(NewGrillSession{Repo: "acme", Mode: GrillModeResearch})
+	if _, _, err := g.AppendMessage(research.ID, NewGrillMessage{
+		Role:    GrillRoleAgent,
+		Kind:    GrillKindOutcome,
+		Payload: `{"disposition":"research","title":"How the SDK retries","findings":"# Report"}`,
+	}); err != nil {
+		t.Fatalf("seed outcome: %v", err)
+	}
+
+	renamed, found, err := g.SetTitle(research.ID, "SDK retry behaviour")
+	if err != nil || !found {
+		t.Fatalf("set title: found=%v err=%v", found, err)
+	}
+	if renamed.ReportTitle != "SDK retry behaviour" {
+		t.Fatalf("returned title = %q, want the override", renamed.ReportTitle)
+	}
+
+	// A follow-up turn proposing its own title must not take the name back.
+	if _, _, err := g.AppendMessage(research.ID, NewGrillMessage{
+		Role:    GrillRoleAgent,
+		Kind:    GrillKindOutcome,
+		Payload: `{"disposition":"research","title":"How the SDK retries, revised","findings":"# Report"}`,
+	}); err != nil {
+		t.Fatalf("seed later outcome: %v", err)
+	}
+	got, found, err := g.Session(research.ID)
+	if err != nil || !found {
+		t.Fatalf("session(%d) = %v, %v", research.ID, found, err)
+	}
+	if got.ReportTitle != "SDK retry behaviour" {
+		t.Fatalf("report title = %q, want the override", got.ReportTitle)
+	}
+
+	if _, found, err := g.SetTitle(999, "nothing"); found || err != nil {
+		t.Fatalf("set title on unknown session: found=%v err=%v, want false nil", found, err)
+	}
+}
+
+func TestGrillDeleteRemovesSessionAndMessages(t *testing.T) {
+	g, db := testGrill(t, 0)
+	sess, _ := g.Create(NewGrillSession{Repo: "acme", Mode: GrillModeResearch})
+	if _, _, err := g.AppendMessage(sess.ID, NewGrillMessage{
+		Role:    GrillRoleAgent,
+		Kind:    GrillKindOutcome,
+		Payload: `{"disposition":"research","title":"How the SDK retries","findings":"# Report"}`,
+	}); err != nil {
+		t.Fatalf("seed outcome: %v", err)
+	}
+
+	deleted, err := g.Delete(sess.ID)
+	if err != nil || !deleted {
+		t.Fatalf("delete: deleted=%v err=%v", deleted, err)
+	}
+	if _, found, err := g.Session(sess.ID); found || err != nil {
+		t.Fatalf("session after delete: found=%v err=%v, want false nil", found, err)
+	}
+	var messages int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM grill_messages WHERE session_id = ?`, sess.ID).Scan(&messages); err != nil {
+		t.Fatalf("count messages: %v", err)
+	}
+	if messages != 0 {
+		t.Fatalf("messages after delete = %d, want 0", messages)
+	}
+
+	if deleted, err := g.Delete(sess.ID); deleted || err != nil {
+		t.Fatalf("delete again: deleted=%v err=%v, want false nil", deleted, err)
+	}
+}
+
 func TestGrillPruneKeepsRecentSettled(t *testing.T) {
 	g, db := testGrill(t, 2)
 

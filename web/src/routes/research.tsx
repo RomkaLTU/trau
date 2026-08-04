@@ -163,8 +163,9 @@ function ResearchPage() {
     void queryClient.invalidateQueries({ queryKey: ["grill", repo, "research"] });
   }
 
-  // Discarding abandons the session, which drops it off the page — the selection
-  // falls back to the newest report rather than a row that is no longer there.
+  // Discarding abandons the session and deleting removes it outright; either way it
+  // drops off the page, so the selection falls back to the newest report rather than
+  // a row that is no longer there.
   function onDiscarded() {
     void setPeek(null);
     refreshList();

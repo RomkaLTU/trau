@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
+import {
+  notifyManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { GrillSession, OutcomePayload } from "@/lib/grill";
 
@@ -10,6 +15,10 @@ import { ReportDocument } from "./report";
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
 ).IS_REACT_ACT_ENVIRONMENT = true;
+
+notifyManager.setScheduler((cb) => cb());
+
+afterEach(() => vi.unstubAllGlobals());
 
 const session: GrillSession = {
   id: "7",
@@ -33,13 +42,26 @@ const outcome: OutcomePayload = {
 
 async function render(
   container: HTMLElement,
-  props: Parameters<typeof ReportDocument>[0],
+  props: Omit<Parameters<typeof ReportDocument>[0], "repo">,
 ) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  document.body.appendChild(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(createElement(ReportDocument, props));
+    root.render(
+      createElement(
+        QueryClientProvider,
+        { client },
+        createElement(ReportDocument, { repo: "loop", ...props }),
+      ),
+    );
   });
-  return () => root.unmount();
+  return () => {
+    root.unmount();
+    container.remove();
+  };
 }
 
 function buttonNamed(container: HTMLElement, label: string): HTMLButtonElement {
@@ -48,6 +70,33 @@ function buttonNamed(container: HTMLElement, label: string): HTMLButtonElement {
   );
   if (!button) throw new Error(`no ${label} button`);
   return button;
+}
+
+function buttonLabelled(root: ParentNode, label: string): HTMLButtonElement {
+  const button = root.querySelector<HTMLButtonElement>(
+    `button[aria-label="${label}"]`,
+  );
+  if (!button) throw new Error(`no ${label} button`);
+  return button;
+}
+
+// React tracks an input's value behind the DOM property, so a test types through the
+// native setter for the change to reach the component.
+function typeInto(input: HTMLInputElement, text: string) {
+  const setValue = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  )?.set as (this: HTMLInputElement, value: string) => void;
+  setValue.call(input, text);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return {
+    ok: status < 400,
+    status,
+    json: () => Promise.resolve(body),
+  } as Response;
 }
 
 describe("ReportDocument", () => {
@@ -192,6 +241,106 @@ describe("ReportDocument", () => {
     });
     await act(async () => buttonNamed(container, "Export PDF").click());
     expect(print).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it("renames the report inline and reads it under the name the hub kept", async () => {
+    const renamed: GrillSession = {
+      ...session,
+      report_title: "SDK retry behaviour",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, renamed));
+    vi.stubGlobal("fetch", fetchMock);
+    const seen: GrillSession[] = [];
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome,
+      warnings: [],
+      onSession: (next) => seen.push(next),
+    });
+
+    await act(async () => buttonLabelled(container, "Rename report").click());
+    const input = container.querySelector("input") as HTMLInputElement;
+    expect(input.value).toBe("How the SDK retries");
+    await act(async () => {
+      typeInto(input, "SDK retry behaviour");
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/grill/7/title");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual({
+      title: "SDK retry behaviour",
+    });
+    expect(seen).toEqual([renamed]);
+    unmount();
+  });
+
+  it("leaves the hub alone when the rename changes nothing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome,
+      warnings: [],
+    });
+
+    await act(async () => buttonLabelled(container, "Rename report").click());
+    const input = container.querySelector("input") as HTMLInputElement;
+    await act(async () => {
+      typeInto(input, "   ");
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(container.querySelector("h1")?.textContent).toContain(
+      "How the SDK retries",
+    );
+    unmount();
+  });
+
+  it("offers no delete until the report is applied", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome,
+      warnings: [],
+    });
+    expect(
+      [...container.querySelectorAll("button")].map((b) => b.textContent),
+    ).not.toContain("Delete");
+    unmount();
+  });
+
+  it("deletes an applied report once the warning is confirmed", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 204 } as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    let deleted = 0;
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session: { ...session, state: "applied" },
+      outcome,
+      warnings: [],
+      onDeleted: () => deleted++,
+    });
+
+    await act(async () => buttonNamed(container, "Delete").click());
+    expect(document.body.textContent).toContain("cannot be recovered");
+    await act(async () => buttonNamed(document.body, "Delete forever").click());
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/grill/7");
+    expect(init.method).toBe("DELETE");
+    expect(deleted).toBe(1);
     unmount();
   });
 
