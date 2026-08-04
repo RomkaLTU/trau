@@ -1649,7 +1649,6 @@ func WriteEnvFile(path string, values map[string]string) error {
 		lines = append(lines, fmt.Sprintf("%s=%s", key, v))
 	}
 
-	// Trim trailing blank lines then add one newline.
 	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
 		lines = lines[:len(lines)-1]
 	}

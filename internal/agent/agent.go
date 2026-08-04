@@ -788,8 +788,7 @@ type terminalWatch struct {
 	// confirmation instead of signaling on first match. Claude Code's transcript
 	// can quote a "please run /login" string in ordinary prose (reviewing a
 	// ticket about auth, say), so an instant signal is a false-positive pause;
-	// waiting for either a quiet window or process exit confirms it is real. See
-	// COD-596 / the reauth-pause-false-positive fix.
+	// waiting for either a quiet window or process exit confirms it is real.
 	authDebounce bool
 }
 
