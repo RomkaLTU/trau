@@ -37,10 +37,19 @@ export interface VerdictCheck {
   detail?: string
 }
 
+export type CriterionStatus = 'satisfied' | 'violated' | 'unverified'
+
+export interface VerdictCriterion {
+  text: string
+  status: CriterionStatus
+  note?: string
+}
+
 export interface Verdict {
   pass: boolean
   summary?: string
   failures?: string[]
+  criteria?: VerdictCriterion[]
   checks?: VerdictCheck[]
   browser?: string
   browser_notes?: string

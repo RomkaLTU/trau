@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -222,6 +223,92 @@ func TestGateChecksEmptyDetail(t *testing.T) {
 	got, _ := gateChecks(library, v)
 	if !containsLine(got.Failures, "[check:tests] failed") {
 		t.Errorf("empty detail should render as 'failed', got %v", got.Failures)
+	}
+}
+
+// --- acceptance-criterion grading -----------------------------------------
+
+func TestGateCriteriaViolatedOverridesAgentPass(t *testing.T) {
+	criteria := []string{"the picker shows relative time", "the export button is disabled while saving"}
+	v := verdict{
+		Pass: true, // the agent claimed pass...
+		Criteria: []criterionResult{
+			{Status: criterionSatisfied},
+			{Status: criterionViolated, Note: "stays clickable mid-save"},
+		},
+	}
+	got := gateCriteria(criteria, v)
+	if got.Pass {
+		t.Error("a violated criterion must force pass=false")
+	}
+	if !containsLine(got.Failures, "[criterion] the export button is disabled while saving — stays clickable mid-save") {
+		t.Errorf("a violated criterion should fold into failures, got %v", got.Failures)
+	}
+	if got.Criteria[0].Text != criteria[0] {
+		t.Errorf("graded criteria should echo the rubric text, got %q", got.Criteria[0].Text)
+	}
+}
+
+// A verdict in the old shape — or one whose criteria array stops short — must
+// read as "nobody looked", never as satisfied. The UI slice whose verifier
+// reported browser "skipped" is exactly that case.
+func TestGateCriteriaMissingEntriesFailClosedToUnverified(t *testing.T) {
+	criteria := []string{"the timestamp renders as '2 hours ago'", "the list paginates at 50"}
+	var v verdict
+	if err := json.Unmarshal([]byte(`{"pass":true,"summary":"ok","failures":[],"browser":"skipped"}`), &v); err != nil {
+		t.Fatal(err)
+	}
+	got := gateCriteria(criteria, v)
+	if len(got.Criteria) != len(criteria) {
+		t.Fatalf("every rubric criterion must be graded, got %+v", got.Criteria)
+	}
+	for _, c := range got.Criteria {
+		if c.Status != criterionUnverified {
+			t.Errorf("ungraded criterion %q = %q, want %q", c.Text, c.Status, criterionUnverified)
+		}
+	}
+	if !got.Pass {
+		t.Error("unverified alone must not flip the verdict to fail")
+	}
+}
+
+func TestMergeVerdictsCriteriaMostSevereWins(t *testing.T) {
+	results := []panelResult{
+		{Name: "claude", Verdict: verdict{Pass: true, Criteria: []criterionResult{
+			{Text: "a", Status: criterionSatisfied},
+			{Text: "b", Status: criterionSatisfied},
+		}}},
+		{Name: "codex", Verdict: verdict{Pass: false, Failures: []string{"b is off by one"}, Criteria: []criterionResult{
+			{Text: "a", Status: criterionUnverified, Note: "browser could not connect"},
+			{Text: "b", Status: criterionViolated, Note: "off by one"},
+		}}},
+	}
+	m := mergeVerdicts("unanimous", results)
+	if m.Criteria[0].Status != criterionUnverified || m.Criteria[0].Note != "browser could not connect" {
+		t.Errorf("unverified must beat satisfied and carry its note, got %+v", m.Criteria[0])
+	}
+	if m.Criteria[1].Status != criterionViolated {
+		t.Errorf("violated must beat satisfied, got %+v", m.Criteria[1])
+	}
+}
+
+// any-pass merges on a single passing member, but a violation another member
+// observed still has to sink the verdict the panel persists.
+func TestMergeVerdictsViolatedCriterionSinksLenientPolicy(t *testing.T) {
+	results := []panelResult{
+		{Name: "claude", Verdict: verdict{Pass: true, Criteria: []criterionResult{
+			{Text: "the list paginates at 50", Status: criterionSatisfied},
+		}}},
+		{Name: "codex", Verdict: verdict{Pass: false, Criteria: []criterionResult{
+			{Text: "the list paginates at 50", Status: criterionViolated, Note: "off by one"},
+		}}},
+	}
+	m := mergeVerdicts("any-pass", results)
+	if m.Pass {
+		t.Error("a violated criterion must sink the merged verdict under any-pass")
+	}
+	if !containsLine(m.Failures, "[criterion] the list paginates at 50 — off by one") {
+		t.Errorf("the violation should fold into the merged failures, got %v", m.Failures)
 	}
 }
 

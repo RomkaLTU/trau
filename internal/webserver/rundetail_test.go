@@ -225,7 +225,7 @@ func TestRunDetailReadsArtifactsFromStore(t *testing.T) {
 
 	arts := testStoresAt(t, home).Artifacts()
 	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactHandoff, "# brief from the hub")
-	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactVerdict, `{"pass":false,"summary":"one failure","failures":["boom"]}`)
+	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactVerdict, `{"pass":false,"summary":"one failure","failures":["boom"],"criteria":[{"text":"the export button disables","status":"violated","note":"stays clickable"},{"text":"the toast reads in local time","status":"unverified","note":"browser undriven"}]}`)
 	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactBuildNotes, "notes straight to the store")
 
 	ts := instancesServer(t, home)
@@ -236,6 +236,9 @@ func TestRunDetailReadsArtifactsFromStore(t *testing.T) {
 	}
 	if d.Verdict == nil || d.Verdict.Pass || len(d.Verdict.Failures) != 1 {
 		t.Errorf("verdict = %+v, want a failing verdict with one failure", d.Verdict)
+	}
+	if len(d.Verdict.Criteria) != 2 || d.Verdict.Criteria[0].Status != "violated" || d.Verdict.Criteria[1].Status != "unverified" {
+		t.Errorf("criteria = %+v, want the graded rubric checklist", d.Verdict.Criteria)
 	}
 	if d.BuildNotes != "notes straight to the store" || !d.Artifacts.BuildNotes {
 		t.Errorf("build notes = %q present=%v, want the stored notes", d.BuildNotes, d.Artifacts.BuildNotes)
