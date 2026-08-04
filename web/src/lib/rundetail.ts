@@ -145,3 +145,25 @@ export async function renderRunVideo(
     throw new Error(detail?.error ?? `render video failed: ${res.status}`)
   }
 }
+
+export interface RunRequeueResult {
+  ticket: string
+  changed: string[]
+}
+
+export async function requeueRun(
+  repo: string,
+  ticket: string,
+): Promise<RunRequeueResult> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(ticket)}/requeue`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as {
+      error?: string
+    } | null
+    throw new Error(detail?.error ?? `requeue failed: ${res.status}`)
+  }
+  return res.json()
+}

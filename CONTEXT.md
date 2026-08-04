@@ -177,6 +177,10 @@ _Avoid_: stuck (informal), broken, error queue
 Destructively re-queue a ticket: delete its feature branch (local + remote) and artifacts, drop the Checkpoint, and re-open the tracker ticket to ready so the picker starts it clean. The recovery for a Quarantined dead end, or a Faulted ticket that Resume can't save.
 _Avoid_: clear (that keeps branch + tracker), forget, resume, retry
 
+**Requeue** (a ticket):
+Undo a quarantine in one step so the picker can take the ticket again: restore the tracker labels and status (quarantine label off, ready on, back to To Do), close the attempt PR, delete the attempt branch local and remote, and drop the Checkpoint. Every step is skipped when it has nothing left to do, so a second requeue changes nothing and says so. It refuses a ticket whose attempt PR already merged — only the CLI's `--force` overrides that. Where Reset is the destructive gesture aimed at a dead end, a requeue is what a rewritten ticket earns: the guidance changed, so the same ticket is worth another attempt.
+_Avoid_: retry, restart, reset (that's the destructive branch-delete + re-queue)
+
 **Clear** (aka forget):
 Drop only the Checkpoint, leaving the git branch and tracker untouched; the next pick rebuilds from scratch with no git or tracker side effects. A lighter forget than Reset.
 _Avoid_: reset (that's destructive + re-queues), delete, wipe
