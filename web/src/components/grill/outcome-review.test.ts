@@ -27,7 +27,7 @@ import type {
 import type { Issue } from "@/lib/issues";
 import type { QueueItem, QueueResponse } from "@/lib/queue";
 
-import { OutcomeReview } from "./outcome-review";
+import { applyLabel, applyStatusLine, OutcomeReview } from "./outcome-review";
 
 (
   globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -217,6 +217,95 @@ afterEach(() => {
   host = undefined;
   client = undefined;
   vi.unstubAllGlobals();
+});
+
+describe("applyLabel", () => {
+  it("names the gesture the button takes", () => {
+    expect(applyLabel("rewrite", false)).toBe("Apply");
+    expect(applyLabel("create", false)).toBe("Create");
+    expect(applyLabel("research", false)).toBe("Approve");
+    expect(applyLabel("no_change", false)).toBe("Close out");
+  });
+
+  it("names the gesture in flight while the apply is pending", () => {
+    expect(applyLabel("rewrite", true)).toBe("Applying…");
+    expect(applyLabel("split", true)).toBe("Applying…");
+    expect(applyLabel("needs_split", true)).toBe("Applying…");
+    expect(applyLabel("create", true)).toBe("Creating…");
+    expect(applyLabel("research", true)).toBe("Approving…");
+    expect(applyLabel("no_change", true)).toBe("Closing out…");
+  });
+
+  it("offers the retry only once the partial apply has settled", () => {
+    const partial = applyResponse({ applied: false });
+
+    expect(applyLabel("rewrite", false, partial)).toBe("Retry");
+    expect(applyLabel("rewrite", true, partial)).toBe("Applying…");
+  });
+});
+
+describe("applyStatusLine", () => {
+  const filing = {
+    disposition: "create",
+    tracker: "linear",
+    destination: "tracker" as const,
+    anchor: "COD-42",
+    subCount: 0,
+    slow: false,
+  };
+
+  it("counts an epic's slices into what is being filed", () => {
+    expect(applyStatusLine({ ...filing, subCount: 3 })).toBe(
+      "Filing epic + 3 sub-issues to Linear…",
+    );
+    expect(applyStatusLine({ ...filing, subCount: 1 })).toBe(
+      "Filing epic + 1 sub-issue to Linear…",
+    );
+    expect(applyStatusLine(filing)).toBe("Filing to Linear…");
+  });
+
+  it("names the backlog a create files to instead of the tracker", () => {
+    expect(applyStatusLine({ ...filing, destination: "internal" })).toBe(
+      "Filing to the internal backlog…",
+    );
+    expect(
+      applyStatusLine({ ...filing, tracker: "internal", subCount: 2 }),
+    ).toBe("Filing epic + 2 sub-issues to the internal backlog…");
+  });
+
+  it("names the ticket an anchored outcome writes to", () => {
+    const rewriting = { ...filing, disposition: "rewrite" };
+
+    expect(applyStatusLine({ ...rewriting, tracker: "jira" })).toBe(
+      "Applying to COD-42 on Jira…",
+    );
+    expect(applyStatusLine({ ...rewriting, disposition: "research" })).toBe(
+      "Applying to COD-42 on Linear…",
+    );
+    expect(applyStatusLine({ ...rewriting, destination: "internal" })).toBe(
+      "Applying to COD-42 in the internal backlog…",
+    );
+  });
+
+  it("leaves the destination out of what writes nowhere", () => {
+    expect(applyStatusLine({ ...filing, disposition: "no_change" })).toBe(
+      "Closing out…",
+    );
+    expect(
+      applyStatusLine({ ...filing, disposition: "research", anchor: "" }),
+    ).toBe("Applying…");
+  });
+
+  it("blames the tracker by name once the apply is taking its time", () => {
+    expect(applyStatusLine({ ...filing, subCount: 3, slow: true })).toBe(
+      "Filing epic + 3 sub-issues to Linear… Still working — Linear can be slow.",
+    );
+    expect(
+      applyStatusLine({ ...filing, destination: "internal", slow: true }),
+    ).toBe(
+      "Filing to the internal backlog… Still working — this can take a moment.",
+    );
+  });
 });
 
 describe("OutcomeReview research", () => {
@@ -628,5 +717,38 @@ describe("OutcomeReview requeue", () => {
 
     expect(el.textContent).toContain("COD-42 is already shipped");
     expect(button("Requeue COD-42")).toBeDefined();
+  });
+});
+
+describe("OutcomeReview applying", () => {
+  it("says what it is filing and freezes the payload while the apply is in flight", async () => {
+    let land = (_: Response) => {};
+    const inFlight = new Promise<Response>((resolve) => {
+      land = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => inFlight),
+    );
+    const el = renderReview(createEpic, "linear", "linear");
+
+    await act(async () => button("Create").click());
+
+    expect(el.textContent).toContain("Filing epic + 1 sub-issue to Linear…");
+    expect(button("Creating…").disabled).toBe(true);
+    const fields = Array.from(
+      el.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+        "input, textarea",
+      ),
+    );
+    expect(fields.length).toBeGreaterThan(0);
+    expect(fields.every((field) => field.disabled)).toBe(true);
+    expect(buttons().every((b) => b.disabled)).toBe(true);
+
+    await act(async () => {
+      land(jsonResponse(200, applyResponse({ session: filedEpic })));
+    });
+
+    expect(el.textContent).not.toContain("Filing epic");
   });
 });
