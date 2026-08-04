@@ -610,11 +610,13 @@ func (s *Issues) Labels(repo string) (labels []LabelCount, err error) {
 }
 
 // LabelState is one stored issue's label projection: its identifier, the status
-// group it sits in, and the labels currently on it.
+// group it sits in, the labels currently on it, and whether a queued label among
+// them is one this hub placed.
 type LabelState struct {
-	Identifier  string
-	StatusGroup string
-	Labels      []string
+	Identifier        string
+	StatusGroup       string
+	Labels            []string
+	QueuedLabelPlaced bool
 }
 
 // LabelStates returns the label projection of a repo's issues across every
@@ -622,7 +624,7 @@ type LabelState struct {
 // would carry. Tombstoned issues are excluded.
 func (s *Issues) LabelStates(repo string) (states []LabelState, err error) {
 	rows, err := s.db.Query(
-		`SELECT identifier, status_group, labels FROM issues
+		`SELECT identifier, status_group, labels, queued_label_placed FROM issues
 		 WHERE repo = ? AND deleted_at = '' ORDER BY identifier`,
 		repo,
 	)
@@ -635,14 +637,28 @@ func (s *Issues) LabelStates(repo string) (states []LabelState, err error) {
 		var (
 			st     LabelState
 			labels string
+			placed int
 		)
-		if scanErr := rows.Scan(&st.Identifier, &st.StatusGroup, &labels); scanErr != nil {
+		if scanErr := rows.Scan(&st.Identifier, &st.StatusGroup, &labels, &placed); scanErr != nil {
 			return nil, scanErr
 		}
 		st.Labels = decodeLabels(labels)
+		st.QueuedLabelPlaced = placed != 0
 		states = append(states, st)
 	}
 	return states, rows.Err()
+}
+
+// SetQueuedLabelPlaced records whether the queued label on a repo's issue is one
+// this hub wrote: set when the hub places it, cleared when the hub takes it off
+// again. It outlives the queue row a dequeue or an archive deletes, so a later
+// reconcile can still tell a leftover of its own from a label another hub owns.
+func (s *Issues) SetQueuedLabelPlaced(repo, identifier string, placed bool) error {
+	_, err := s.db.Exec(
+		`UPDATE issues SET queued_label_placed = ? WHERE repo = ? AND identifier = ?`,
+		boolToInt(placed), repo, identifier,
+	)
+	return err
 }
 
 // AssigneeCount is one distinct assignee carried by a repo's issues and the

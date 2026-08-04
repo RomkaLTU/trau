@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -79,14 +80,14 @@ func TestExpectedQueuedLabel(t *testing.T) {
 			want:  []string{"COD-1"},
 		},
 		{
-			name: "pending epic covers every captured sub-issue",
+			name: "pending epic covers itself and the planned sub-issues",
 			items: []queue.Item{{
 				Kind:      queue.KindEpic,
 				ID:        "COD-10",
 				Status:    queue.StatusPending,
 				SubIssues: []queue.SubIssue{{ID: "COD-11"}, {ID: "COD-12"}, {ID: "COD-13"}},
 			}},
-			want: []string{"COD-10", "COD-11", "COD-12", "COD-13"},
+			want: []string{"COD-10", "COD-13"},
 		},
 		{
 			name: "running epic keeps only the planned slices",
@@ -141,9 +142,12 @@ func TestSyncAddsMissingQueuedLabel(t *testing.T) {
 	}
 }
 
+// A label left behind by a local settle is this hub's to clean up: the item is
+// still in its queue history.
 func TestSyncRemovesStrayQueuedLabel(t *testing.T) {
 	s, writer, root := reconcileLabelServer(t, "QUEUED_LABEL=queued\n")
 	seedLabelledIssue(t, s, root, "COD-11", "backlog", "queued")
+	seedQueue(t, s, root, false, queue.Item{ID: "COD-11", Status: queue.StatusDone})
 
 	syncOnce(t, s, root)
 
@@ -153,6 +157,78 @@ func TestSyncRemovesStrayQueuedLabel(t *testing.T) {
 	}
 	if got := storedLabels(t, s, root, "COD-11"); len(got) != 0 {
 		t.Errorf("stored labels = %v, want none", got)
+	}
+}
+
+// A dequeue deletes the queue row, so a clear the tracker refused leaves no queue
+// history to heal from — only the placement recorded when the label went on.
+func TestSyncRemovesQueuedLabelAfterDequeue(t *testing.T) {
+	s, writer, root := reconcileLabelServer(t, "QUEUED_LABEL=queued\n")
+	seedLabelledIssue(t, s, root, "COD-11", "backlog")
+	item := queue.Item{Kind: queue.KindTicket, ID: "COD-11"}
+	seedQueue(t, s, root, false, item)
+	s.markQueued(context.Background(), root, item)
+
+	if _, err := s.stores.Queue(root).Remove(item.ID); err != nil {
+		t.Fatalf("dequeue: %v", err)
+	}
+	writer.labelErr = errors.New("tracker refused")
+	s.clearQueued(context.Background(), root, item)
+	writer.labelErr = nil
+	writer.labels = nil
+
+	syncOnce(t, s, root)
+
+	want := []labelCall{{id: "COD-11", remove: []string{"queued"}}}
+	if !reflect.DeepEqual(writer.labels, want) {
+		t.Errorf("label writes = %+v, want the leftover label stripped", writer.labels)
+	}
+	if got := storedLabels(t, s, root, "COD-11"); len(got) != 0 {
+		t.Errorf("stored labels = %v, want none", got)
+	}
+}
+
+// On a tracker several hubs share, the label on work this hub never queued belongs
+// to another hub or a human — touching it starts a label war at the sync cadence.
+func TestSyncLeavesForeignQueuedLabelAlone(t *testing.T) {
+	s, writer, root := reconcileLabelServer(t, "QUEUED_LABEL=queued\n")
+	seedLabelledIssue(t, s, root, "COD-11", "backlog", "queued")
+	seedLabelledIssue(t, s, root, "COD-12", "backlog")
+	seedQueue(t, s, root, false, queue.Item{ID: "COD-12"})
+
+	syncOnce(t, s, root)
+
+	want := []labelCall{{id: "COD-12", add: []string{"queued"}}}
+	if !reflect.DeepEqual(writer.labels, want) {
+		t.Errorf("label writes = %+v, want only the locally queued issue healed", writer.labels)
+	}
+	if got := storedLabels(t, s, root, "COD-11"); !reflect.DeepEqual(got, []string{"queued"}) {
+		t.Errorf("stored labels = %v, want the foreign label left alone", got)
+	}
+}
+
+// A pending epic waits on the slices still ahead of it, not on the ones someone
+// already finished, so a settled sub-issue loses the label and the rest keep it.
+func TestSyncPendingEpicSkipsSettledSubIssues(t *testing.T) {
+	s, writer, root := reconcileLabelServer(t, "QUEUED_LABEL=queued\n")
+	seedLabelledIssue(t, s, root, "COD-10", "unstarted")
+	seedLabelledIssue(t, s, root, "COD-11", "done", "queued")
+	seedLabelledIssue(t, s, root, "COD-12", "backlog")
+	seedQueue(t, s, root, false, queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-10",
+		SubIssues: []queue.SubIssue{{ID: "COD-11"}, {ID: "COD-12"}},
+	})
+
+	syncOnce(t, s, root)
+
+	want := []labelCall{
+		{id: "COD-10", add: []string{"queued"}},
+		{id: "COD-12", add: []string{"queued"}},
+		{id: "COD-11", remove: []string{"queued"}},
+	}
+	if !reflect.DeepEqual(writer.labels, want) {
+		t.Errorf("label writes = %+v, want %+v", writer.labels, want)
 	}
 }
 
