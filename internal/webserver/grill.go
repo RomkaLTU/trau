@@ -77,11 +77,14 @@ type GrillDeltaView struct {
 // GrillActivityView is one thing the agent did mid-turn — reaching for a tool,
 // thinking, a tool coming back — so a turn spent working still shows progress. Seq
 // numbers a turn's activity on its own count, apart from the deltas, and like a
-// delta the frame is never stored. Detail only ever summarizes a call (a path, a
-// query): tool inputs and results can carry secrets and stay in the child.
+// delta the frame is never stored. ID ties a tool frame to the result frame that
+// closes it, so a client can resolve the row it already drew instead of listing a
+// second one. Detail only ever summarizes a call (a path, a query): whole tool
+// inputs and their results stay in the child.
 type GrillActivityView struct {
 	Seq    int    `json:"seq"`
 	Kind   string `json:"kind"`
+	ID     string `json:"id,omitempty"`
 	Name   string `json:"name,omitempty"`
 	Detail string `json:"detail,omitempty"`
 	OK     *bool  `json:"ok,omitempty"`

@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -111,22 +112,22 @@ func TestCodexGrillActivity(t *testing.T) {
 		{
 			name: "command started",
 			line: `{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"rg  -n  grill\n  internal","status":"in_progress"}}`,
-			want: `{"seq":0,"kind":"tool","name":"shell","detail":"rg -n grill internal"}`,
+			want: `{"seq":0,"kind":"tool","id":"item_1","name":"shell","detail":"rg -n grill internal"}`,
 		},
 		{
 			name: "command completed",
 			line: `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"rg -n grill","exit_code":0,"status":"completed"}}`,
-			want: `{"seq":0,"kind":"result","ok":true}`,
+			want: `{"seq":0,"kind":"result","id":"item_1","ok":true}`,
 		},
 		{
 			name: "command failed",
 			line: `{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"rg -n grill","exit_code":2,"status":"failed"}}`,
-			want: `{"seq":0,"kind":"result","ok":false}`,
+			want: `{"seq":0,"kind":"result","id":"item_1","ok":false}`,
 		},
 		{
 			name: "web search started",
 			line: `{"type":"item.started","item":{"id":"item_2","type":"web_search","query":"sse frame contracts"}}`,
-			want: `{"seq":0,"kind":"tool","name":"web_search","detail":"sse frame contracts"}`,
+			want: `{"seq":0,"kind":"tool","id":"item_2","name":"web_search","detail":"sse frame contracts"}`,
 		},
 		{name: "agent message", line: `{"type":"item.completed","item":{"type":"agent_message","text":"push back"}}`},
 		{name: "reasoning", line: `{"type":"item.started","item":{"id":"item_3","type":"reasoning"}}`},
@@ -150,6 +151,45 @@ func TestGrillActivityDetail(t *testing.T) {
 	got := grillActivityDetail(strings.Repeat("x", grillActivityDetailMax+20))
 	if len([]rune(got)) != grillActivityDetailMax+1 || !strings.HasSuffix(got, "…") {
 		t.Errorf("grillActivityDetail(long) = %q, want it cut at %d runes", got, grillActivityDetailMax)
+	}
+}
+
+func TestGrillToolInputSummary(t *testing.T) {
+	tests := []struct {
+		name  string
+		tool  string
+		input string
+		want  string
+	}{
+		{name: "bash reads the command", tool: "Bash", input: `{"command":"go test ./...","description":"run tests"}`, want: "go test ./..."},
+		{name: "read cuts the path back", tool: "Read", input: `{"file_path":"/Users/rd/Projects/loop/internal/webserver/grill.go"}`, want: "webserver/grill.go"},
+		{name: "edit reads the path", tool: "Edit", input: `{"file_path":"web/src/lib/grill.ts","old_string":"a","new_string":"b"}`, want: "lib/grill.ts"},
+		{name: "write reads the path", tool: "Write", input: `{"file_path":"notes.md","content":"secret"}`, want: "notes.md"},
+		{name: "notebook edit reads the path", tool: "NotebookEdit", input: `{"file_path":"/tmp/run.ipynb","new_source":"1+1"}`, want: "tmp/run.ipynb"},
+		{name: "grep reads the pattern", tool: "Grep", input: `{"pattern":"grillActivity","path":"internal"}`, want: "grillActivity"},
+		{name: "glob reads the pattern", tool: "Glob", input: `{"pattern":"**/*.go"}`, want: "**/*.go"},
+		{name: "web fetch reads the url", tool: "WebFetch", input: `{"url":"https://example.com/spec","prompt":"summarize"}`, want: "https://example.com/spec"},
+		{name: "web search reads the query", tool: "WebSearch", input: `{"query":"sse frame contracts"}`, want: "sse frame contracts"},
+		{name: "task reads the description", tool: "Task", input: `{"description":"find the reducer","prompt":"long brief"}`, want: "find the reducer"},
+		{name: "agent reads the description", tool: "Agent", input: `{"description":"sweep the tests","prompt":"long brief"}`, want: "sweep the tests"},
+		{name: "skill reads the skill", tool: "Skill", input: `{"skill":"web-feature","args":"grill"}`, want: "web-feature"},
+		{name: "an unknown tool falls back to its first string", tool: "mcp__trau__ask_user", input: `{"count":2,"question":"which slice?","options":["a"]}`, want: "which slice?"},
+		{name: "a known tool missing its field falls back", tool: "Bash", input: `{"description":"run tests"}`, want: "run tests"},
+		{name: "nothing to say", tool: "Bash", input: `{"timeout":120}`},
+		{name: "no input at all", tool: "Bash", input: `null`},
+		{
+			name:  "a long command is cut short",
+			tool:  "Bash",
+			input: `{"command":"` + strings.Repeat("x", grillActivityDetailMax+20) + `"}`,
+			want:  strings.Repeat("x", grillActivityDetailMax) + "…",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := grillToolInputSummary(tt.tool, json.RawMessage(tt.input)); got != tt.want {
+				t.Errorf("grillToolInputSummary() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -304,9 +344,9 @@ func TestKimiGrillActivity(t *testing.T) {
 		want string
 	}{
 		{
-			name: "tool line",
+			name: "a tool line is a tool already back",
 			line: `{"role":"tool","name":"read_file","content":"package webserver"}`,
-			want: `{"seq":0,"kind":"tool","name":"read_file"}`,
+			want: `{"seq":0,"kind":"tool","name":"read_file","ok":true}`,
 		},
 		{name: "unnamed tool", line: `{"role":"tool","content":"package webserver"}`},
 		{name: "assistant message", line: `{"role":"assistant","content":"push back"}`},

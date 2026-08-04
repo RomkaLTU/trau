@@ -20,7 +20,7 @@ type grillAdapter interface {
 	resumable(chain string) bool
 	turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error)
 	deltaText(line []byte) string
-	activityEvent(line []byte) *GrillActivityView
+	activityEvent(line []byte) []GrillActivityView
 	parseResult(stream []byte) (chainID string, resultErr bool)
 }
 
@@ -30,13 +30,30 @@ const (
 	grillActivityResult   = "result"
 )
 
-// grillActivityDetailMax bounds a detail summary. Detail is a hint about a call — a
-// command, a query — not the call itself, and the stream is readable by any
-// hub-token holder, so it is cut short rather than carried whole.
+// grillActivityDetailMax bounds a detail summary. Detail is a hint about a call — the
+// command run, the file touched — never the whole input and never the result, and the
+// stream is readable by any hub-token holder, so even that one field is cut short.
 const grillActivityDetailMax = 80
 
-func grillToolResult(ok bool) *GrillActivityView {
-	return &GrillActivityView{Kind: grillActivityResult, OK: &ok}
+// grillToolInputField names the input field a tool's summary reads: the one argument
+// that says what the call is about.
+var grillToolInputField = map[string]string{
+	"Bash":         "command",
+	"Read":         "file_path",
+	"Edit":         "file_path",
+	"Write":        "file_path",
+	"NotebookEdit": "file_path",
+	"Grep":         "pattern",
+	"Glob":         "pattern",
+	"WebFetch":     "url",
+	"WebSearch":    "query",
+	"Task":         "description",
+	"Agent":        "description",
+	"Skill":        "skill",
+}
+
+func grillToolResult(id string, ok bool) GrillActivityView {
+	return GrillActivityView{Kind: grillActivityResult, ID: id, OK: &ok}
 }
 
 func grillActivityDetail(s string) string {
@@ -45,6 +62,66 @@ func grillActivityDetail(s string) string {
 		return string(r[:grillActivityDetailMax]) + "…"
 	}
 	return out
+}
+
+// grillToolInputSummary says what a call was about in one line: the tool's
+// representative argument, or the first string it was passed when the tool is one this
+// hub does not know. A path is cut back to the file and the directory holding it —
+// enough to recognize, without laying out where the tree lives.
+func grillToolInputSummary(name string, input json.RawMessage) string {
+	fields := grillInputStrings(input)
+	want := grillToolInputField[name]
+	for _, f := range fields {
+		if f.key != want {
+			continue
+		}
+		if want == "file_path" {
+			return grillActivityDetail(grillPathSummary(f.value))
+		}
+		return grillActivityDetail(f.value)
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return grillActivityDetail(fields[0].value)
+}
+
+type grillInputString struct {
+	key   string
+	value string
+}
+
+// grillInputStrings reads a tool input's string arguments in the order the object
+// carries them, so the fallback summary is the first thing the tool was passed rather
+// than whichever key a map happens to hand back first.
+func grillInputStrings(input json.RawMessage) []grillInputString {
+	dec := json.NewDecoder(bytes.NewReader(input))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil
+	}
+	out := []grillInputString{}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return out
+		}
+		var value any
+		if dec.Decode(&value) != nil {
+			return out
+		}
+		if s, ok := value.(string); ok {
+			out = append(out, grillInputString{key: key.(string), value: s})
+		}
+	}
+	return out
+}
+
+func grillPathSummary(p string) string {
+	dir, file := filepath.Split(p)
+	if dir = strings.TrimSuffix(dir, string(filepath.Separator)); dir == "" {
+		return file
+	}
+	return filepath.Join(filepath.Base(dir), file)
 }
 
 func grillAdapterFor(r *grillRunner, provider string) (grillAdapter, bool) {
@@ -105,7 +182,7 @@ func (a claudeGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.C
 
 func (a claudeGrillAdapter) deltaText(line []byte) string { return grillDeltaText(line) }
 
-func (a claudeGrillAdapter) activityEvent(line []byte) *GrillActivityView {
+func (a claudeGrillAdapter) activityEvent(line []byte) []GrillActivityView {
 	return grillActivityEvent(line)
 }
 
@@ -137,7 +214,7 @@ func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Co
 
 func (a codexGrillAdapter) deltaText(line []byte) string { return codexGrillDeltaText(line) }
 
-func (a codexGrillAdapter) activityEvent(line []byte) *GrillActivityView {
+func (a codexGrillAdapter) activityEvent(line []byte) []GrillActivityView {
 	return codexGrillActivity(line)
 }
 
@@ -214,10 +291,11 @@ func codexGrillDeltaText(line []byte) string {
 // tool the agent reached for, and the matching completed item is that tool coming
 // back. Codex reports reasoning and the reply itself as items too; those are not
 // tool traffic and the reply already streams as deltas.
-func codexGrillActivity(line []byte) *GrillActivityView {
+func codexGrillActivity(line []byte) []GrillActivityView {
 	var ev struct {
 		Type string `json:"type"`
 		Item struct {
+			ID       string `json:"id"`
 			Type     string `json:"type"`
 			Command  string `json:"command"`
 			Query    string `json:"query"`
@@ -238,9 +316,9 @@ func codexGrillActivity(line []byte) *GrillActivityView {
 	}
 	switch ev.Type {
 	case "item.started":
-		return &GrillActivityView{Kind: grillActivityTool, Name: name, Detail: detail}
+		return []GrillActivityView{{Kind: grillActivityTool, ID: ev.Item.ID, Name: name, Detail: detail}}
 	case "item.completed":
-		return grillToolResult(ev.Item.ExitCode == 0)
+		return []GrillActivityView{grillToolResult(ev.Item.ID, ev.Item.ExitCode == 0)}
 	}
 	return nil
 }
@@ -323,7 +401,7 @@ func kimiChildEnv(home string) []string {
 
 func (a kimiGrillAdapter) deltaText(line []byte) string { return kimiGrillDeltaText(line) }
 
-func (a kimiGrillAdapter) activityEvent(line []byte) *GrillActivityView {
+func (a kimiGrillAdapter) activityEvent(line []byte) []GrillActivityView {
 	return kimiGrillActivity(line)
 }
 
@@ -356,8 +434,9 @@ func kimiGrillDeltaText(line []byte) string {
 
 // kimiGrillActivity reads kimi's tool lines, the only work its stream-json names on
 // the wire: one line per tool the agent ran, carrying the tool's own output, which
-// stays in the child.
-func kimiGrillActivity(line []byte) *GrillActivityView {
+// stays in the child. The line only appears once the tool is back, so the frame is
+// born resolved rather than waiting for a result that never comes.
+func kimiGrillActivity(line []byte) []GrillActivityView {
 	var ev struct {
 		Role string `json:"role"`
 		Name string `json:"name"`
@@ -365,7 +444,8 @@ func kimiGrillActivity(line []byte) *GrillActivityView {
 	if json.Unmarshal(line, &ev) != nil || ev.Role != "tool" || ev.Name == "" {
 		return nil
 	}
-	return &GrillActivityView{Kind: grillActivityTool, Name: ev.Name}
+	ran := true
+	return []GrillActivityView{{Kind: grillActivityTool, Name: ev.Name, OK: &ran}}
 }
 
 func parseKimiGrillStream(stream []byte) (sessionID string, resultErr bool) {
