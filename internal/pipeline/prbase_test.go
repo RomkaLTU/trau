@@ -193,7 +193,7 @@ func TestEnsureEpicPRPushesStaleBaseBeforeCreating(t *testing.T) {
 	p := localTestPipeline(t, git, gh, &epicTracker{title: "Epic"})
 	p.EpicID = "COD-1"
 
-	url, err := p.ensureEpicPR(context.Background(), epicBaseBranch, true)
+	url, _, err := p.ensureEpicPR(context.Background(), epicBaseBranch, true)
 	if err != nil {
 		t.Fatalf("ensureEpicPR = %v, want nil", err)
 	}

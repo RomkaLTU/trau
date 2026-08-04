@@ -113,10 +113,15 @@ type fakeGitHub struct {
 	createURL   string
 	prURL       string
 	prURLErr    error
+	prDraft     bool
 	mergedURL   string
 }
 
-func (f *fakeGitHub) PRURL(context.Context, string) (string, error) { return f.prURL, f.prURLErr }
+func (f *fakeGitHub) PRURL(context.Context, string) (string, bool, error) {
+	return f.prURL, f.prDraft, f.prURLErr
+}
+
+func (f *fakeGitHub) PRIsDraft(context.Context, string) (bool, error) { return f.prDraft, nil }
 
 func (f *fakeGitHub) CreatePR(context.Context, string, string, string, string, bool) (string, error) {
 	i := f.createCalls

@@ -78,9 +78,14 @@ type countingGitHub struct {
 	touched int
 }
 
-func (c *countingGitHub) PRURL(context.Context, string) (string, error) {
+func (c *countingGitHub) PRURL(context.Context, string) (string, bool, error) {
 	c.touched++
-	return "", nil
+	return "", false, nil
+}
+
+func (c *countingGitHub) PRIsDraft(context.Context, string) (bool, error) {
+	c.touched++
+	return false, nil
 }
 
 func (c *countingGitHub) MergedPRURL(ctx context.Context, branch string) (string, error) {

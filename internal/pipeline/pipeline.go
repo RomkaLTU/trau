@@ -234,9 +234,16 @@ type Check struct {
 // hiccup reads as "" / no checks) so a transient failure re-polls rather than
 // aborting the ticket.
 type GitHub interface {
-	PRURL(ctx context.Context, branch string) (string, error)
+	// PRURL returns the branch's open PR and whether GitHub still has it in draft.
+	// The draft flag is what tells a PR a human parked as "not ready" apart from
+	// one asking for review: GitHub reports both as OPEN.
+	PRURL(ctx context.Context, branch string) (url string, draft bool, err error)
 
 	MergedPRURL(ctx context.Context, branch string) (string, error)
+
+	// PRIsDraft answers the same question for a PR already on the checkpoint,
+	// where only its number is in hand. Unanswerable reads as not-draft.
+	PRIsDraft(ctx context.Context, pr string) (bool, error)
 
 	// CreatePR opens a PR against base from head. A draft PR is one that tracks
 	// work without asking for review — what exit hygiene leaves on a partial epic
@@ -1458,7 +1465,7 @@ func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) 
 	}
 	var pr string
 	if !p.localDelivery(ctx) {
-		pr, _ = p.GitHub.PRURL(ctx, head)
+		pr, _, _ = p.GitHub.PRURL(ctx, head)
 	}
 	if pr != "" {
 		phase = state.PROpen
@@ -2636,6 +2643,19 @@ func (p *Pipeline) pauseNoBrowser(id, reason string) error {
 	return &PausedError{ID: id, Phase: "verify", Provider: "browser", Reason: reason}
 }
 
+// pauseHumanDraft blamelessly parks a slice whose branch already carries a draft
+// PR trau did not open. A human's draft is an explicit "not ready", so nothing
+// undrafts, reviews or merges it — the commits this run made are already pushed to
+// the branch, and a rerun continues once the PR is marked ready or closed.
+func (p *Pipeline) pauseHumanDraft(id, phase, prURL string) error {
+	reason := "a human parked this branch behind draft PR " + prURL
+	p.markPaused(id, reason)
+	p.logf("  ⏸ paused — %s", reason)
+	p.logf("  ↳ %s left resumable on its branch; mark %s ready for review (or close it), then rerun trau", id, prURL)
+	p.emitState(id, phase, "paused", "human_draft_pr")
+	return &PausedError{ID: id, Phase: phase, Provider: "github", Reason: reason}
+}
+
 func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 	// Idempotent: a ticket already quarantined this run (e.g. a budget guard that
 	// fired inside build, whose *GiveUpError then flows through handleGiveUp) must
@@ -2737,9 +2757,12 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 			branch = b
 		}
 	}
-	prURL, err := p.GitHub.PRURL(ctx, branch)
+	prURL, draft, err := p.GitHub.PRURL(ctx, branch)
 	if err != nil {
 		return fmt.Errorf("commit %s: pr view: %w", id, err)
+	}
+	if draft && !p.authoredDraft(prURL) {
+		return p.pauseHumanDraft(id, "commit", prURL)
 	}
 	if prURL == "" {
 		prBase := p.Base
@@ -2934,6 +2957,15 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		}
 		return ErrAlreadyDone
 	}
+	// A branch adopted at pr_open carries whatever PR it already had, so the draft
+	// a human parked it behind only surfaces here — gh refuses to merge one, and
+	// that refusal reads as transient noise rather than the deliberate stop it is.
+	if draft, _ := p.GitHub.PRIsDraft(ctx, pr); draft {
+		prURL := p.State.Get(id, "PR_URL")
+		if !p.authoredDraft(prURL) {
+			return p.pauseHumanDraft(id, "merge", prURL)
+		}
+	}
 
 	green, repairs, err := p.ciGate(ctx, id, pr, p.prBase(ctx), "CI")
 	if err != nil {
@@ -3013,7 +3045,7 @@ func (p *Pipeline) resolvePR(ctx context.Context, id string) (string, error) {
 	if url, _ := p.GitHub.MergedPRURL(ctx, branch); url != "" {
 		return "", p.adoptMergedPR(ctx, id, branch, url)
 	}
-	url, _ := p.GitHub.PRURL(ctx, branch)
+	url, _, _ := p.GitHub.PRURL(ctx, branch)
 	if url == "" {
 		return "", p.giveUp(ctx, id, "no PR recorded or found for branch "+branch)
 	}
@@ -3689,7 +3721,7 @@ func (p *Pipeline) createOrAdoptPR(ctx context.Context, base, branch, title, bod
 			url = created
 			return nil
 		}
-		if existing, e2 := p.GitHub.PRURL(ctx, branch); e2 == nil && existing != "" {
+		if existing, _, e2 := p.GitHub.PRURL(ctx, branch); e2 == nil && existing != "" {
 			url = existing
 			return nil
 		}
@@ -6340,30 +6372,45 @@ func withStderr(err error) error {
 	return err
 }
 
-// PRURL returns the open PR's URL for branch, or "" when none exists. A gh error
-// (no PR found) is swallowed to "". The state filter is load-bearing: gh's branch
-// lookup falls back to the most recent merged/closed PR when the branch has no
-// open one, and adopting a merged PR here is how a rebuilt ticket got marked Done
-// with its redo commits stranded on the branch (COD-750).
-func (g ExecGitHub) PRURL(ctx context.Context, branch string) (string, error) {
-	out, err := g.output(ctx, "pr", "view", branch, "--json", "url,state")
+// PRURL returns the open PR's URL for branch and whether it is still a draft, or
+// "" when none exists. A gh error (no PR found) is swallowed to "". The state
+// filter is load-bearing: gh's branch lookup falls back to the most recent
+// merged/closed PR when the branch has no open one, and adopting a merged PR here
+// is how a rebuilt ticket got marked Done with its redo commits stranded on the
+// branch (COD-750).
+func (g ExecGitHub) PRURL(ctx context.Context, branch string) (string, bool, error) {
+	out, err := g.output(ctx, "pr", "view", branch, "--json", "url,state,isDraft")
 	if err != nil {
-		return "", nil
+		return "", false, nil
 	}
-	return parseOpenPRURL(out), nil
+	url, draft := parseOpenPRURL(out)
+	return url, draft, nil
 }
 
-// parseOpenPRURL extracts the URL from a `gh pr view --json url,state` payload,
-// returning "" unless the PR is OPEN; malformed JSON reads as not-open.
-func parseOpenPRURL(out string) string {
+// parseOpenPRURL extracts the URL and draft flag from a
+// `gh pr view --json url,state,isDraft` payload, returning "" unless the PR is
+// OPEN; malformed JSON reads as not-open.
+func parseOpenPRURL(out string) (string, bool) {
 	var pr struct {
 		URL   string `json:"url"`
 		State string `json:"state"`
+		Draft bool   `json:"isDraft"`
 	}
 	if err := json.Unmarshal([]byte(out), &pr); err != nil || pr.State != "OPEN" {
-		return ""
+		return "", false
 	}
-	return pr.URL
+	return pr.URL, pr.Draft
+}
+
+// PRIsDraft reports whether pr is still a draft. GitHub reports a draft as OPEN,
+// so PRState cannot stand in for it; a gh error reads as not-draft, following the
+// swallow-and-default convention.
+func (g ExecGitHub) PRIsDraft(ctx context.Context, pr string) (bool, error) {
+	out, err := g.output(ctx, "pr", "view", pr, "--json", "isDraft", "-q", ".isDraft")
+	if err != nil {
+		return false, nil
+	}
+	return out == "true", nil
 }
 
 // MergedPRURL returns the merged PR's URL for branch, or "" when the branch's
