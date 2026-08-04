@@ -258,6 +258,7 @@ func TestApplyWithoutRestartHookSettlesToIdle(t *testing.T) {
 	if err := h.Apply(noRestart); err != nil {
 		t.Fatalf("Apply after a hookless apply settled: %v", err)
 	}
+	h.waitApplyState(t, applyIdle)
 }
 
 // TestApplyLogsFullBrewOutput pins the log to the full output of both brew steps
