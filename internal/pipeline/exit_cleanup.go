@@ -129,7 +129,7 @@ func (p *Pipeline) preserveRunLeftovers(ctx context.Context, home string) {
 	if err != nil || branch == home || p.onBase(branch) {
 		return
 	}
-	if dirty, err := p.Git.StatusPorcelain(ctx); err != nil || strings.TrimSpace(dirty) == "" {
+	if dirty, err := p.Git.WorktreeStatus(ctx); err != nil || strings.TrimSpace(dirty) == "" {
 		return
 	}
 	_ = p.Git.AddAll(ctx)
