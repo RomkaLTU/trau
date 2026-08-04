@@ -37,5 +37,10 @@ coverage.txt
 
 # IDE
 /.idea/
-# trau run artifacts and project config (do not commit)
-.trau/runs/
+# trau run artifacts and project config (do not commit), except the repo-owned
+# verify checks. The `!.trau/` is load-bearing: a developer's global gitignore
+# commonly excludes .trau/ wholesale, and git will not descend into an excluded
+# directory to see the re-include below it.
+!.trau/
+.trau/*
+!.trau/checks/
