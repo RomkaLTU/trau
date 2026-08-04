@@ -2738,7 +2738,6 @@ func (a *appActions) LogContent(id string) string {
 		b.Write(tailLines(latest, 80))
 	}
 
-	// Then the full logs for deeper inspection.
 	b.WriteString("\n── full logs ──\n")
 	for _, l := range logs {
 		if l.Content == "" {

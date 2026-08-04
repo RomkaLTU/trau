@@ -869,7 +869,6 @@ func (m *model) startTicket(id string) {
 	}
 }
 
-// pendingResetID returns the ticket awaiting a reset confirmation, or "".
 func (m model) pendingResetID() string { return m.confirmResetID }
 
 // askResetConfirm arms the two-keypress guard before a destructive reset.

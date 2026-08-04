@@ -587,8 +587,6 @@ func (m onboardingModel) applySetupDone(msg setupDoneMsg) onboardingModel {
 
 func (m onboardingModel) Done() bool { return m.done }
 
-// --- framing ---
-
 const trauWordmark = `  _______   _____               _    _
  |__   __| |  __ \      /\     | |  | |
     | |    | |__) |    /  \    | |  | |
@@ -803,8 +801,6 @@ func (m onboardingModel) formHelp(nav helpColumn) screenHelp {
 		nav, group("Actions", fk("enter", "next"), fk("esc", "back")),
 	}}
 }
-
-// --- terminal screens ---
 
 func (m onboardingModel) renderWelcome() string {
 	s := m.styles
