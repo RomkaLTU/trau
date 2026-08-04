@@ -257,6 +257,10 @@ type Config struct {
 	// monorepo; slices matching no workspace fall back to AppURL.
 	AppURLs      map[string]string
 	VerifyChecks bool
+	// QANotes posts the run's QA report as a comment on the ticket it delivered or
+	// gave up on (QA_NOTES key, default on). Providers that cannot comment skip it,
+	// and a failed post never fails the run.
+	QANotes bool
 
 	VerifyPanel       []string
 	VerifyPanelPolicy string
@@ -497,6 +501,7 @@ func Defaults() Config {
 		ProofRetentionDays:     14,
 		SkillsMode:             "auto",
 		VerifyChecks:           true,
+		QANotes:                true,
 		VerifyPanelPolicy:      "unanimous",
 		PanelParallel:          true,
 		TUI:                    true,
@@ -989,6 +994,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("VERIFY_CHECKS"); v != "" {
 		c.VerifyChecks = v == "1"
 		sources["VERIFY_CHECKS"] = src.name
+	}
+	if v, src := get("QA_NOTES"); v != "" {
+		c.QANotes = v == "1"
+		sources["QA_NOTES"] = src.name
 	}
 	if v, src := get("VERIFY_PANEL"); v != "" {
 		c.VerifyPanel = splitCSV(v)
@@ -1894,6 +1903,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "APP_URL", Group: sectionVerify, WebEditable: true, Description: "Local app URL browser verify drives (e.g. http://localhost:3000). Empty = no browser target: browser verify stays advisory even under BROWSER_VERIFY=always. Fallback only — app URL entries stored on the hub for the repo replace this and APP_URLS wholesale (ADR 0026)"},
 		{Key: "APP_URLS", Group: sectionVerify, WebEditable: true, Description: "Per-workspace app URLs for multi-app monorepos: comma-separated <workspace>=<url> pairs (e.g. web=http://localhost:3000,api=http://localhost:3001). A workspace is named by its manifest package name, directory path, or directory name; slices matching no workspace fall back to APP_URL"},
 		{Key: "VERIFY_CHECKS", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
+		{Key: "QA_NOTES", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Post the run's QA report as a comment on the ticket — the verify result, checks and browser-QA lines plus the PR link on delivery, the failure lines and HITL blocker when the run gives up. Trackers that cannot comment skip it and a failed post never fails the run (1 = yes, 0 = no)", Bool: true},
 		{Key: "VERIFY_PANEL", Group: sectionVerify, WebEditable: true, Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.6-sol,kimi). Empty = single verifier"},
 		{Key: "VERIFY_PANEL_POLICY", Group: sectionVerify, WebEditable: true, Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
 		{Key: "PANEL_PARALLEL", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Run verify panel members concurrently so panel wall clock is the slowest member, not the sum; set 0 when concurrent member test runs collide (shared DB, ports, build artifacts) (1 = yes, 0 = no)", Bool: true},
@@ -2553,6 +2563,11 @@ func keyValue(cfg Config, key string) string {
 		return joinAppURLs(cfg.AppURLs)
 	case "VERIFY_CHECKS":
 		if cfg.VerifyChecks {
+			return "1"
+		}
+		return "0"
+	case "QA_NOTES":
+		if cfg.QANotes {
 			return "1"
 		}
 		return "0"

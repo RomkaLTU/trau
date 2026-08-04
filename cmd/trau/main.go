@@ -1531,6 +1531,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		VerifyProofs:         cfg.VerifyProofs,
 		AppURL:               cfg.AppURL,
 		AppURLs:              cfg.AppURLs,
+		QANotes:              cfg.QANotes,
 		AutoMerge:            cfg.AutoMerge,
 		MergeMethod:          cfg.MergeMethod,
 		DeliveredState:       cfg.DeliveredState,

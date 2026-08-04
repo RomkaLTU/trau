@@ -981,6 +981,23 @@ func (l *Linear) quarantineAPI(ctx context.Context, id, reason string) error {
 	return l.api().AddComment(ctx, id, fmt.Sprintf("Trau loop stopped: %s (see this ticket's run in the trau web UI).", reason))
 }
 
+// PostQANote leaves the run's QA report as a comment on the issue. Uses the API
+// when possible. Linear comments are Markdown text, so note.Images is ignored.
+func (l *Linear) PostQANote(ctx context.Context, id string, note QANote) error {
+	if err := l.api().AddComment(ctx, id, note.Body); err == nil {
+		return nil
+	} else if !shouldFallback(err) {
+		return err
+	}
+
+	_, err := l.Runner.Run(ctx, l.qaNotePrompt(id, note.Body), "qa_note")
+	return err
+}
+
+func (l *Linear) qaNotePrompt(id, body string) string {
+	return fmt.Sprintf("Use the Linear MCP on issue %s: add this Markdown comment verbatim.\n\n%s\n\nReply DONE.", id, body)
+}
+
 // EnsureLabels creates the ready and quarantine labels in Linear if they do not
 // already exist. Uses the API when possible.
 func (l *Linear) EnsureLabels(ctx context.Context) error {

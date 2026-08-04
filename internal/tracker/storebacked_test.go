@@ -21,6 +21,7 @@ var (
 	_ IssueProjecter = (*StoreBacked)(nil)
 	_ IssueLabeler   = (*StoreBacked)(nil)
 	_ TeamLister     = (*StoreBacked)(nil)
+	_ QANotePoster   = (*StoreBacked)(nil)
 )
 
 type recordedMirror struct {
@@ -544,5 +545,59 @@ func TestStoreBackedAttachmentBytes(t *testing.T) {
 	body, err := newStoreBacked(hub, &fakeWrites{}).AttachmentBytes(context.Background(), 7)
 	if err != nil || string(body) != "PNGDATA" {
 		t.Fatalf("AttachmentBytes = %q, %v", body, err)
+	}
+}
+
+// commentingWrites is a fakeWrites that can also post a QA note, so the store-backed
+// delegation can be told apart from the no-capability no-op.
+type commentingWrites struct {
+	*fakeWrites
+	notes []QANote
+}
+
+func (c *commentingWrites) PostQANote(_ context.Context, _ string, note QANote) error {
+	c.notes = append(c.notes, note)
+	return c.err
+}
+
+// A synced ticket's QA report goes to the external tracker that owns it; an
+// internal one is commented on its store row instead.
+func TestStoreBackedPostQANoteRoutesByOwner(t *testing.T) {
+	hub := newFakeStoreHub()
+	writes := &commentingWrites{fakeWrites: &fakeWrites{}}
+	sb := newStoreBacked(hub, writes)
+	note := QANote{Body: "## Trau QA report\n\nVerify passed: green\n"}
+
+	if err := sb.PostQANote(context.Background(), "COD-7", note); err != nil {
+		t.Fatalf("PostQANote on a synced ticket: %v", err)
+	}
+	if len(writes.notes) != 1 || writes.notes[0].Body != note.Body {
+		t.Errorf("tracker notes = %+v, want the report delegated once", writes.notes)
+	}
+	if len(hub.transitions) != 0 {
+		t.Errorf("wrote %d store transitions for a synced ticket, want 0", len(hub.transitions))
+	}
+
+	if err := sb.PostQANote(context.Background(), "ACME-3", note); err != nil {
+		t.Fatalf("PostQANote on an internal issue: %v", err)
+	}
+	if len(writes.notes) != 1 {
+		t.Errorf("tracker notes = %+v, want an internal issue kept off the tracker", writes.notes)
+	}
+	if len(hub.transitions) != 1 || hub.transitions[0].t.Comment != strings.TrimSpace(note.Body) {
+		t.Errorf("store transitions = %+v, want the report commented on ACME-3", hub.transitions)
+	}
+}
+
+// A tracker that cannot comment makes the note a no-op rather than an error.
+func TestStoreBackedPostQANoteSkipsTrackerWithoutTheCapability(t *testing.T) {
+	hub := newFakeStoreHub()
+	sb := newStoreBacked(hub, &fakeWrites{})
+
+	if err := sb.PostQANote(context.Background(), "COD-7", QANote{Body: "report"}); err != nil {
+		t.Fatalf("PostQANote = %v, want a silent no-op", err)
+	}
+	if len(hub.transitions) != 0 {
+		t.Errorf("wrote %d store transitions, want 0", len(hub.transitions))
 	}
 }

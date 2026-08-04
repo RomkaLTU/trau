@@ -814,3 +814,61 @@ func TestLinearSetStatusResolvesRenamedWorkflowState(t *testing.T) {
 		})
 	}
 }
+
+// A Linear-tracked run's QA report lands as one comment on the ticket through the
+// commentCreate mutation, carrying the rendered Markdown verbatim.
+func TestLinearPostQANoteCommentsThroughTheAPI(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload, _ := io.ReadAll(r.Body)
+		q := string(payload)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(q, "query Issue"):
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-7","team":{"id":"team-1","key":"COD"}}]}}}`)
+		case strings.Contains(q, "mutation CommentCreate"):
+			var req struct {
+				Variables struct {
+					Body string `json:"body"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(payload, &req)
+			bodies = append(bodies, req.Variables.Body)
+			_, _ = io.WriteString(w, `{"data":{"commentCreate":{"success":true}}}`)
+		default:
+			t.Errorf("unexpected GraphQL query: %s", q)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	l := &Linear{Team: "COD", APIKey: "lin_key", endpoint: srv.URL}
+
+	note := QANote{Body: "## Trau QA report\n\nVerify passed: all green\nPR: https://github.test/pr/7\n"}
+	if err := l.PostQANote(context.Background(), "COD-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("sent %d commentCreate mutations, want exactly 1", len(bodies))
+	}
+	if bodies[0] != note.Body {
+		t.Errorf("comment body = %q, want the note rendered verbatim", bodies[0])
+	}
+}
+
+// With no API key the note goes through the Linear MCP instead, in a prompt
+// carrying the issue and the report body.
+func TestLinearPostQANoteFallsBackToMCP(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"qa_note": {}}}
+	l := &Linear{Runner: runner, Team: "COD"}
+
+	if err := l.PostQANote(context.Background(), "COD-7", QANote{Body: "## Trau QA report\n\nVerify failed: red tests\n"}); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if runner.calls["qa_note"] != 1 {
+		t.Fatalf("qa_note runs = %d, want 1", runner.calls["qa_note"])
+	}
+	prompt := runner.prompts["qa_note"]
+	if !strings.Contains(prompt, "COD-7") || !strings.Contains(prompt, "Verify failed: red tests") {
+		t.Errorf("MCP prompt = %q, want the issue and the report body", prompt)
+	}
+}
