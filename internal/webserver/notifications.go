@@ -110,7 +110,8 @@ func (s *Server) notifyGrillAwaiting(sess hubstore.GrillSession, body string) {
 		body = s.grillNotificationBody(sess)
 	}
 	notif, err := s.stores.Notifications().NotifyGrillQuestion(
-		sess.Repo, sess.ID, sess.IssueID, grillNotificationTitle(sess), truncateBody(body, notificationBodyMax),
+		sess.Repo, sess.ID, sess.IssueID, grillEffectiveMode(sess.Mode),
+		grillNotificationTitle(sess), truncateBody(body, notificationBodyMax),
 	)
 	if err != nil {
 		logger.Verbosef("grill %d: notify: %v", sess.ID, err)

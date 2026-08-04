@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import type { GrillSession } from "./grill";
 import type { RepoView } from "./instances";
 import {
+  grillSessionTarget,
   markAllReadInResponse,
   markReadInResponse,
   notificationRepoName,
@@ -47,6 +49,22 @@ describe("notificationTarget", () => {
     expect(target).toEqual({ kind: "inbox", repo: "app", issue: "draft:42" });
   });
 
+  it("sends a research question to its session on the Research page", () => {
+    const target = notificationTarget(
+      notif({ kind: "grill_question", mode: "research", ref: "42" }),
+      "app",
+    );
+    expect(target).toEqual({ kind: "research", repo: "app", session: "42" });
+  });
+
+  it("keeps an interview question on the inbox", () => {
+    const target = notificationTarget(
+      notif({ kind: "grill_question", mode: "interview", issue_id: "COD-1" }),
+      "app",
+    );
+    expect(target).toEqual({ kind: "inbox", repo: "app", issue: "COD-1" });
+  });
+
   it.each([
     "run_paused",
     "run_faulted",
@@ -60,6 +78,41 @@ describe("notificationTarget", () => {
       expect(target).toEqual({ kind: "run", repo: "app", ticket: "COD-9" });
     },
   );
+});
+
+describe("grillSessionTarget", () => {
+  function session(overrides: Partial<GrillSession>): GrillSession {
+    return {
+      id: "42",
+      repo: "app",
+      state: "waiting",
+      created_at: "",
+      updated_at: "",
+      ...overrides,
+    };
+  }
+
+  it("sends a research session to its report on the Research page", () => {
+    expect(grillSessionTarget(session({ mode: "research" }))).toEqual({
+      kind: "research",
+      repo: "app",
+      session: "42",
+    });
+  });
+
+  it("sends an interview to its inbox issue", () => {
+    expect(
+      grillSessionTarget(session({ mode: "interview", issue_id: "COD-1" })),
+    ).toEqual({ kind: "inbox", repo: "app", issue: "COD-1" });
+  });
+
+  it("addresses an issue-less interview by its draft row", () => {
+    expect(grillSessionTarget(session({}))).toEqual({
+      kind: "inbox",
+      repo: "app",
+      issue: "draft:42",
+    });
+  });
 });
 
 describe("notificationTag", () => {
@@ -201,6 +254,16 @@ describe("notificationScopeSwitch", () => {
         repos,
       ),
     ).toBeNull();
+  });
+
+  it("adopts a cross-project research target repo", () => {
+    expect(
+      notificationScopeSwitch(
+        { kind: "research", repo: "/repos/api", session: "42" },
+        "app",
+        repos,
+      ),
+    ).toBe("api");
   });
 
   it("never switches for a run target", () => {

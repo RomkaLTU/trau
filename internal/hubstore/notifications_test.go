@@ -20,7 +20,7 @@ func testNotifications(t *testing.T) (*Notifications, *sql.DB) {
 func TestNotifyGrillQuestionCoalesces(t *testing.T) {
 	n, _ := testNotifications(t)
 
-	first, err := n.NotifyGrillQuestion("acme", 7, "COD-1", "Grilling needs you — COD-1", "why split it?")
+	first, err := n.NotifyGrillQuestion("acme", 7, "COD-1", GrillModeInterview, "Grilling needs you — COD-1", "why split it?")
 	if err != nil {
 		t.Fatalf("first notify: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestNotifyGrillQuestionCoalesces(t *testing.T) {
 		t.Fatalf("first notification not stamped unread: %+v", first)
 	}
 
-	second, err := n.NotifyGrillQuestion("acme", 7, "COD-1", "Grilling needs you — COD-1", "or rewrite it?")
+	second, err := n.NotifyGrillQuestion("acme", 7, "COD-1", GrillModeInterview, "Grilling needs you — COD-1", "or rewrite it?")
 	if err != nil {
 		t.Fatalf("second notify: %v", err)
 	}
@@ -53,12 +53,12 @@ func TestNotifyGrillQuestionCoalesces(t *testing.T) {
 
 func TestNotifyGrillQuestionKeepsBodyWhenEmpty(t *testing.T) {
 	n, _ := testNotifications(t)
-	if _, err := n.NotifyGrillQuestion("acme", 7, "COD-1", "title", "the question"); err != nil {
+	if _, err := n.NotifyGrillQuestion("acme", 7, "COD-1", GrillModeInterview, "title", "the question"); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
 	// A later transition with no fresh text (a park after the question) must keep the
 	// stored question rather than blank it.
-	bumped, err := n.NotifyGrillQuestion("acme", 7, "COD-1", "title", "")
+	bumped, err := n.NotifyGrillQuestion("acme", 7, "COD-1", GrillModeInterview, "title", "")
 	if err != nil {
 		t.Fatalf("bump: %v", err)
 	}
@@ -69,13 +69,13 @@ func TestNotifyGrillQuestionKeepsBodyWhenEmpty(t *testing.T) {
 
 func TestNotifyGrillQuestionInsertsAfterRead(t *testing.T) {
 	n, _ := testNotifications(t)
-	first, _ := n.NotifyGrillQuestion("acme", 7, "COD-1", "title", "q1")
+	first, _ := n.NotifyGrillQuestion("acme", 7, "COD-1", GrillModeInterview, "title", "q1")
 	if err := n.ResolveGrillQuestion(7); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 
 	// With the previous one read, a new question is a fresh unread row, not a bump.
-	second, err := n.NotifyGrillQuestion("acme", 7, "COD-1", "title", "q2")
+	second, err := n.NotifyGrillQuestion("acme", 7, "COD-1", GrillModeInterview, "title", "q2")
 	if err != nil {
 		t.Fatalf("notify after read: %v", err)
 	}
@@ -90,9 +90,33 @@ func TestNotifyGrillQuestionInsertsAfterRead(t *testing.T) {
 	}
 }
 
+func TestNotifyGrillQuestionCarriesMode(t *testing.T) {
+	n, _ := testNotifications(t)
+	if _, err := n.NotifyGrillQuestion("acme", 7, "", GrillModeResearch, "title", "which sources?"); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if _, err := n.NotifyRunAttention("acme", NotificationRunPaused, "COD-2", "COD-2", "Run paused — acme", "usage window"); err != nil {
+		t.Fatalf("run notify: %v", err)
+	}
+	list, err := n.List(100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	modes := map[string]string{}
+	for _, notif := range list {
+		modes[notif.Kind] = notif.Mode
+	}
+	if modes[NotificationGrillQuestion] != GrillModeResearch {
+		t.Errorf("grill question mode = %q, want %q so the click reaches the Research page", modes[NotificationGrillQuestion], GrillModeResearch)
+	}
+	if modes[NotificationRunPaused] != "" {
+		t.Errorf("run notification mode = %q, want empty", modes[NotificationRunPaused])
+	}
+}
+
 func TestResolveGrillQuestion(t *testing.T) {
 	n, _ := testNotifications(t)
-	if _, err := n.NotifyGrillQuestion("acme", 7, "COD-1", "title", "q"); err != nil {
+	if _, err := n.NotifyGrillQuestion("acme", 7, "COD-1", GrillModeInterview, "title", "q"); err != nil {
 		t.Fatalf("notify: %v", err)
 	}
 	if err := n.ResolveGrillQuestion(7); err != nil {
@@ -166,7 +190,7 @@ func TestNotificationsRetentionPrunesRead(t *testing.T) {
 	n, db := testNotifications(t)
 
 	// One unread row that must survive pruning regardless of age.
-	survivor, err := n.NotifyGrillQuestion("acme", 1, "COD-1", "t", "keep me")
+	survivor, err := n.NotifyGrillQuestion("acme", 1, "COD-1", GrillModeInterview, "t", "keep me")
 	if err != nil {
 		t.Fatalf("unread notify: %v", err)
 	}

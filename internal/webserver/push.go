@@ -189,13 +189,17 @@ func notificationPush(notif hubstore.Notification, repo string) (PushPayload, bo
 }
 
 // notificationURL mirrors the web router's target for a notification
-// (notificationTarget in web/src/lib/notification-center.ts), addressing an
-// issue-less authoring session by its draft row. The inbox link names its repo
-// because the queue is built from the active scope rather than the link, so
-// without it a pushed question lands on whichever project happens to be open.
+// (notificationTarget in web/src/lib/notification-center.ts): a research question at
+// its report on the Research page, an interview at its inbox row — an issue-less
+// authoring session addressed by its draft row. Both name their repo because those
+// pages are built from the active scope rather than the link, so without it a pushed
+// question lands on whichever project happens to be open.
 func notificationURL(notif hubstore.Notification, repo string) (string, bool) {
 	switch notif.Kind {
 	case hubstore.NotificationGrillQuestion:
+		if notif.Mode == hubstore.GrillModeResearch {
+			return "/research?" + url.Values{"session": {notif.Ref}, "repo": {repo}}.Encode(), true
+		}
 		issue := notif.IssueID
 		if issue == "" {
 			issue = "draft:" + notif.Ref
