@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { TerminalCard } from '@/components/trau/terminal-card'
+import { WorkspaceCombobox } from '@/components/trau/workspace-combobox'
 import { cn } from '@/lib/utils'
 import {
   createAppURL,
@@ -99,6 +100,7 @@ export function AppURLsSection({ repo }: { repo: string }) {
             {editing === 'new' && (
               <div className="border-b border-border/60 px-4 py-2.5">
                 <EntryEditor
+                  repo={repo}
                   entry={null}
                   entries={entries}
                   write={(draft) => createAppURL(repo, draft)}
@@ -245,6 +247,7 @@ function EntryRow({
       {editing && (
         <div className="mt-2">
           <EntryEditor
+            repo={repo}
             entry={entry}
             entries={entries}
             write={(draft) => updateAppURL(repo, entry.id, draft)}
@@ -269,12 +272,14 @@ function EntryRow({
 }
 
 function EntryEditor({
+  repo,
   entry,
   entries,
   write,
   onDone,
   onCancel,
 }: {
+  repo: string
   entry: AppURL | null
   entries: AppURL[]
   write: (draft: AppURLDraft) => Promise<unknown>
@@ -324,13 +329,12 @@ function EntryEditor({
           />
         </FieldLabel>
         <FieldLabel text="workspace">
-          <Input
+          <WorkspaceCombobox
+            id={`app-url-workspace-${entry?.id ?? 'new'}`}
+            repo={repo}
             value={draft.workspace}
-            onChange={(e) => set({ workspace: e.target.value })}
-            placeholder="default"
-            autoComplete="off"
-            spellCheck={false}
-            aria-label="App URL workspace"
+            onChange={(workspace) => set({ workspace })}
+            label="App URL workspace"
             className={fieldClass}
           />
         </FieldLabel>
