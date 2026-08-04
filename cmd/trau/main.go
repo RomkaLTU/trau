@@ -1268,17 +1268,15 @@ func newHubReloader(cfg config.Config, repoRoot string) func(context.Context) (h
 	}
 }
 
-// newProofsPublisher fetches a run's stored screenshots back from the serve hub
-// and publishes them to repoDir's trau-proofs orphan branch, so the delivered PR
-// can embed the visual QA proof (ADR 0008 keeps the child DB-free). The proofs are
-// always the registered repo's, so a Folder repo run reads them under the folder
-// and lands them in whichever child it hands down.
-func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context, string, string) (proofsbranch.Publication, error) {
+// newProofsFetcher reads a run's stored screenshots back from the serve hub as
+// publishable proofs (ADR 0008 keeps the child DB-free). The proofs are always the
+// registered repo's, so a Folder repo run reads them under the folder.
+func newProofsFetcher(cfg config.Config, repoRoot string) func(context.Context, string) ([]proofsbranch.Proof, error) {
 	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
-	return func(ctx context.Context, repoDir, ticket string) (proofsbranch.Publication, error) {
+	return func(ctx context.Context, ticket string) ([]proofsbranch.Proof, error) {
 		shots, err := hub.RunProofs(ctx, repoName(repoRoot), ticket)
 		if err != nil {
-			return proofsbranch.Publication{}, err
+			return nil, err
 		}
 		proofs := make([]proofsbranch.Proof, 0, len(shots))
 		for _, s := range shots {
@@ -1291,6 +1289,20 @@ func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context
 				Caption: s.Caption,
 				Bytes:   s.Bytes,
 			})
+		}
+		return proofs, nil
+	}
+}
+
+// newProofsPublisher publishes a run's fetched screenshots to repoDir's trau-proofs
+// orphan branch, so the delivered PR can embed the visual QA proof. A Folder repo
+// run lands them in whichever child it hands down.
+func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context, string, string) (proofsbranch.Publication, error) {
+	fetch := newProofsFetcher(cfg, repoRoot)
+	return func(ctx context.Context, repoDir, ticket string) (proofsbranch.Publication, error) {
+		proofs, err := fetch(ctx, ticket)
+		if err != nil {
+			return proofsbranch.Publication{}, err
 		}
 		if len(proofs) == 0 {
 			return proofsbranch.Publication{}, nil
@@ -1531,6 +1543,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		VerifyProofs:         cfg.VerifyProofs,
 		AppURL:               cfg.AppURL,
 		AppURLs:              cfg.AppURLs,
+		QANotes:              cfg.QANotes,
 		AutoMerge:            cfg.AutoMerge,
 		MergeMethod:          cfg.MergeMethod,
 		DeliveredState:       cfg.DeliveredState,
@@ -1560,6 +1573,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		FetchAppURLs:         newAppURLFetcher(cfg, repoRoot),
 		SaveQAAccount:        newQASaver(cfg, repoRoot),
 		UploadProofs:         newProofUploader(cfg, repoRoot),
+		FetchProofs:          newProofsFetcher(cfg, repoRoot),
 		PublishProofs:        newProofsPublisher(cfg, repoRoot),
 		HubSelfReload:        cfg.HubSelfReload,
 		HubReloadBuildCmd:    cfg.HubReloadBuildCmd,

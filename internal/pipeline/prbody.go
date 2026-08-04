@@ -34,12 +34,13 @@ func (p *Pipeline) prBody(ctx context.Context, id, proofsSection string) string 
 }
 
 // proofsSection publishes the run's verify screenshots to repoDir's trau-proofs
-// branch and renders the PR body's QA-proofs section. It returns "" — no section,
-// no claim — when proofs are disabled, none were captured, or the repo has no
-// remote. A publish failure is non-fatal: it warns and returns "".
-func (p *Pipeline) proofsSection(ctx context.Context, id, repoDir string) string {
+// branch and renders the PR body's QA-proofs section, alongside the publication
+// itself so the ticket's QA note can link the same files. It returns "" — no
+// section, no claim — when proofs are disabled, none were captured, or the repo
+// has no remote. A publish failure is non-fatal: it warns and returns "".
+func (p *Pipeline) proofsSection(ctx context.Context, id, repoDir string) (string, proofsbranch.Publication) {
 	if p.PublishProofs == nil {
-		return ""
+		return "", proofsbranch.Publication{}
 	}
 	pub, err := p.PublishProofs(ctx, repoDir, id)
 	if err != nil {
@@ -47,17 +48,17 @@ func (p *Pipeline) proofsSection(ctx context.Context, id, repoDir string) string
 		if p.Events != nil {
 			p.Events.Emit(event.KindProofsPublishFailed, "commit", "could not publish verify proofs to the "+proofsbranch.Branch+" branch", map[string]any{"ticket": id, "error": sanitize.FeedLine(err.Error())})
 		}
-		return ""
+		return "", proofsbranch.Publication{}
 	}
 	if len(pub.Files) == 0 {
-		return ""
+		return "", pub
 	}
 	v, graded := p.sliceVerdict(id)
 	outcome := ""
 	if graded {
 		outcome = browserLine(v, p.sliceAppURL(ctx))
 	}
-	return renderProofsSection(pub, outcome)
+	return renderProofsSection(pub, outcome), pub
 }
 
 // renderProofsSection formats the ### QA proofs block: the one-line browser

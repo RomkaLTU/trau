@@ -260,3 +260,14 @@ func textToHTML(text string) string {
 	}
 	return b.String()
 }
+
+// imagesHTML renders uploaded images as the <img> blocks an Azure DevOps
+// rich-text field embeds. Both the URL and the caption are escaped, so neither
+// can break out of the attribute it sits in.
+func imagesHTML(images []Attachment) string {
+	var b strings.Builder
+	for _, img := range images {
+		b.WriteString(`<div><img src="` + html.EscapeString(img.URL) + `" alt="` + html.EscapeString(img.Caption) + `"></div>`)
+	}
+	return b.String()
+}

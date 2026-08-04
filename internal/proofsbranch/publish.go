@@ -209,8 +209,8 @@ func buildPlan(ticket string, branchExists bool, proofs []Proof) plan {
 	files := make([]File, 0, len(proofs))
 	for _, p := range proofs {
 		files = append(files, File{
-			Path:    ticket + "/" + filename(p.Seq, p.Mime),
-			Caption: caption(p, ticket),
+			Path:    ticket + "/" + Filename(p.Seq, p.Mime),
+			Caption: Caption(p, ticket),
 		})
 	}
 	return plan{Bootstrap: !branchExists, Files: files}
@@ -367,9 +367,10 @@ func (c Config) ghBin() string {
 	return "gh"
 }
 
-// filename names a screenshot on the branch from its seq and mime, so the same
-// proof lands on a stable path across reruns.
-func filename(seq int, mime string) string {
+// Filename names a screenshot on the branch from its seq and mime, so the same
+// proof lands on a stable path across reruns — and on the same name wherever else
+// it is referenced.
+func Filename(seq int, mime string) string {
 	name := "proof-" + strconv.Itoa(seq)
 	if ext := imageExt(mime); ext != "" {
 		return name + ext
@@ -377,11 +378,13 @@ func filename(seq int, mime string) string {
 	return name
 }
 
-func caption(p Proof, ticket string) string {
+// Caption is the label a proof is shown under: its own when it carries one, and
+// the ticket plus the proof's filename otherwise.
+func Caption(p Proof, ticket string) string {
 	if c := strings.TrimSpace(p.Caption); c != "" {
 		return c
 	}
-	return ticket + " " + filename(p.Seq, p.Mime)
+	return ticket + " " + Filename(p.Seq, p.Mime)
 }
 
 func imageExt(mime string) string {

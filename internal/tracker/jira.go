@@ -732,6 +732,67 @@ func (j *Jira) quarantinePrompt(id, reason string) string {
 		id, j.ReadyLabel, j.QuarantineLabel, reason)
 }
 
+// PostQANote leaves the run's QA report as a comment on the issue, with the
+// verify screenshots attached to the issue and embedded in that same comment. It
+// uses the REST API when a token is configured, falling back to the Rovo MCP on
+// an auth/not-enabled error; that path posts the report text alone, since a
+// prompt cannot carry image bytes.
+func (j *Jira) PostQANote(ctx context.Context, id string, note QANote) error {
+	body, media := j.qaNoteMedia(ctx, id, note)
+	if err := j.api().AddCommentWithMedia(ctx, id, body, media); err == nil {
+		return nil
+	} else if !j.canFallback(err) {
+		return err
+	}
+
+	_, err := j.Runner.Run(ctx, j.qaNotePrompt(id, note.Body), "qa_note")
+	return err
+}
+
+// qaAttachmentsNote points a reader at the issue's attachments when a screenshot
+// landed on it but could not be embedded in the comment.
+const qaAttachmentsNote = "Verify screenshots are attached to this issue."
+
+// qaNoteMedia uploads the note's screenshots as issue attachments and resolves
+// each one's media id, returning the comment body and the ids that comment
+// embeds. Resolving an id is a documented workaround (JRACLOUD-96384) rather than
+// a supported read, so an image it fails for stays an attachment and the body
+// gains a line saying so. An upload that fails costs that screenshot alone;
+// credentials the comment cannot use either are left to the MCP fallback.
+func (j *Jira) qaNoteMedia(ctx context.Context, id string, note QANote) (string, []string) {
+	if len(note.Images) == 0 {
+		return note.Body, nil
+	}
+	api := j.api()
+	media := make([]string, 0, len(note.Images))
+	attachedOnly := false
+	for _, img := range note.Images {
+		attachment, err := api.AddAttachment(ctx, id, img.Name, img.Bytes)
+		if err != nil {
+			if jiraShouldFallback(err) {
+				return note.Body, nil
+			}
+			logger.Printf("jira: %s QA note dropped screenshot %s: %v", id, img.Name, err)
+			continue
+		}
+		mediaID, err := api.MediaID(ctx, attachment)
+		if err != nil {
+			logger.Printf("jira: %s QA note attached %s without an inline embed: %v", id, img.Name, err)
+			attachedOnly = true
+			continue
+		}
+		media = append(media, mediaID)
+	}
+	if attachedOnly {
+		return strings.TrimRight(note.Body, "\n") + "\n\n" + qaAttachmentsNote, media
+	}
+	return note.Body, media
+}
+
+func (j *Jira) qaNotePrompt(id, body string) string {
+	return fmt.Sprintf("Use the Jira (Rovo) MCP on issue %s: add this Markdown comment verbatim.\n\n%s\n\nReply DONE.", id, body)
+}
+
 // FileBug files a NEW Jira issue as a last-resort HITL blocker for a QA failure
 // the slice could not self-heal, even after comprehensive bugfix passes. It uses
 // POST /issue when a token is configured — reading the verdict file to build an

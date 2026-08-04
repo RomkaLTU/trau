@@ -18,6 +18,9 @@ const (
 	relParent      = "System.LinkTypes.Hierarchy-Reverse"
 	relChild       = "System.LinkTypes.Hierarchy-Forward"
 	relPredecessor = "System.LinkTypes.Dependency-Reverse"
+	// relAttachedFile points at an uploaded file rather than another work item —
+	// what puts it in the item's Attachments list.
+	relAttachedFile = "AttachedFile"
 )
 
 // priorityUnset ranks a work item whose type carries no priority field behind

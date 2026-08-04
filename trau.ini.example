@@ -274,6 +274,12 @@ APP_URLS=                    # multi-app monorepos: per-workspace app URLs as co
 # checks, a built-in default set runs (tests, typecheck, lint, anti-placeholder,
 # anti-duplication). Set 0 to disable entirely. See docs/verify-checks.md.
 VERIFY_CHECKS=1
+# Post the run's QA report as a comment on the ticket: on delivery the verify
+# result, the checks that ran, the browser-QA outcome and the PR link; when the run
+# gives up after its repair and bugfix attempts, the failure lines and the HITL
+# blocker it filed. Trackers that cannot comment skip it, and a failed post never
+# fails the run. 1 = on (default), 0 = off.
+QA_NOTES=1
 # Cross-vendor verify panel (the moat): run verify as N fresh, isolated processes
 # from DIFFERENT providers, each independently judging the diff, then merge their
 # verdicts. Each member is a provider:model:effort spec (model/effort optional);

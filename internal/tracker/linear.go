@@ -981,6 +981,47 @@ func (l *Linear) quarantineAPI(ctx context.Context, id, reason string) error {
 	return l.api().AddComment(ctx, id, fmt.Sprintf("Trau loop stopped: %s (see this ticket's run in the trau web UI).", reason))
 }
 
+// PostQANote leaves the run's QA report as a comment on the issue, with the verify
+// screenshots uploaded to Linear and embedded in that same comment. Uses the API
+// when possible; the MCP fallback posts the report text alone, since a prompt
+// cannot carry image bytes.
+func (l *Linear) PostQANote(ctx context.Context, id string, note QANote) error {
+	if err := l.api().AddComment(ctx, id, l.qaNoteBody(ctx, id, note)); err == nil {
+		return nil
+	} else if !shouldFallback(err) {
+		return err
+	}
+
+	_, err := l.Runner.Run(ctx, l.qaNotePrompt(id, note.Body), "qa_note")
+	return err
+}
+
+// qaNoteBody is the comment body the API path posts: the report followed by a
+// gallery of the run's screenshots, each uploaded to Linear's asset store first.
+// An image whose upload fails is left out of the gallery — the report itself never
+// waits on it.
+func (l *Linear) qaNoteBody(ctx context.Context, id string, note QANote) string {
+	if l.APIKey == "" || len(note.Images) == 0 {
+		return note.Body
+	}
+	api := l.api()
+	var b strings.Builder
+	b.WriteString(note.Body)
+	for _, img := range note.Images {
+		asset, err := api.UploadFile(ctx, img.Name, img.Mime, img.Bytes)
+		if err != nil {
+			logger.Printf("linear: %s QA note dropped screenshot %s: %v", id, img.Name, err)
+			continue
+		}
+		b.WriteString("\n![" + img.Caption + "](" + asset + ")\n")
+	}
+	return b.String()
+}
+
+func (l *Linear) qaNotePrompt(id, body string) string {
+	return fmt.Sprintf("Use the Linear MCP on issue %s: add this Markdown comment verbatim.\n\n%s\n\nReply DONE.", id, body)
+}
+
 // EnsureLabels creates the ready and quarantine labels in Linear if they do not
 // already exist. Uses the API when possible.
 func (l *Linear) EnsureLabels(ctx context.Context) error {

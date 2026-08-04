@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -958,6 +959,226 @@ func TestBugContent(t *testing.T) {
 	_, missing := bugContent("PROJ-7", filepath.Join(dir, "gone.json"))
 	if !strings.Contains(missing, "PROJ-7's run in the trau web UI") {
 		t.Errorf("missing-verdict description should still point at the run: %q", missing)
+	}
+}
+
+// A Jira-tracked run's QA report lands as one comment on the issue through the
+// v3 comment endpoint, with the Markdown converted to real ADF nodes rather than
+// a paragraph still carrying its syntax.
+func TestJiraPostQANoteCommentsThroughTheAPI(t *testing.T) {
+	var (
+		method string
+		path   string
+		sent   []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		sent, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	err := j.PostQANote(context.Background(), "PROJ-7", QANote{
+		Body: "## Trau QA report\n\nVerify passed: all green\n\n- covered the login flow\n\nPR: https://github.test/pr/7\n",
+	})
+	if err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if method != http.MethodPost || path != "/rest/api/3/issue/PROJ-7/comment" {
+		t.Errorf("request = %s %s, want POST /rest/api/3/issue/PROJ-7/comment", method, path)
+	}
+	var doc struct {
+		Body struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"content"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal(sent, &doc); err != nil {
+		t.Fatalf("comment body is not JSON: %v", err)
+	}
+	if doc.Body.Type != "doc" {
+		t.Fatalf("comment body = %s, want an ADF document", sent)
+	}
+	kinds := make([]string, 0, len(doc.Body.Content))
+	for _, block := range doc.Body.Content {
+		kinds = append(kinds, block.Type)
+	}
+	if got := strings.Join(kinds, ","); got != "heading,paragraph,bulletList,paragraph" {
+		t.Errorf("ADF blocks = %s, want the heading and list converted to nodes", got)
+	}
+	if got := doc.Body.Content[0].Content[0].Text; got != "Trau QA report" {
+		t.Errorf("heading text = %q, want the report heading without its markdown", got)
+	}
+	if runner.calls["qa_note"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d qa_note calls", runner.calls["qa_note"])
+	}
+}
+
+// Without API credentials the note goes through the Rovo MCP instead, in a prompt
+// carrying the issue and the report body. A prompt cannot carry image bytes, so
+// the screenshots are dropped rather than half-described.
+func TestJiraPostQANoteFallsBackToMCP(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"qa_note": {}}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+
+	note := QANote{Body: "## Trau QA report\n\nVerify failed: red tests\n", Images: jiraQAImages}
+	if err := j.PostQANote(context.Background(), "PROJ-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if runner.calls["qa_note"] != 1 {
+		t.Fatalf("qa_note runs = %d, want 1", runner.calls["qa_note"])
+	}
+	prompt := runner.prompts["qa_note"]
+	if !strings.Contains(prompt, "PROJ-7") || !strings.Contains(prompt, "Verify failed: red tests") {
+		t.Errorf("MCP prompt = %q, want the issue and the report body", prompt)
+	}
+	if strings.Contains(prompt, "proof-1.png") {
+		t.Errorf("MCP prompt mentions a screenshot it cannot carry:\n%s", prompt)
+	}
+}
+
+var jiraQAImages = []QAImage{
+	{Name: "proof-1.png", Mime: "image/png", Caption: "home", Bytes: []byte("png-1")},
+	{Name: "proof-2.png", Mime: "image/png", Caption: "settings", Bytes: []byte("png-2")},
+}
+
+// jiraQASite fakes the endpoints a QA note with screenshots touches: the
+// multipart attachment upload, the attachment content route whose redirect
+// carries the media id — withheld for a filename in noMedia — and the comment
+// endpoint. It records the uploads it received and the comment bodies it was
+// asked to post.
+type jiraQASite struct {
+	uploads  []string
+	comments [][]byte
+}
+
+func newJiraQASite(t *testing.T, noMedia map[string]bool) (*Jira, *jiraQASite) {
+	t.Helper()
+	site := &jiraQASite{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case strings.HasSuffix(path, "/attachments"):
+			_, head, err := r.FormFile("file")
+			if err != nil {
+				t.Errorf("FormFile: %v", err)
+				return
+			}
+			site.uploads = append(site.uploads, head.Filename)
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `[{"id":%q}]`, "att-"+head.Filename)
+		case strings.Contains(path, "/attachment/content/"):
+			name := strings.TrimPrefix(path[strings.LastIndex(path, "/")+1:], "att-")
+			if noMedia[name] {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Location", "https://api.media.atlassian.com/file/media-"+name+"/binary?token=abc")
+			w.WriteHeader(http.StatusSeeOther)
+		case strings.HasSuffix(path, "/comment"):
+			body, _ := io.ReadAll(r.Body)
+			site.comments = append(site.comments, body)
+			w.WriteHeader(http.StatusCreated)
+		default:
+			t.Errorf("unrouted request %s %s", r.Method, path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &Jira{Runner: &recordingRunner{}, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}, site
+}
+
+// qaCommentDoc is the shape a QA comment's ADF is read back in.
+type qaCommentDoc struct {
+	Body struct {
+		Content []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type  string            `json:"type"`
+				Text  string            `json:"text"`
+				Attrs map[string]string `json:"attrs"`
+			} `json:"content"`
+		} `json:"content"`
+	} `json:"body"`
+}
+
+func (s *jiraQASite) comment(t *testing.T) qaCommentDoc {
+	t.Helper()
+	if len(s.comments) != 1 {
+		t.Fatalf("posted %d comments, want exactly 1", len(s.comments))
+	}
+	var doc qaCommentDoc
+	if err := json.Unmarshal(s.comments[0], &doc); err != nil {
+		t.Fatalf("comment body is not JSON: %v", err)
+	}
+	return doc
+}
+
+func (d qaCommentDoc) kinds() string {
+	out := make([]string, 0, len(d.Body.Content))
+	for _, block := range d.Body.Content {
+		out = append(out, block.Type)
+	}
+	return strings.Join(out, ",")
+}
+
+// Every screenshot is uploaded to the issue as an attachment and embedded in the
+// one comment the run posts, by the media id its content redirect names.
+func TestJiraPostQANoteAttachesScreenshotsAndEmbedsThem(t *testing.T) {
+	j, site := newJiraQASite(t, nil)
+
+	note := QANote{Body: "## Trau QA report\n\nVerify passed\n", Images: jiraQAImages}
+	if err := j.PostQANote(context.Background(), "PROJ-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+
+	if !slices.Equal(site.uploads, []string{"proof-1.png", "proof-2.png"}) {
+		t.Errorf("uploads = %v, want both screenshots attached", site.uploads)
+	}
+	doc := site.comment(t)
+	if got := doc.kinds(); got != "heading,paragraph,mediaSingle,mediaSingle" {
+		t.Fatalf("ADF blocks = %s, want the report followed by one media node per screenshot", got)
+	}
+	for i, want := range []string{"media-proof-1.png", "media-proof-2.png"} {
+		media := doc.Body.Content[2+i].Content
+		if len(media) != 1 || media[0].Attrs["type"] != "file" || media[0].Attrs["id"] != want {
+			t.Errorf("media node %d = %+v, want a file node for %s", i, media, want)
+		}
+	}
+	if strings.Contains(string(site.comments[0]), qaAttachmentsNote) {
+		t.Errorf("comment points at the attachments although both embedded:\n%s", site.comments[0])
+	}
+}
+
+// The media id is a documented workaround, not a supported read: a screenshot it
+// cannot be resolved for is still attached to the issue, and the comment says so
+// instead of carrying a media node that would render as a broken image.
+func TestJiraPostQANoteFallsBackToAttachmentsWhenTheMediaIDIsUnreadable(t *testing.T) {
+	j, site := newJiraQASite(t, map[string]bool{"proof-2.png": true})
+
+	note := QANote{Body: "## Trau QA report\n\nVerify passed\n", Images: jiraQAImages}
+	if err := j.PostQANote(context.Background(), "PROJ-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+
+	if !slices.Equal(site.uploads, []string{"proof-1.png", "proof-2.png"}) {
+		t.Errorf("uploads = %v, want both screenshots attached even so", site.uploads)
+	}
+	doc := site.comment(t)
+	if got := doc.kinds(); got != "heading,paragraph,paragraph,mediaSingle" {
+		t.Fatalf("ADF blocks = %s, want only the resolved screenshot embedded", got)
+	}
+	if got := doc.Body.Content[3].Content[0].Attrs["id"]; got != "media-proof-1.png" {
+		t.Errorf("embedded media id = %q, want the screenshot that resolved", got)
+	}
+	if got := doc.Body.Content[2].Content[0].Text; got != qaAttachmentsNote {
+		t.Errorf("comment tail = %q, want %q", got, qaAttachmentsNote)
 	}
 }
 

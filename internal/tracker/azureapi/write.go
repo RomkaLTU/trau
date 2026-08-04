@@ -46,12 +46,28 @@ func (c *Client) relationOp(rel string, target int) patchOp {
 	}
 }
 
-// historyOp appends body to a work item's discussion. Azure DevOps still gates
-// its dedicated comments route behind a preview api-version, whereas writing
-// System.History through the work-item PATCH is GA and rides along on whatever
-// update is already in flight — one round-trip for a state change plus its note.
-func historyOp(body string) patchOp {
-	return setField("System.History", textToHTML(body))
+// historyOp appends body to a work item's discussion, with any uploaded images
+// embedded under it. Azure DevOps still gates its dedicated comments route behind
+// a preview api-version, whereas writing System.History through the work-item
+// PATCH is GA and rides along on whatever update is already in flight — one
+// round-trip for a state change plus its note.
+func historyOp(body string, images []Attachment) patchOp {
+	return setField("System.History", textToHTML(body)+imagesHTML(images))
+}
+
+// attachmentOp lists an uploaded file under the work item's Attachments. Unlike
+// relationOp's work-item links the target is the file's own URL, and its caption
+// rides along as the relation's comment.
+func attachmentOp(file Attachment) patchOp {
+	return patchOp{
+		Op:   "add",
+		Path: "/relations/-",
+		Value: map[string]any{
+			"rel":        relAttachedFile,
+			"url":        file.URL,
+			"attributes": map[string]string{"comment": file.Caption},
+		},
+	}
 }
 
 // SetState writes state onto a work item, optionally appending a comment in the
@@ -67,7 +83,7 @@ func (c *Client) SetState(ctx context.Context, project string, id int, state, co
 	}
 	ops := []patchOp{setField("System.State", state)}
 	if body := strings.TrimSpace(comment); body != "" {
-		ops = append(ops, historyOp(body))
+		ops = append(ops, historyOp(body, nil))
 	}
 	return c.patch(ctx, workItemPath(project, id), ops, nil)
 }
@@ -124,13 +140,62 @@ func MergeTags(current, add, remove []string) []string {
 
 // AddComment appends a comment to a work item's discussion.
 func (c *Client) AddComment(ctx context.Context, project string, id int, body string) error {
+	return c.AddCommentWithImages(ctx, project, id, body, nil)
+}
+
+// AddCommentWithImages is AddComment with uploaded images embedded under the
+// body, each as an <img> pointing at the URL its upload returned.
+func (c *Client) AddCommentWithImages(ctx context.Context, project string, id int, body string, images []Attachment) error {
 	if !c.enabled() {
 		return ErrNotEnabled
 	}
 	if strings.TrimSpace(body) == "" {
 		return nil
 	}
-	return c.patch(ctx, workItemPath(project, id), []patchOp{historyOp(body)}, nil)
+	return c.patch(ctx, workItemPath(project, id), []patchOp{historyOp(body, images)}, nil)
+}
+
+// Attachment is one uploaded file: the URL the upload returned, which both the
+// comment's <img> and the work item's attachment list reference, and its caption.
+type Attachment struct {
+	URL     string
+	Caption string
+}
+
+// UploadAttachment stores data in the attachment store and returns the URL a work
+// item references it by. The endpoint takes the raw bytes — no multipart envelope
+// — and names the file through the query string.
+func (c *Client) UploadAttachment(ctx context.Context, project, filename string, data []byte) (string, error) {
+	if !c.enabled() {
+		return "", ErrNotEnabled
+	}
+	var dst struct {
+		URL string `json:"url"`
+	}
+	path := projectPath(project, "/attachments?fileName="+url.QueryEscape(filename))
+	if err := c.send(ctx, http.MethodPost, path, data, "application/octet-stream", &dst); err != nil {
+		return "", err
+	}
+	if dst.URL == "" {
+		return "", fmt.Errorf("azure: upload of %q returned no attachment URL", filename)
+	}
+	return dst.URL, nil
+}
+
+// AttachFiles lists uploaded files under a work item's Attachments, so they are
+// reachable whatever the discussion renderer makes of an inline <img>.
+func (c *Client) AttachFiles(ctx context.Context, project string, id int, files []Attachment) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	if len(files) == 0 {
+		return nil
+	}
+	ops := make([]patchOp, 0, len(files))
+	for _, f := range files {
+		ops = append(ops, attachmentOp(f))
+	}
+	return c.patch(ctx, workItemPath(project, id), ops, nil)
 }
 
 // Comments reads a work item's discussion, newest last, for the build prompt's

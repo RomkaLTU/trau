@@ -581,7 +581,11 @@ type Pipeline struct {
 	// AppURLs maps a workspace to its app URL (config APP_URLS) so browser verify
 	// drives the app the slice actually changed in a multi-app monorepo; AppURL
 	// covers slices that match no workspace.
-	AppURLs     map[string]string
+	AppURLs map[string]string
+	// QANotes posts the run's QA report as a comment on the ticket it delivered or
+	// gave up on (config QA_NOTES). A tracker without the comment capability skips
+	// it, and a failed post only warns.
+	QANotes     bool
 	AutoMerge   bool
 	MergeMethod string
 	// DeliveredState is the tracker status merged work moves to (config
@@ -686,6 +690,12 @@ type Pipeline struct {
 	// verify attempt resolves; a failure logs one warning and the run proceeds,
 	// since missing proofs never fail or pause a run. Nil disables harvest.
 	UploadProofs func(ctx context.Context, ticket, traceDir string, shots []hubclient.ProofScreenshot) error
+
+	// FetchProofs reads a run's stored verify screenshots back from the hub so the
+	// QA note can carry them. It is called once per note, only when one is about to
+	// post; a failure logs one warning and the note goes out text-only. Nil leaves
+	// every note text-only.
+	FetchProofs func(ctx context.Context, ticket string) ([]proofsbranch.Proof, error)
 
 	// PublishProofs pushes a run's stored verify screenshots to repoDir's trau-proofs
 	// orphan branch and reports how the delivered PR body should reference them.
@@ -2328,6 +2338,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		if bug != "" {
 			reason += "; filed HITL blocker " + bug
 		}
+		p.postQANote(ctx, id, failureQANote(lastFail, bug), proofsbranch.Publication{})
 		return p.giveUp(ctx, id, reason)
 	}
 	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx); err != nil {
@@ -2626,6 +2637,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("commit %s: pr view: %w", id, err)
 	}
+	var published proofsbranch.Publication
 	if prURL == "" {
 		prBase := p.Base
 		if p.EpicID != "" {
@@ -2639,7 +2651,9 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		} else if err := p.assertPRBaseCurrent(ctx, p.Git, prBase, p.prBasePin(id)); err != nil {
 			return fmt.Errorf("commit %s: %w", id, err)
 		}
-		body := p.prBody(ctx, id, p.proofsSection(ctx, id, p.RepoRoot))
+		var section string
+		section, published = p.proofsSection(ctx, id, p.RepoRoot)
+		body := p.prBody(ctx, id, section)
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
@@ -2662,6 +2676,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInReview, "Attach this PR link to the issue: "+prURL+"."); err != nil {
 		p.logf("  status (In Review) error: %v", err)
 	}
+	p.postQANote(ctx, id, p.deliveryQANote(ctx, id, prURL), published)
 	return nil
 }
 
