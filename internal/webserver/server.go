@@ -412,6 +412,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/apply", s.handleGrillApply)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/abandon", s.handleGrillAbandon)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/stop", s.handleGrillStop)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}/title", s.handleGrillTitle)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/model", s.handleGrillModel)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/auto-accept", s.handleGrillAutoAccept)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/stream", s.handleGrillStream)

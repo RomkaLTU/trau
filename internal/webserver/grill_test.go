@@ -344,6 +344,139 @@ func TestGrillSessionNotFound(t *testing.T) {
 	}
 }
 
+func TestGrillReportRename(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrillWith(t, ts, repo, GrillCreateRequest{Mode: hubstore.GrillModeResearch})
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/title", GrillTitleRequest{Title: "  SDK retry behaviour  "})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("rename status = %d, want 200", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode rename: %v", err)
+	}
+	if v.ReportTitle != "SDK retry behaviour" {
+		t.Fatalf("renamed view title = %q, want the trimmed override", v.ReportTitle)
+	}
+
+	// An outcome landing afterwards proposes its own title and must not take the
+	// name back.
+	if _, _, err := stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleAgent,
+		Kind:    hubstore.GrillKindOutcome,
+		Payload: `{"disposition":"research","title":"How the SDK retries","findings":"# Report"}`,
+	}); err != nil {
+		t.Fatalf("seed outcome: %v", err)
+	}
+	_, body := get(t, ts, APIPrefix+"/grill/"+sess.ID)
+	var detail GrillDetailResponse
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail.Session.ReportTitle != "SDK retry behaviour" {
+		t.Fatalf("reloaded title = %q, want the override", detail.Session.ReportTitle)
+	}
+
+	res = postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/title", GrillTitleRequest{Title: "   "})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty title status = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestGrillReportRenameRejectsInterview(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/title", GrillTitleRequest{Title: "Renamed"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("interview rename status = %d, want 404", res.StatusCode)
+	}
+	if after, _, _ := stores.Grill().Session(sid); after.ReportTitle != "" {
+		t.Fatalf("interview rename persisted %q", after.ReportTitle)
+	}
+}
+
+func TestGrillReportDelete(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrillWith(t, ts, repo, GrillCreateRequest{Mode: hubstore.GrillModeResearch})
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	if _, _, err := stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleAgent,
+		Kind:    hubstore.GrillKindOutcome,
+		Payload: `{"disposition":"research","title":"How the SDK retries","findings":"# Report"}`,
+	}); err != nil {
+		t.Fatalf("seed outcome: %v", err)
+	}
+	for _, next := range []string{hubstore.GrillFinished, hubstore.GrillApplied} {
+		if _, err := stores.Grill().Transition(sid, next, ""); err != nil {
+			t.Fatalf("transition to %s: %v", next, err)
+		}
+	}
+
+	res := doReq(t, http.MethodDelete, ts.URL+APIPrefix+"/grill/"+sess.ID, nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", res.StatusCode)
+	}
+	if got, _ := get(t, ts, APIPrefix+"/grill/"+sess.ID); got.StatusCode != http.StatusNotFound {
+		t.Fatalf("reload status = %d, want 404", got.StatusCode)
+	}
+	if msgs, err := stores.Grill().Messages(sid, 0); err != nil || len(msgs) != 0 {
+		t.Fatalf("messages after delete = %d (err %v), want none", len(msgs), err)
+	}
+
+	res = doReq(t, http.MethodDelete, ts.URL+APIPrefix+"/grill/"+sess.ID, nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("repeat delete status = %d, want 404", res.StatusCode)
+	}
+}
+
+func TestGrillReportDeleteRefusesLiveAndInterview(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	cases := []struct {
+		name string
+		req  GrillCreateRequest
+		path []string
+		want int
+	}{
+		{"running research", GrillCreateRequest{Mode: hubstore.GrillModeResearch}, nil, http.StatusConflict},
+		{
+			"finished research",
+			GrillCreateRequest{Mode: hubstore.GrillModeResearch},
+			[]string{hubstore.GrillFinished},
+			http.StatusConflict,
+		},
+		{"applied interview", GrillCreateRequest{IssueID: "COD-1"}, []string{hubstore.GrillFinished, hubstore.GrillApplied}, http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := createGrillWith(t, ts, repo, tc.req)
+			sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+			for _, next := range tc.path {
+				if _, err := stores.Grill().Transition(sid, next, ""); err != nil {
+					t.Fatalf("transition to %s: %v", next, err)
+				}
+			}
+
+			res := doReq(t, http.MethodDelete, ts.URL+APIPrefix+"/grill/"+sess.ID, nil)
+			_ = res.Body.Close()
+			if res.StatusCode != tc.want {
+				t.Fatalf("delete status = %d, want %d", res.StatusCode, tc.want)
+			}
+			if _, found, _ := stores.Grill().Session(sid); !found {
+				t.Fatal("refused delete removed the session")
+			}
+		})
+	}
+}
+
 func TestGrillModelSwitch(t *testing.T) {
 	ts, stores, repo := grillServer(t)
 	sess := createGrill(t, ts, repo, "COD-1")

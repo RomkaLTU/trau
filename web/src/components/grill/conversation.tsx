@@ -245,9 +245,12 @@ export function GrillConversation({
       {reporting && proposal ? (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <ReportDocument
+            repo={repo}
             session={session}
             outcome={proposal}
             warnings={session.apply_warnings ?? []}
+            onSession={(next) => dispatch({ type: "state", session: next })}
+            onDeleted={onDiscarded}
           />
           <TranscriptDisclosure>{thread}</TranscriptDisclosure>
         </div>

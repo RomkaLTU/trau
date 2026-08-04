@@ -716,6 +716,27 @@ export async function abandonGrill(sid: string): Promise<GrillSession> {
   return res.json()
 }
 
+// renameGrillReport gives a research report the title the user chose. It outranks the
+// one the agent proposed for good, so a follow-up turn never takes the name back.
+export async function renameGrillReport(sid: string, title: string): Promise<GrillSession> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/title`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'rename report failed'))
+  return res.json()
+}
+
+// deleteGrillReport drops a settled research report and its transcript. Reports are
+// exempt from the hub's retention pruning, so this is the only way one goes away.
+export async function deleteGrillReport(sid: string): Promise<void> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'delete report failed'))
+}
+
 export function grillStreamURL(sid: string): string {
   return `/api/v1/grill/${encodeURIComponent(sid)}/stream`
 }

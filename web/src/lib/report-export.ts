@@ -4,14 +4,18 @@ import {
   type ReportSource,
 } from '@/lib/grill'
 
-// reportTitle is the title the agent gave the report; a session finished before
-// titles were required has none and is still named by its seed question.
+// reportTitle is the name the report is read under: the one the user renamed it to,
+// else the one the agent gave it. A session finished before titles were required has
+// neither and is still named by its seed question.
 export function reportTitle(
   session: GrillSession,
   outcome: OutcomePayload,
 ): string {
   return (
-    outcome.title?.trim() || session.issue_title?.trim() || 'Untitled research'
+    session.report_title?.trim() ||
+    outcome.title?.trim() ||
+    session.issue_title?.trim() ||
+    'Untitled research'
   )
 }
 

@@ -69,10 +69,11 @@ var grillTransitions = map[string]map[string]bool{
 // sessions that anchor to the repo alone. IssueTitle is read from the issue the
 // session grills — so a settled session still names its issue after apply drops the
 // triage labels the board queries key on — falling back to the authoring seed for an
-// issue-less session. ReportTitle is the title a research outcome gave its report,
-// empty for every other session and for research sessions finished before titles were
-// required. IssueDestination records where a create-apply filed the
-// anchored issue; empty for anchors that predate destination tracking.
+// issue-less session. ReportTitle is the report's title — the one a rename gave it,
+// else the one a research outcome proposed — empty for every other session and for
+// research sessions finished before titles were required. IssueDestination records
+// where a create-apply filed the anchored issue; empty for anchors that predate
+// destination tracking.
 // ApplyWarnings carries what the apply that settled the session could not do but
 // never gated on. AutoAccept answers a question carrying a recommended option with
 // that recommendation rather than asking the user.
@@ -189,14 +190,15 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 // falls back to its seed — the one-line idea stored as the opening info message —
 // so an issue-less session still names itself in the queue. A research outcome
 // names its own report, read off the latest one so a superseded proposal's title
-// never outlives it; sessions whose outcome carries none keep the fallback.
+// never outlives it; sessions whose outcome carries none keep the fallback. A rename
+// wins over both, so the name the user chose is not taken back by the next outcome.
 const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination,
 	        COALESCE(NULLIF(i.title, ''), (
 	            SELECT json_extract(m.payload, '$.text') FROM grill_messages m
 	            WHERE m.session_id = g.id AND m.role = 'user' AND m.kind = 'info'
 	            ORDER BY m.id LIMIT 1
 	        ), ''),
-	        COALESCE((
+	        COALESCE(NULLIF(g.title, ''), (
 	            SELECT json_extract(m.payload, '$.title') FROM grill_messages m
 	            WHERE m.session_id = g.id AND m.kind = 'outcome'
 	              AND json_extract(m.payload, '$.disposition') = 'research'
@@ -515,6 +517,41 @@ func (g *Grill) SetMode(id int64, mode string) (GrillSession, bool, error) {
 	sess.Mode = mode
 	sess.UpdatedAt = now
 	return sess, true, nil
+}
+
+// SetTitle overrides the title a session's report is read under and bumps its
+// updated_at. The override outranks the outcome's own title for good, so a later
+// outcome never takes the name back. It reports whether the session exists.
+func (g *Grill) SetTitle(id int64, title string) (GrillSession, bool, error) {
+	sess, found, err := g.Session(id)
+	if err != nil || !found {
+		return GrillSession{}, found, err
+	}
+	now := formatGrillTime(time.Now())
+	if _, err := g.db.Exec(
+		`UPDATE grill_sessions SET title = ?, updated_at = ? WHERE id = ?`,
+		title, now, id,
+	); err != nil {
+		return GrillSession{}, false, err
+	}
+	sess.ReportTitle = title
+	sess.UpdatedAt = now
+	return sess, true, nil
+}
+
+// Delete removes a session and, by cascade, its messages. Prune keeps applied
+// research sessions forever, so this is the only way a report leaves the store. It
+// reports whether the session existed.
+func (g *Grill) Delete(id int64) (bool, error) {
+	res, err := g.db.Exec(`DELETE FROM grill_sessions WHERE id = ?`, id)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
 }
 
 // SetIssue anchors a session to issueID, recording the destination it was filed
