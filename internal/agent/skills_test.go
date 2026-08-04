@@ -311,3 +311,69 @@ func TestOwningWorkspaceDir(t *testing.T) {
 		}
 	})
 }
+
+// TestWorkspaces: the enumeration behind the app URL workspace suggestions
+// reports the three forms WorkspaceAppURL routes by, from both manifest
+// flavours, and stays empty for a repo that declares no workspaces.
+func TestWorkspaces(t *testing.T) {
+	write := func(t *testing.T, root, rel, content string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("package.json workspaces", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"mono","private":true,"workspaces":["apps/*"]}`)
+		write(t, root, "apps/web/package.json", `{"name":"@acme/web"}`)
+		write(t, root, "apps/api/package.json", `{"private":true}`)
+
+		want := []Workspace{
+			{Path: "apps/api", DirName: "api"},
+			{Name: "@acme/web", Path: "apps/web", DirName: "web"},
+		}
+		if got := Workspaces(root); !reflect.DeepEqual(got, want) {
+			t.Errorf("Workspaces = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("pnpm workspace packages", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "pnpm-workspace.yaml", "packages:\n  - packages/*\n")
+		write(t, root, "packages/ui/package.json", `{"name":"@acme/ui"}`)
+
+		want := []Workspace{{Name: "@acme/ui", Path: "packages/ui", DirName: "ui"}}
+		if got := Workspaces(root); !reflect.DeepEqual(got, want) {
+			t.Errorf("Workspaces = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("single-app repo has none", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"solo"}`)
+		if got := Workspaces(root); len(got) != 0 {
+			t.Errorf("Workspaces = %+v, want empty", got)
+		}
+	})
+
+	t.Run("suggested names route", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"mono","private":true,"workspaces":["apps/*"]}`)
+		write(t, root, "apps/web/package.json", `{"name":"@acme/web"}`)
+
+		for _, ws := range Workspaces(root) {
+			for _, name := range []string{ws.Name, ws.Path, ws.DirName} {
+				urls := map[string]string{name: "http://localhost:3000"}
+				got := WorkspaceAppURL(root, urls, []string{"apps/web/src/page.tsx"})
+				if got != "http://localhost:3000" {
+					t.Errorf("WorkspaceAppURL keyed by %q = %q, want the workspace entry", name, got)
+				}
+			}
+		}
+	})
+}

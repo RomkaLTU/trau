@@ -5,9 +5,13 @@ import {
   configFallback,
   draftFor,
   draftIssue,
+  filterWorkspaces,
   parseAppURLsValue,
   workspaceLabel,
+  workspaceSuggestion,
+  workspaceUnrouted,
   type AppURL,
+  type Workspace,
 } from './app-urls'
 
 function entry(over: Partial<AppURL> = {}): AppURL {
@@ -85,6 +89,57 @@ describe('draftIssue', () => {
     const entries = [entry({ id: 1, workspace: 'web' })]
     const draft = { label: '', url: 'http://localhost:3001', workspace: ' web ' }
     expect(draftIssue(draft, entries, null)).not.toBeNull()
+  })
+})
+
+const detected: Workspace[] = [
+  { name: '@acme/web', path: 'apps/web', dir_name: 'web' },
+  { name: '', path: 'apps/api', dir_name: 'api' },
+]
+
+describe('workspaceSuggestion', () => {
+  it('inserts the manifest name when there is one', () => {
+    expect(workspaceSuggestion(detected[0])).toBe('@acme/web')
+  })
+
+  it('falls back to the relative path for a nameless manifest', () => {
+    expect(workspaceSuggestion(detected[1])).toBe('apps/api')
+  })
+})
+
+describe('filterWorkspaces', () => {
+  it('offers every workspace for an empty field', () => {
+    expect(filterWorkspaces(detected, '  ')).toEqual(detected)
+  })
+
+  it('matches any of the three forms, case-insensitively', () => {
+    expect(filterWorkspaces(detected, 'ACME')).toEqual([detected[0]])
+    expect(filterWorkspaces(detected, 'apps/api')).toEqual([detected[1]])
+    expect(filterWorkspaces(detected, 'web')).toEqual([detected[0]])
+  })
+
+  it('is empty when nothing matches', () => {
+    expect(filterWorkspaces(detected, 'mobile')).toEqual([])
+  })
+})
+
+describe('workspaceUnrouted', () => {
+  it('accepts every form the runtime matcher routes', () => {
+    for (const name of ['@acme/web', 'apps/web', 'web', 'apps/api', 'api']) {
+      expect(workspaceUnrouted(name, detected)).toBe(false)
+    }
+  })
+
+  it('flags a name matching no detected workspace', () => {
+    expect(workspaceUnrouted('mobile', detected)).toBe(true)
+  })
+
+  it('stays quiet for the repo default', () => {
+    expect(workspaceUnrouted('  ', detected)).toBe(false)
+  })
+
+  it('stays quiet when nothing was detected', () => {
+    expect(workspaceUnrouted('mobile', [])).toBe(false)
   })
 })
 

@@ -491,6 +491,36 @@ func pnpmWorkspacePackages(repoRoot string) []string {
 	return ws.Packages
 }
 
+// Workspace is one detected monorepo workspace, in the three forms
+// WorkspaceAppURL matches a configured app URL key against: the manifest package
+// name (empty when the manifest declares none), the workspace directory
+// relative to the repo root, and that directory's base name.
+type Workspace struct {
+	Name    string
+	Path    string
+	DirName string
+}
+
+// Workspaces enumerates the workspaces a repo root declares, in the order the
+// manifests list them. It reads the same dirs WorkspaceAppURL routes by, so a
+// name offered as a suggestion is always one the matcher can route.
+func Workspaces(repoRoot string) []Workspace {
+	dirs := workspaceDirs(repoRoot)
+	out := make([]Workspace, 0, len(dirs))
+	for _, dir := range dirs {
+		rel, err := filepath.Rel(repoRoot, dir)
+		if err != nil {
+			continue
+		}
+		out = append(out, Workspace{
+			Name:    manifestName(filepath.Join(dir, "package.json")),
+			Path:    filepath.ToSlash(rel),
+			DirName: filepath.Base(dir),
+		})
+	}
+	return out
+}
+
 // WorkspaceAppURL picks the configured app URL for the workspace holding the
 // most of the slice's changed files (repo-relative paths). A urls key names a
 // workspace by its manifest package name, its directory relative to repoRoot,

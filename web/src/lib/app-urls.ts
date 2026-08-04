@@ -21,6 +21,13 @@ export interface AppURLFallback {
   url: string
 }
 
+/** A workspace the repo declares, in the three forms a run routes an app URL by. */
+export interface Workspace {
+  name: string
+  path: string
+  dir_name: string
+}
+
 async function fetchAppURLs(repo: string): Promise<AppURL[]> {
   const res = await apiFetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/app-urls`,
@@ -29,6 +36,17 @@ async function fetchAppURLs(repo: string): Promise<AppURL[]> {
     throw new Error(`app urls request failed: ${res.status}`)
   }
   return res.json()
+}
+
+async function fetchWorkspaces(repo: string): Promise<Workspace[]> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/workspaces`,
+  )
+  if (!res.ok) {
+    throw new Error(`workspaces request failed: ${res.status}`)
+  }
+  const body = (await res.json()) as { workspaces?: Workspace[] }
+  return body.workspaces ?? []
 }
 
 async function send(url: string, init: RequestInit, action: string): Promise<Response> {
@@ -93,6 +111,40 @@ export function workspaceLabel(workspace: string): string {
   return workspace === '' ? 'default' : workspace
 }
 
+function workspaceForms(ws: Workspace): string[] {
+  return [ws.name, ws.path, ws.dir_name].filter((form) => form !== '')
+}
+
+/** The value a suggestion inserts — the manifest name, or the path without one. */
+export function workspaceSuggestion(ws: Workspace): string {
+  return ws.name === '' ? ws.path : ws.name
+}
+
+export function filterWorkspaces(
+  workspaces: readonly Workspace[],
+  query: string,
+): Workspace[] {
+  const trimmed = query.trim().toLowerCase()
+  if (trimmed === '') return [...workspaces]
+  return workspaces.filter((ws) =>
+    workspaceForms(ws).some((form) => form.toLowerCase().includes(trimmed)),
+  )
+}
+
+/**
+ * Whether a typed workspace routes nowhere: detection found workspaces and the
+ * name is none of their forms. A blank name is the repo default, and a repo
+ * with nothing detected says nothing about the name.
+ */
+export function workspaceUnrouted(
+  value: string,
+  workspaces: readonly Workspace[],
+): boolean {
+  const name = value.trim()
+  if (name === '' || workspaces.length === 0) return false
+  return !workspaces.some((ws) => workspaceForms(ws).includes(name))
+}
+
 /** `editing` is the id being replaced, or null for a new entry. */
 export function draftIssue(
   draft: AppURLDraft,
@@ -140,6 +192,14 @@ export const appURLsQueryOptions = (repo: string) =>
     queryKey: ['app-urls', repo],
     queryFn: () => fetchAppURLs(repo),
     enabled: repo !== '',
+  })
+
+export const workspacesQueryOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ['workspaces', repo],
+    queryFn: () => fetchWorkspaces(repo),
+    enabled: repo !== '',
+    staleTime: 5 * 60_000,
   })
 
 export interface AppURLTargets {
