@@ -821,6 +821,60 @@ func seedAppURL(t *testing.T, repoRoot, url string) {
 	}
 }
 
+func TestCheckBrowserHarness(t *testing.T) {
+	cases := []struct {
+		name    string
+		mode    string
+		present bool
+		status  string
+		errs    int
+		warns   int
+		wantMsg string
+	}{
+		{"always without harness fails", "always", false, fail, 1, 0, "BROWSER_VERIFY=always"},
+		{"always with harness passes", "always", true, pass, 0, 0, "browser-harness found at"},
+		{"auto without harness warns", "auto", false, warn, 0, 1, "will not auto-merge"},
+		{"auto with harness passes", "auto", true, pass, 0, 0, "browser-harness found at"},
+		{"never stays silent", "never", false, "", 0, 0, ""},
+		{"empty mode stays silent", "", false, "", 0, 0, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			restore := browserHarnessProbe
+			t.Cleanup(func() { browserHarnessProbe = restore })
+			browserHarnessProbe = func() (string, bool) {
+				if !tc.present {
+					return "", false
+				}
+				return "/opt/bin/browser-harness", true
+			}
+
+			rr := newTestRunner()
+			checkBrowserHarness(config.Config{BrowserVerify: tc.mode}, rr)
+
+			if tc.status == "" {
+				if len(rr.r.Checks) != 0 {
+					t.Fatalf("expected no check, got %+v", rr.r.Checks)
+				}
+				return
+			}
+			c := lastCheck(t, rr)
+			if c.Status != tc.status {
+				t.Errorf("status = %q, want %q (%s)", c.Status, tc.status, c.Message)
+			}
+			if rr.r.Errors != tc.errs || rr.r.Warnings != tc.warns {
+				t.Errorf("errors/warnings = %d/%d, want %d/%d", rr.r.Errors, rr.r.Warnings, tc.errs, tc.warns)
+			}
+			if !strings.Contains(c.Message, tc.wantMsg) {
+				t.Errorf("message %q should contain %q", c.Message, tc.wantMsg)
+			}
+			if tc.status != pass && !strings.Contains(c.Message, "github.com/browser-use/browser-harness") {
+				t.Errorf("message %q should name where to install browser-harness", c.Message)
+			}
+		})
+	}
+}
+
 func TestCheckRemote(t *testing.T) {
 	cases := []struct {
 		name    string

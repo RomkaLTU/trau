@@ -73,6 +73,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkConfigLayers(paths, rr)
 	checkConfigShadowing(paths, rr)
 	checkBrowserVerify(cfg, repoRoot, rr)
+	checkBrowserHarness(cfg, rr)
 	checkTeamSync(ctx, cfg, repoRoot, rr)
 	checkSkills(cfg, repoRoot, rr)
 	checkSkillsDrift(repoRoot, rr)
@@ -459,6 +460,50 @@ func checkBrowserVerify(cfg config.Config, repoRoot string, rr *runner) {
 	rr.add("browser verify", warn,
 		fmt.Sprintf("BROWSER_VERIFY=%s but the hub stores no app URL for this repo and APP_URL is empty — UI slices have no browser target, so the gate stays advisory", mode),
 		"add an app URL for the repo on the hub, or set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
+}
+
+const (
+	browserHarnessBin    = "browser-harness"
+	browserHarnessAbsent = "browser-harness — the out-of-repo CLI verify drives a real browser with — is not installed on this machine"
+	browserHarnessRemedy = "install browser-harness from https://github.com/browser-use/browser-harness and put it on your PATH, or set BROWSER_VERIFY=never"
+)
+
+// browserHarnessProbe is a test seam: it resolves the harness the way the
+// runtime does — the CLI on PATH, else the home the recorder writes traces
+// under — and reports where it landed.
+var browserHarnessProbe = func() (string, bool) {
+	if bin, err := exec.LookPath(browserHarnessBin); err == nil {
+		return bin, true
+	}
+	home := webserver.BrowserHarnessHome()
+	if fi, err := os.Stat(home); err == nil && fi.IsDir() {
+		return home, true
+	}
+	return "", false
+}
+
+// checkBrowserHarness surfaces an absent harness once, here, rather than once
+// per silently skipped browser QA. Severity follows the promise the mode makes:
+// always guarantees every UI slice gets browser QA, so a machine that cannot
+// deliver it is broken; auto only degrades, so it warns.
+func checkBrowserHarness(cfg config.Config, rr *runner) {
+	mode := strings.TrimSpace(cfg.BrowserVerify)
+	if mode == "" || mode == "never" {
+		return
+	}
+	if where, ok := browserHarnessProbe(); ok {
+		rr.add("browser harness", pass, fmt.Sprintf("browser-harness found at %s", where), "")
+		return
+	}
+	if mode == "always" {
+		rr.add("browser harness", fail,
+			fmt.Sprintf("%s, but BROWSER_VERIFY=always promises browser QA runs on every UI slice", browserHarnessAbsent),
+			browserHarnessRemedy)
+		return
+	}
+	rr.add("browser harness", warn,
+		fmt.Sprintf("%s, so UI slices will produce unverified browser criteria and their PRs will not auto-merge", browserHarnessAbsent),
+		browserHarnessRemedy)
 }
 
 // storedAppURLs counts the repo's hub-managed app URL entries, read from the hub

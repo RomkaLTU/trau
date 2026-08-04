@@ -206,13 +206,13 @@ func browserRecordingsRoot() string {
 	if ws := os.Getenv("BH_AGENT_WORKSPACE"); ws != "" {
 		return filepath.Join(expandHome(ws), "recordings")
 	}
-	return filepath.Join(browserHarnessHome(), "agent-workspace", "recordings")
+	return filepath.Join(BrowserHarnessHome(), "agent-workspace", "recordings")
 }
 
-// browserHarnessHome resolves the browser-harness home the same way the harness
+// BrowserHarnessHome resolves the browser-harness home the same way the harness
 // does: $BH_HOME, then $BROWSER_HARNESS_HOME, then $XDG_CONFIG_HOME/browser-harness,
 // then ~/.config/browser-harness.
-func browserHarnessHome() string {
+func BrowserHarnessHome() string {
 	if h := os.Getenv("BH_HOME"); h != "" {
 		return expandHome(h)
 	}
