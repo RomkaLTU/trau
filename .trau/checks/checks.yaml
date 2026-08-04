@@ -1,0 +1,22 @@
+# A non-empty .trau/checks replaces the built-in defaults entirely, so the five
+# defaults from internal/checks/checks.go are reproduced here verbatim alongside
+# this repo's own gate. Keep them in sync when the defaults move.
+checks:
+  - name: tests
+    severity: error
+    prompt: "Run the project's own test runner on the tests relevant to this slice (the new or changed test files for this ticket) — discover the runner from the repo and run only those tests, not the whole suite. Pass only if every relevant test passes."
+  - name: typecheck
+    severity: error
+    prompt: "If the project has a type checker or static analyzer (e.g. tsc, mypy, phpstan, go vet), run it over the changed code. Pass if it reports no new errors in this slice; pass without running if the project has none."
+  - name: lint
+    severity: warn
+    prompt: "If the project has a linter or formatter (e.g. eslint, golangci-lint, ruff, pint), run it over the changed files. Pass if clean; pass without running if none is configured."
+  - name: anti-placeholder
+    severity: error
+    prompt: "Inspect this slice's diff for placeholder or stubbed code shipped as if finished: TODO/FIXME left where behavior was required, functions returning hard-coded or fake values, empty handlers, or commented-out stubs. Fail if the slice ships a placeholder in place of the real behavior the ticket asked for."
+  - name: anti-duplication
+    severity: warn
+    prompt: "Inspect this slice's diff for copy-paste duplication that should have been factored out — repeated blocks of this slice's own logic a small helper would remove. Fail on egregious duplication introduced by this slice; ignore pre-existing duplication."
+  - name: no-low-value-comments
+    severity: error
+    prompt: "Inspect only the comments this slice's diff ADDS or MODIFIES — ignore all pre-existing comments. Fail if the slice adds low-value comments: narration that restates what the adjacent code does, section-banner comments, change-log narration (what the code previously did, now does, or which ticket changed it), commented-out code left as a comment, or a doc comment on a trivial unexported one-line declaration that only restates its name. Do NOT flag: doc comments on exported identifiers (godoc convention, even when terse), comments explaining why rather than what (invariants, concurrency notes, design rationale, decision tables), or ADR/ticket-ID design cross-references — this repo sanctions those. When genuinely in doubt about a comment's value, pass."
