@@ -16,10 +16,10 @@ afterEach(() => {
 })
 
 describe('activity preference', () => {
-  it('is off until someone asks for it', () => {
+  it('is on until someone switches it off', () => {
     stubStorage()
 
-    expect(loadActivityShown()).toBe(false)
+    expect(loadActivityShown()).toBe(true)
   })
 
   it('survives the reload that reads it back', () => {
@@ -31,9 +31,10 @@ describe('activity preference', () => {
   })
 
   it('turning it off is remembered as such, not as never asked', () => {
-    stubStorage({ 'trau.grill.activity': '1' })
+    const store = stubStorage({ 'trau.grill.activity': '1' })
     storeActivityShown(false)
 
     expect(loadActivityShown()).toBe(false)
+    expect(store.get('trau.grill.activity')).toBe('0')
   })
 })

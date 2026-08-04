@@ -3,8 +3,9 @@ import { useSyncExternalStore } from 'react'
 type Store = Pick<Storage, 'getItem' | 'setItem'>
 
 // Whether a thread shows what the agent is doing mid-turn is view state belonging to
-// the reader rather than to any one session, so it lives in localStorage and is off
-// until someone asks for it.
+// the reader rather than to any one session, so it lives in localStorage. It is on
+// until someone switches it off: a turn that works before it answers reads as stalled
+// without it.
 const ACTIVITY_KEY = 'trau.grill.activity'
 
 function browserStore(): Store | null {
@@ -16,7 +17,7 @@ function browserStore(): Store | null {
 }
 
 export function loadActivityShown(): boolean {
-  return browserStore()?.getItem(ACTIVITY_KEY) === '1'
+  return browserStore()?.getItem(ACTIVITY_KEY) !== '0'
 }
 
 const listeners = new Set<() => void>()
