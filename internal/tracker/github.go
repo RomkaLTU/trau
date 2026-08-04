@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -174,6 +175,33 @@ func (g *GitHub) Quarantine(ctx context.Context, id, reason string) error {
 func (g *GitHub) quarantinePrompt(id, reason string) string {
 	return fmt.Sprintf("Use the GitHub MCP on issue %s in repository %q: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see this ticket's run in the trau web UI).\" Reply DONE.",
 		id, g.Repo, g.ReadyLabel, g.QuarantineLabel, reason)
+}
+
+// PostQANote leaves the run's QA report as a comment on the issue. The body is
+// multi-line Markdown, so it reaches the agent's gh command as a file rather than
+// as prompt text the shell would have to quote. note.Images is ignored.
+func (g *GitHub) PostQANote(ctx context.Context, id string, note QANote) error {
+	f, err := os.CreateTemp("", "trau-qa-note-*.md")
+	if err != nil {
+		return fmt.Errorf("qa note for %s: %w", id, err)
+	}
+	path := f.Name()
+	defer func() { _ = os.Remove(path) }()
+	_, err = f.WriteString(note.Body)
+	_ = f.Close()
+	if err != nil {
+		return fmt.Errorf("qa note for %s: %w", id, err)
+	}
+
+	_, err = g.Runner.Run(ctx, g.qaNotePrompt(id, path), "qa_note")
+	return err
+}
+
+func (g *GitHub) qaNotePrompt(id, bodyPath string) string {
+	return fmt.Sprintf("Post the Trau QA report as a comment on issue %s in repository %q: run "+
+		"`gh issue comment <N> --repo %s --body-file %s`, where <N> is that issue's GitHub number. "+
+		"The file holds the comment body — post it verbatim, neither edited nor shortened. Reply DONE.",
+		id, g.Repo, g.Repo, bodyPath)
 }
 
 // FileBug files a NEW GitHub issue as a last-resort HITL blocker for a QA failure

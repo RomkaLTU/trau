@@ -540,6 +540,17 @@ func (a *AzureDevOps) Quarantine(ctx context.Context, id, reason string) error {
 		fmt.Sprintf("Trau loop stopped: %s (see this ticket's run in the trau web UI).", reason))
 }
 
+// PostQANote leaves the run's QA report on the work item's discussion. Discussion
+// bodies are HTML, so AddComment renders the Markdown on the way in.
+// note.Images is ignored.
+func (a *AzureDevOps) PostQANote(ctx context.Context, id string, note QANote) error {
+	n, err := workItemID(id)
+	if err != nil {
+		return err
+	}
+	return a.api().AddComment(ctx, a.Project, n, note.Body)
+}
+
 // FileBug files a NEW Bug work item as a last-resort HITL blocker for a QA
 // failure the slice could not self-heal, even after comprehensive bugfix passes.
 func (a *AzureDevOps) FileBug(ctx context.Context, id, verdictPath string) (string, error) {

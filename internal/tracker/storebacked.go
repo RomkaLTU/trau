@@ -370,7 +370,7 @@ func (in *StoreBacked) RemoveLabel(ctx context.Context, id, label string) error 
 
 // PostQANote leaves the run's QA report on the ticket: an internal issue takes the
 // comment through the store, a synced one through the external tracker that owns
-// it. A tracker that cannot comment makes the note a no-op.
+// it. An external tracker that cannot comment makes the note a no-op.
 func (in *StoreBacked) PostQANote(ctx context.Context, id string, note QANote) error {
 	if in.isInternal(id) {
 		return in.internal().PostQANote(ctx, id, note)

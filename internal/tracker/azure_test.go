@@ -539,6 +539,32 @@ func TestAzureAddAndRemoveLabelIgnoreBlanks(t *testing.T) {
 	}
 }
 
+// An Azure-tracked run's QA report lands on the work item's own discussion, with
+// the Markdown rendered into the HTML the field stores and its images dropped.
+func TestAzurePostQANoteWritesTheDiscussionAsHTML(t *testing.T) {
+	az, patches := azureServer(t, map[string]string{"patch": `{"id":7}`})
+
+	err := az.PostQANote(context.Background(), "CON-7", QANote{
+		Body:   "## Trau QA report\n\nVerify passed: all green\n\nPR: https://github.test/pr/7\n",
+		Images: []QAImage{{Name: "proof-1.png", Mime: "image/png"}},
+	})
+	if err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if len(*patches) != 1 {
+		t.Fatalf("got %d patches, want 1 discussion write: %+v", len(*patches), *patches)
+	}
+	if got := (*patches)[0].path; !strings.HasSuffix(got, "/workitems/7") {
+		t.Errorf("patched %q, want the work item behind CON-7", got)
+	}
+	const want = "<div>## Trau QA report</div><div>Verify passed: all green</div>" +
+		"<div>PR: https://github.test/pr/7</div>"
+	body, _ := (*patches)[0].value("System.History").(string)
+	if body != want {
+		t.Errorf("discussion body = %q, want %q", body, want)
+	}
+}
+
 func TestAzureFileBugCreatesTaggedWorkItem(t *testing.T) {
 	dir := t.TempDir()
 	verdict := filepath.Join(dir, "verdict.json")
@@ -646,5 +672,8 @@ func TestAzureSatisfiesOptionalCapabilities(t *testing.T) {
 	}
 	if _, ok := pm.(TeamLister); !ok {
 		t.Error("AzureDevOps does not implement TeamLister")
+	}
+	if _, ok := pm.(QANotePoster); !ok {
+		t.Error("AzureDevOps does not implement QANotePoster")
 	}
 }

@@ -732,6 +732,24 @@ func (j *Jira) quarantinePrompt(id, reason string) string {
 		id, j.ReadyLabel, j.QuarantineLabel, reason)
 }
 
+// PostQANote leaves the run's QA report as a comment on the issue. It uses the
+// REST API when a token is configured, falling back to the Rovo MCP on an
+// auth/not-enabled error. note.Images is ignored.
+func (j *Jira) PostQANote(ctx context.Context, id string, note QANote) error {
+	if err := j.api().AddComment(ctx, id, note.Body); err == nil {
+		return nil
+	} else if !j.canFallback(err) {
+		return err
+	}
+
+	_, err := j.Runner.Run(ctx, j.qaNotePrompt(id, note.Body), "qa_note")
+	return err
+}
+
+func (j *Jira) qaNotePrompt(id, body string) string {
+	return fmt.Sprintf("Use the Jira (Rovo) MCP on issue %s: add this Markdown comment verbatim.\n\n%s\n\nReply DONE.", id, body)
+}
+
 // FileBug files a NEW Jira issue as a last-resort HITL blocker for a QA failure
 // the slice could not self-heal, even after comprehensive bugfix passes. It uses
 // POST /issue when a token is configured — reading the verdict file to build an
