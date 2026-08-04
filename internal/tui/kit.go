@@ -107,7 +107,6 @@ func overlayRepoTag(s Styles, base string, w, h int) string {
 	return lipgloss.NewCompositor(baseLayer, overlay).Render()
 }
 
-// titledCardView is cardView with a SummaryTitle heading prepended to body.
 func titledCardView(s Styles, w, h int, title, body, hint string) string {
 	return cardView(s, w, h, s.SummaryTitle.Render(title)+"\n\n"+body, hint)
 }

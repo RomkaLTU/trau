@@ -299,7 +299,6 @@ func (m logsModel) runListBody(w, h int) string {
 		return m.styles.Subtle.Render("no saved runs")
 	}
 
-	// Scroll the list so the cursor stays visible.
 	start := 0
 	if m.cursor >= innerH {
 		start = m.cursor - innerH + 1

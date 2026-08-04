@@ -357,8 +357,6 @@ func ladderMinutes(files, lines int) int {
 	}
 }
 
-// --- internals -------------------------------------------------------------
-
 func read(path string) (Log, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {

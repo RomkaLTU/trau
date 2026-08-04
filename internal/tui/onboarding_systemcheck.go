@@ -15,8 +15,8 @@ import (
 )
 
 // This file is the animated system-readiness check — a bespoke, non-huh step
-// kept as-is per COD-670: grouped probes with per-line status and actionable
-// failure hints. It runs before the huh form and gates entry to it.
+// with grouped probes, per-line status, and actionable failure hints. It runs
+// before the huh form and gates entry to it.
 
 type checkStatus int
 
