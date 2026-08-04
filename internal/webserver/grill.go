@@ -80,13 +80,16 @@ type GrillDeltaView struct {
 // delta the frame is never stored. ID ties a tool frame to the result frame that
 // closes it, so a client can resolve the row it already drew instead of listing a
 // second one. Detail only ever summarizes a call (a path, a query): whole tool
-// inputs and their results stay in the child.
+// inputs and their results stay in the child. Text carries the agent's thinking as
+// it is written, on the same ephemeral terms as a reply delta — a thinking frame
+// without it opens a stretch, one with it grows the stretch already open.
 type GrillActivityView struct {
 	Seq    int    `json:"seq"`
 	Kind   string `json:"kind"`
 	ID     string `json:"id,omitempty"`
 	Name   string `json:"name,omitempty"`
 	Detail string `json:"detail,omitempty"`
+	Text   string `json:"text,omitempty"`
 	OK     *bool  `json:"ok,omitempty"`
 }
 

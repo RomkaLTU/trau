@@ -35,6 +35,11 @@ const (
 // stream is readable by any hub-token holder, so even that one field is cut short.
 const grillActivityDetailMax = 80
 
+// grillActivityThinkingMax bounds a thinking summary that arrives whole rather than as
+// deltas. A summary is already a sentence rather than a field, so it gets more room
+// than a call's detail before it reads as clipped.
+const grillActivityThinkingMax = 200
+
 // grillToolInputField names the input field a tool's summary reads: the one argument
 // that says what the call is about.
 var grillToolInputField = map[string]string{
@@ -57,9 +62,13 @@ func grillToolResult(id string, ok bool) GrillActivityView {
 }
 
 func grillActivityDetail(s string) string {
+	return grillActivityLine(s, grillActivityDetailMax)
+}
+
+func grillActivityLine(s string, max int) string {
 	out := strings.Join(strings.Fields(s), " ")
-	if r := []rune(out); len(r) > grillActivityDetailMax {
-		return string(r[:grillActivityDetailMax]) + "…"
+	if r := []rune(out); len(r) > max {
+		return string(r[:max]) + "…"
 	}
 	return out
 }
@@ -289,8 +298,9 @@ func codexGrillDeltaText(line []byte) string {
 
 // codexGrillActivity maps codex's item lifecycle onto activity: a started item is a
 // tool the agent reached for, and the matching completed item is that tool coming
-// back. Codex reports reasoning and the reply itself as items too; those are not
-// tool traffic and the reply already streams as deltas.
+// back. Codex reports the reply as an item too; that already streams as deltas. Its
+// reasoning arrives as whole summaries rather than a stretch written out live, so a
+// completed one is capped like a call's detail before it rides the stream.
 func codexGrillActivity(line []byte) []GrillActivityView {
 	var ev struct {
 		Type string `json:"type"`
@@ -299,11 +309,19 @@ func codexGrillActivity(line []byte) []GrillActivityView {
 			Type     string `json:"type"`
 			Command  string `json:"command"`
 			Query    string `json:"query"`
+			Text     string `json:"text"`
 			ExitCode int    `json:"exit_code"`
 		} `json:"item"`
 	}
 	if json.Unmarshal(line, &ev) != nil {
 		return nil
+	}
+	if ev.Item.Type == "reasoning" {
+		if ev.Type != "item.completed" || ev.Item.Text == "" {
+			return nil
+		}
+		text := grillActivityLine(ev.Item.Text, grillActivityThinkingMax)
+		return []GrillActivityView{{Kind: grillActivityThinking, Text: text}}
 	}
 	name, detail := "", ""
 	switch ev.Item.Type {

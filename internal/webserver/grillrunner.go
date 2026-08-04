@@ -512,15 +512,16 @@ type grillStreamEvent struct {
 }
 
 // grillPartialEvent is the slice of an --include-partial-messages stream_event the
-// runner reads: the assistant's reply as it is written, one text delta at a time,
-// and each block as it opens, which is where a tool call names itself.
+// runner reads: the assistant's reply and its thinking as they are written, one delta
+// at a time, and each block as it opens, which is where a tool call names itself.
 type grillPartialEvent struct {
 	Type  string `json:"type"`
 	Event struct {
 		Type  string `json:"type"`
 		Delta struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type     string `json:"type"`
+			Text     string `json:"text"`
+			Thinking string `json:"thinking"`
 		} `json:"delta"`
 		ContentBlock struct {
 			Type string `json:"type"`
@@ -573,9 +574,11 @@ func grillDeltaText(line []byte) string {
 
 // grillActivityEvent returns the work one stream-json line reports the agent doing:
 // a block start naming the tool it reached for or opening a stretch of thinking, the
-// assistant event that fills in what the call was about, and the user event that
-// closes it out. Only a capped summary of one input field rides along — the rest of
-// the input, and everything the tool returned, stays in the child.
+// thinking deltas that fill that stretch in, the assistant event that fills in what
+// the call was about, and the user event that closes it out. A tool call only ever
+// rides along as a capped summary of one input field — the rest of the input, and
+// everything the tool returned, stays in the child. Thinking deltas are passed whole:
+// they accumulate client-side, on the same never-stored terms as the reply's own.
 func grillActivityEvent(line []byte) []GrillActivityView {
 	var ev grillPartialEvent
 	if json.Unmarshal(line, &ev) != nil {
@@ -587,15 +590,26 @@ func grillActivityEvent(line []byte) []GrillActivityView {
 	case "assistant":
 		return grillToolCallActivity(line)
 	}
-	if ev.Type != "stream_event" || ev.Event.Type != "content_block_start" {
+	if ev.Type != "stream_event" {
 		return nil
 	}
-	block := ev.Event.ContentBlock
-	switch block.Type {
-	case "tool_use":
-		return []GrillActivityView{{Kind: grillActivityTool, ID: block.ID, Name: block.Name}}
-	case "thinking":
-		return []GrillActivityView{{Kind: grillActivityThinking}}
+	switch ev.Event.Type {
+	case "content_block_delta":
+		// A model whose thinking comes back encrypted still streams the stretch, one
+		// empty delta per token estimate. A textless frame opens a stretch, so passing
+		// those on would list a bare row per delta.
+		if ev.Event.Delta.Type != "thinking_delta" || ev.Event.Delta.Thinking == "" {
+			return nil
+		}
+		return []GrillActivityView{{Kind: grillActivityThinking, Text: ev.Event.Delta.Thinking}}
+	case "content_block_start":
+		block := ev.Event.ContentBlock
+		switch block.Type {
+		case "tool_use":
+			return []GrillActivityView{{Kind: grillActivityTool, ID: block.ID, Name: block.Name}}
+		case "thinking":
+			return []GrillActivityView{{Kind: grillActivityThinking}}
+		}
 	}
 	return nil
 }
