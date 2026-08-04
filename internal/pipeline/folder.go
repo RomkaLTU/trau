@@ -455,7 +455,8 @@ func (p *Pipeline) folderShip(ctx context.Context, id string) error {
 
 	p.setActivity(id, activity.PR, "")
 	title := p.slicePRTitle(ctx, id, p.Base, branch)
-	body := p.prBody(ctx, id, p.proofsSection(ctx, id, shipped[0].Path))
+	section, _ := p.proofsSection(ctx, id, shipped[0].Path)
+	body := p.prBody(ctx, id, section)
 	for i, t := range shipped {
 		if t.PRURL != "" {
 			continue

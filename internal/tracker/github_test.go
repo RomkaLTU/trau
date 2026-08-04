@@ -75,6 +75,47 @@ func TestGitHubPostQANoteSurfacesTheRunError(t *testing.T) {
 	}
 }
 
+// A GitHub QA comment references the run's trau-proofs screenshots exactly as the
+// PR body does — inline on a public repo, clickable links on a private one — and
+// says nothing about an image the run never published.
+func TestGitHubPostQANoteEmbedsPublishedProofs(t *testing.T) {
+	const (
+		rawURL  = "https://raw.githubusercontent.com/acme/tools/trau-proofs/GH-7/proof-1.png"
+		blobURL = "https://github.com/acme/tools/blob/trau-proofs/GH-7/proof-1.png"
+	)
+	cases := []struct {
+		name  string
+		image QAImage
+		want  string
+	}{
+		{"public repo embeds inline", QAImage{Name: "proof-1.png", Caption: "home", RawURL: rawURL}, "\n![home](" + rawURL + ")\n"},
+		{"private repo links through", QAImage{Name: "proof-1.png", Caption: "home", BlobURL: blobURL}, "\n[home](" + blobURL + ")\n"},
+		{"unpublished proof is skipped", QAImage{Name: "proof-1.png", Caption: "home", Bytes: []byte("png-1")}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			note := QANote{Body: "## Trau QA report\n\nVerify passed\n", Images: []QAImage{tc.image}}
+			var posted string
+			runner := runnerFunc(func(_ context.Context, p, _ string) (agent.Result, error) {
+				body, err := os.ReadFile(bodyFileArg(p))
+				if err != nil {
+					t.Errorf("reading the prompt's --body-file: %v", err)
+				}
+				posted = string(body)
+				return agent.Result{}, nil
+			})
+			g := &GitHub{Runner: runner, Repo: "acme/tools"}
+
+			if err := g.PostQANote(context.Background(), "GH-7", note); err != nil {
+				t.Fatalf("PostQANote error: %v", err)
+			}
+			if want := note.Body + tc.want; posted != want {
+				t.Errorf("comment = %q, want %q", posted, want)
+			}
+		})
+	}
+}
+
 // bodyFileArg recovers the path the prompt's gh command reads the comment from.
 func bodyFileArg(prompt string) string {
 	_, rest, ok := strings.Cut(prompt, "--body-file ")

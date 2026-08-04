@@ -395,6 +395,25 @@ mutation CommentCreate($issueId: String!, $body: String!) {
 }
 `
 
+	// fileUploadMutation asks Linear for a pre-signed URL to PUT a file to, plus
+	// the asset URL that file is then embedded by and the headers the PUT must
+	// carry.
+	fileUploadMutation = `
+mutation FileUpload($size: Int!, $contentType: String!, $filename: String!) {
+  fileUpload(size: $size, contentType: $contentType, filename: $filename) {
+    success
+    uploadFile {
+      uploadUrl
+      assetUrl
+      headers {
+        key
+        value
+      }
+    }
+  }
+}
+`
+
 	// issueLabelCreateMutation creates a label inside a team.
 	issueLabelCreateMutation = `
 mutation IssueLabelCreate($name: String!, $teamId: String!) {

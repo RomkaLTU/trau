@@ -266,7 +266,7 @@ func TestProofsSectionAbsentWithoutProofs(t *testing.T) {
 	id := "COD-91148"
 
 	nilPub := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
-	if got := nilPub.proofsSection(context.Background(), id, nilPub.RepoRoot); got != "" {
+	if got, _ := nilPub.proofsSection(context.Background(), id, nilPub.RepoRoot); got != "" {
 		t.Errorf("no publisher must yield no section, got %q", got)
 	}
 
@@ -274,7 +274,7 @@ func TestProofsSectionAbsentWithoutProofs(t *testing.T) {
 	empty.PublishProofs = func(context.Context, string, string) (proofsbranch.Publication, error) {
 		return proofsbranch.Publication{}, nil
 	}
-	if got := empty.proofsSection(context.Background(), id, empty.RepoRoot); got != "" {
+	if got, _ := empty.proofsSection(context.Background(), id, empty.RepoRoot); got != "" {
 		t.Errorf("empty publication must yield no section, got %q", got)
 	}
 }
@@ -289,7 +289,7 @@ func TestProofsSectionPublishFailureIsNonFatal(t *testing.T) {
 		return proofsbranch.Publication{}, errors.New("push rejected")
 	}
 
-	if got := p.proofsSection(context.Background(), "COD-91148", p.RepoRoot); got != "" {
+	if got, _ := p.proofsSection(context.Background(), "COD-91148", p.RepoRoot); got != "" {
 		t.Errorf("publish failure must yield no section, got %q", got)
 	}
 	evs := kindEvents(t, &buf, event.KindProofsPublishFailed)
@@ -317,7 +317,7 @@ func TestProofsSectionCarriesVerdictOutcome(t *testing.T) {
 		}, nil
 	}
 
-	section := p.proofsSection(context.Background(), id, p.RepoRoot)
+	section, _ := p.proofsSection(context.Background(), id, p.RepoRoot)
 	if !strings.Contains(section, "Browser QA: driven against http://app.test") {
 		t.Errorf("section must carry the driven outcome:\n%s", section)
 	}
