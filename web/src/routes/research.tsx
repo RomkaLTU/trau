@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
@@ -24,6 +24,7 @@ import {
   useActiveRepo,
 } from "@/components/trau";
 import {
+  isAwaitingAnswer,
   researchGrillSessionsQueryOptions,
   startGrillSession,
   startModelOptions,
@@ -32,22 +33,27 @@ import {
   type GrillSession,
 } from "@/lib/grill";
 import { inboxPill, type InboxPillTone } from "@/lib/inbox";
+import { repoScopeSwitch } from "@/lib/notification-center";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
 import { useProjectRepo } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
 interface ResearchSearch {
   session?: string;
+  repo?: string;
 }
 
 export const Route = createFileRoute("/research")({
   component: ResearchPage,
-  // session selects a report to read (or new to open the composer), read at runtime
-  // through nuqs so a link can point straight at one.
+  // session selects a report to read (or new to open the composer) and repo names the
+  // project it belongs to — both read at runtime through nuqs so the dock and a pushed
+  // notification can point straight at a waiting session.
   validateSearch: (search: Record<string, unknown>): ResearchSearch => {
     const out: ResearchSearch = {};
     if (typeof search.session === "string" && search.session !== "")
       out.session = search.session;
+    if (typeof search.repo === "string" && search.repo !== "")
+      out.repo = search.repo;
     return out;
   },
 });
@@ -96,10 +102,21 @@ function researchDate(iso: string): string {
 
 function ResearchPage() {
   usePageTitle(standardTitle("Research"));
-  const { repo: activeRepo, repos } = useActiveRepo();
+  const { repo: activeRepo, repos, setRepo } = useActiveRepo();
   const repo = useProjectRepo(activeRepo ?? "", repos);
   const queryClient = useQueryClient();
   const list = useQuery(researchGrillSessionsQueryOptions(repo));
+
+  // A link into a waiting session carries the project it belongs to, because the page
+  // is built from the active scope and not from the link. The scope adopts it once the
+  // repo list is in, then the param is dropped so the switcher stays in charge.
+  const [linkedRepo, setLinkedRepo] = useQueryState("repo", parseAsString);
+  useEffect(() => {
+    if (!linkedRepo || repos.length === 0) return;
+    const adopt = repoScopeSwitch(linkedRepo, activeRepo, repos);
+    if (adopt) setRepo(adopt);
+    void setLinkedRepo(null);
+  }, [linkedRepo, activeRepo, repos, setRepo, setLinkedRepo]);
 
   // An abandoned session was ended with nothing to show, so it leaves the page
   // entirely; everything else — still running, waiting on an answer, or applied —
@@ -283,6 +300,7 @@ function SessionColumn({
           repo={repo}
           initial={session}
           report
+          autoFocus={isAwaitingAnswer(session.state)}
           onStatus={onStatus}
           onApplied={onApplied}
           onDiscarded={onDiscarded}

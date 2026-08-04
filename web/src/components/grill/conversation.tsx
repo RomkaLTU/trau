@@ -62,6 +62,7 @@ export function GrillConversation({
   outcome = "review",
   activity = true,
   report = false,
+  autoFocus = false,
   onStatus,
   onApplied,
   onDiscarded,
@@ -77,6 +78,9 @@ export function GrillConversation({
   // that produced it behind a disclosure. Only a host whose whole surface is the
   // report — the Research page — asks for it.
   report?: boolean;
+  // A host that mounts the conversation because the user came here to answer — a
+  // deep link off a notification or the dock — opens with the answer box ready.
+  autoFocus?: boolean;
   onStatus?: (status: GrillStatus) => void;
   onApplied?: (applied: GrillAppliedOutcome) => void;
   onDiscarded?: () => void;
@@ -296,6 +300,7 @@ export function GrillConversation({
                 disabled={!answering || !freeText || sending}
                 submitting={sending}
                 onSend={send}
+                autoFocus={autoFocus}
               />
             </>
           )}

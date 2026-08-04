@@ -6,6 +6,7 @@ import { useActiveRepo } from "@/components/trau/active-repo";
 
 import { apiFetch } from "./api";
 import { subscribeAllEvents, type RepoFeedEvent } from "./events";
+import type { GrillMode, GrillSession } from "./grill";
 import { draftItemId } from "./inbox";
 import type { RepoView } from "./instances";
 
@@ -20,13 +21,15 @@ export type NotificationKind =
 // HubNotification mirrors the hub's notifications resource — named apart from the
 // browser Notification the OS layer raises (@/lib/notifications). Repo is the
 // repo's root path, not its registry name; Ref is the grill session id or the
-// run's ticket; ReadAt is empty while unread.
+// run's ticket; mode is the grill session's type, which decides the surface a click
+// lands on and is absent on the run kinds; ReadAt is empty while unread.
 export interface HubNotification {
   id: number;
   repo: string;
   kind: NotificationKind;
   ref: string;
   issue_id?: string;
+  mode?: GrillMode;
   title: string;
   body: string;
   created_at: string;
@@ -174,18 +177,22 @@ export function notificationTag(notification: HubNotification): string {
 
 export type NotificationTarget =
   | { kind: "inbox"; repo: string; issue: string }
+  | { kind: "research"; repo: string; session: string }
   | { kind: "run"; repo: string; ticket: string }
   | null;
 
-// notificationTarget is where clicking a notification lands: a grill question at
-// its inbox item — an issue-less authoring session addressed by its draft row —
-// and a run at its detail page.
+// notificationTarget is where clicking a notification lands: a research question at
+// its report on the Research page, every other grill question at its inbox item — an
+// issue-less authoring session addressed by its draft row — and a run at its detail
+// page. The hub pushes the same split (notificationURL in internal/webserver/push.go).
 export function notificationTarget(
   notification: HubNotification,
   repo: string,
 ): NotificationTarget {
   switch (notification.kind) {
     case "grill_question":
+      if (notification.mode === "research")
+        return { kind: "research", repo, session: notification.ref };
       return {
         kind: "inbox",
         repo,
@@ -200,6 +207,21 @@ export function notificationTarget(
     default:
       return null;
   }
+}
+
+// grillSessionTarget is where a session is answered, for the dock, which addresses
+// sessions directly rather than through a notification. It makes the same split
+// notificationTarget does, and sits beside it so the two cannot drift.
+export function grillSessionTarget(
+  session: GrillSession,
+): NonNullable<NotificationTarget> {
+  if (session.mode === "research")
+    return { kind: "research", repo: session.repo, session: session.id };
+  return {
+    kind: "inbox",
+    repo: session.repo,
+    issue: session.issue_id || draftItemId(session.id),
+  };
 }
 
 // knownRepo finds the RepoView a notification's repo addresses — the registry
@@ -234,22 +256,23 @@ export function repoScopeSwitch(
   return match.name;
 }
 
-// notificationScopeSwitch is the repo name to adopt before an inbox navigation:
-// the target's repo when it differs from the active one and is still known. Run
-// targets need no switch; their repo-bound route adopts the scope on entry.
+// notificationScopeSwitch is the repo name to adopt before an inbox or research
+// navigation: the target's repo when it differs from the active one and is still
+// known. Both pages build from the active scope rather than the link. Run targets
+// need no switch; their repo-bound route adopts the scope on entry.
 export function notificationScopeSwitch(
   target: NotificationTarget,
   activeRepo: string | null,
   repos: readonly RepoView[],
 ): string | null {
-  if (target?.kind !== "inbox") return null;
+  if (target === null || target.kind === "run") return null;
   return repoScopeSwitch(target.repo, activeRepo, repos);
 }
 
-// useNotificationNavigate lands on a notification's target — the same inbox item
-// or run detail the toast opens. Shared so the bell and the toaster never drift.
-// A cross-project inbox target switches the active scope to its repo first, so
-// the Inbox opens on the notification's project rather than the current one.
+// useNotificationNavigate lands on a notification's target — the same inbox item,
+// research report or run detail the toast opens. Shared so the bell and the toaster
+// never drift. A cross-project target switches the active scope to its repo first,
+// so the page opens on the notification's project rather than the current one.
 export function useNotificationNavigate(): (
   target: NotificationTarget,
 ) => void {
@@ -259,19 +282,23 @@ export function useNotificationNavigate(): (
   return useCallback(
     (target: NotificationTarget) => {
       if (!target) return;
-      if (target.kind === "inbox") {
-        const adopt = notificationScopeSwitch(target, repo, repos);
-        if (adopt) setRepo(adopt);
-        void navigate({ to: "/inbox", search: { issue: target.issue } });
+      if (target.kind === "run") {
+        void navigate({
+          to: "/runs/$repo/$ticket",
+          params: {
+            repo: notificationRepoName(target.repo, repos),
+            ticket: target.ticket,
+          },
+        });
         return;
       }
-      void navigate({
-        to: "/runs/$repo/$ticket",
-        params: {
-          repo: notificationRepoName(target.repo, repos),
-          ticket: target.ticket,
-        },
-      });
+      const adopt = notificationScopeSwitch(target, repo, repos);
+      if (adopt) setRepo(adopt);
+      void navigate(
+        target.kind === "research"
+          ? { to: "/research", search: { session: target.session } }
+          : { to: "/inbox", search: { issue: target.issue } },
+      );
     },
     [navigate, repo, repos, setRepo],
   );

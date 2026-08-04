@@ -123,11 +123,11 @@ func TestNotifyRunEventPushesOnlyNeedsAttention(t *testing.T) {
 	}
 }
 
-// TestNotifyGrillAwaitingPushesInboxLink covers the interview producer: a session
-// entering the awaiting set lands the user on the waiting question — in the session's
-// own project, which the inbox reads from the link — and one that never entered it
-// pushes nothing.
-func TestNotifyGrillAwaitingPushesInboxLink(t *testing.T) {
+// TestNotifyGrillAwaitingPushesSessionLink covers the grilling producer: a session
+// entering the awaiting set lands the user on the waiting question, on the surface
+// its mode is answered from — in the session's own project, which both pages read
+// from the link — and one that never entered it pushes nothing.
+func TestNotifyGrillAwaitingPushesSessionLink(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "demo")
 	cases := []struct {
 		name string
@@ -158,6 +158,21 @@ func TestNotifyGrillAwaitingPushesInboxLink(t *testing.T) {
 				Body:  "Which repo owns this?",
 				Tag:   "grill_question43",
 				URL:   "/inbox?issue=draft%3A43&repo=demo",
+			},
+		},
+		{
+			name: "research session",
+			sess: hubstore.GrillSession{
+				ID:    45,
+				Repo:  root,
+				Mode:  hubstore.GrillModeResearch,
+				State: hubstore.GrillWaiting,
+			},
+			want: PushPayload{
+				Title: "Grilling needs you — new issue",
+				Body:  "Which repo owns this?",
+				Tag:   "grill_question45",
+				URL:   "/research?repo=demo&session=45",
 			},
 		},
 	}
