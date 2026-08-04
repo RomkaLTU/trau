@@ -75,8 +75,8 @@ func Debugf(format string, a ...any) {
 }
 
 func emit(level, format string, a ...any) {
+	line := fmt.Sprintf("[trau:%s] %s\n", level, fmt.Sprintf(format, a...))
 	mu.Lock()
-	w := out
-	mu.Unlock()
-	_, _ = fmt.Fprintf(w, "[trau:%s] %s\n", level, fmt.Sprintf(format, a...))
+	defer mu.Unlock()
+	_, _ = io.WriteString(out, line)
 }
