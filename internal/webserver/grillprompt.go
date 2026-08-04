@@ -57,6 +57,45 @@ func grillResearchPrompt(r prompts.Renderer, in grillPromptInput) string {
 	return r.Render("grill_research", prompts.GrillResearchData{GrillIssueData: grillIssueData(in)})
 }
 
+// grillFixPrompt is the first-turn prompt for a fix session: the agent diagnoses why
+// the ticket's last attempt failed from the dossier compiled at create, inspects the
+// WIP branch the attempt was left on, and finishes with a rewrite carrying the
+// diagnosis and the instructions the next attempt must follow.
+func grillFixPrompt(r prompts.Renderer, in grillPromptInput, run grillFailedRun) string {
+	return r.Render("grill_fix", prompts.GrillFixData{
+		GrillIssueData: grillIssueData(in),
+		Failure:        grillFailureLine(run),
+		Dossier:        grillDossierPath(run.Ticket),
+		Branch:         run.Branch,
+	})
+}
+
+// grillFailureLine states how the attempt ended in one line: the class it was filed
+// under and, when the run recorded one, the reason behind it. A checkpoint cleared
+// since the session opened leaves the dossier as the only record of the run, which
+// is worth saying rather than rendering an empty class.
+func grillFailureLine(run grillFailedRun) string {
+	if run.FailureClass == "" {
+		return "recorded in the dossier — the run's checkpoint has since been cleared"
+	}
+	line := run.FailureClass + " at phase " + run.Phase
+	if run.FailureReason != "" {
+		line += " — " + run.FailureReason
+	}
+	return line
+}
+
+// grillFixOpeningNote is the line a fix session opens the conversation on: the
+// surface starts it from a button rather than a typed idea, so the opener states what
+// the session is for and why the run failed.
+func grillFixOpeningNote(run grillFailedRun) string {
+	note := "Propose a fix for " + run.Ticket + ": "
+	if reason := strings.TrimSpace(run.FailureReason); reason != "" {
+		return note + reason
+	}
+	return note + run.FailureClass
+}
+
 // grillResearchIdeaPrompt is the from-scratch counterpart: nothing anchors the
 // session, so the opening note is the question to answer; it is empty when the user
 // opened the session without one.

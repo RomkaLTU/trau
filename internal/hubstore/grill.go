@@ -20,10 +20,12 @@ const (
 )
 
 // Grill session modes: an interview clarifies or authors an issue, research
-// answers a question and delivers a findings report. Empty is interview.
+// answers a question and delivers a findings report, and fix diagnoses a failed run
+// off its dossier and rewrites the ticket for the next attempt. Empty is interview.
 const (
 	GrillModeInterview = "interview"
 	GrillModeResearch  = "research"
+	GrillModeFix       = "fix"
 )
 
 // Grill message roles and kinds (grilling-prd.md).
@@ -230,8 +232,10 @@ func (g *Grill) Session(id int64) (GrillSession, bool, error) {
 
 // List returns repo's sessions, newest first, minus the ones whose issue has
 // closed. A non-empty state narrows to that state and a non-empty mode to that
-// session type — interview covering the legacy rows stored before the mode column,
-// which ran the interview prompt.
+// session type. Interview is the inbox's bucket rather than a bare column match: it
+// covers the legacy rows stored before the mode column, which ran the interview
+// prompt, and the fix sessions the inbox triages beside them. Research is the one
+// mode that lists apart, on its own page.
 func (g *Grill) List(repo, state, mode string) ([]GrillSession, error) {
 	query := grillSessionSelect + ` WHERE g.repo = ?` + grillIssueOpen
 	args := []any{repo}
@@ -241,11 +245,11 @@ func (g *Grill) List(repo, state, mode string) ([]GrillSession, error) {
 	}
 	switch mode {
 	case GrillModeInterview:
-		query += ` AND g.mode IN (?, ?)`
-		args = append(args, "", GrillModeInterview)
-	case GrillModeResearch:
+		query += ` AND g.mode IN (?, ?, ?)`
+		args = append(args, "", GrillModeInterview, GrillModeFix)
+	case GrillModeResearch, GrillModeFix:
 		query += ` AND g.mode = ?`
-		args = append(args, GrillModeResearch)
+		args = append(args, mode)
 	}
 	query += ` ORDER BY g.id DESC`
 	return g.scanSessions(query, args...)

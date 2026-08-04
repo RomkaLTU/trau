@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type Assignee } from './assignee'
 import {
   abandonIssueSessions,
+  activeFixSessionForIssue,
   activeSessionForIssue,
   applyGrill,
   applySessionModel,
@@ -140,6 +141,23 @@ describe('activeSessionForIssue', () => {
     ]
     expect(activeSessionForIssue(sessions, 'COD-1')).toBeUndefined()
     expect(activeSessionForIssue(undefined, 'COD-1')).toBeUndefined()
+  })
+})
+
+describe('activeFixSessionForIssue', () => {
+  it('picks the live fix session, not the interview running beside it', () => {
+    const sessions = [
+      session({ id: '3', issue_id: 'COD-1', mode: 'interview', state: 'parked' }),
+      session({ id: '2', issue_id: 'COD-1', mode: 'fix', state: 'running' }),
+      session({ id: '1', issue_id: 'COD-2', mode: 'fix', state: 'waiting' }),
+    ]
+    expect(activeFixSessionForIssue(sessions, 'COD-1')?.id).toBe('2')
+  })
+
+  it('ignores a settled fix session, so the ticket can be diagnosed again', () => {
+    const sessions = [session({ id: '1', issue_id: 'COD-1', mode: 'fix', state: 'applied' })]
+    expect(activeFixSessionForIssue(sessions, 'COD-1')).toBeUndefined()
+    expect(activeFixSessionForIssue(undefined, 'COD-1')).toBeUndefined()
   })
 })
 

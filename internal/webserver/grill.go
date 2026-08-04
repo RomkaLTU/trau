@@ -251,6 +251,29 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
+	// A fix session diagnoses one ticket's failed run, so it is only ever anchored,
+	// and it is seeded from the run's dossier before the first turn spawns. A requeue
+	// that raced the start has already cleared the fields that dossier is compiled
+	// from, which is the one refusal the surface cannot avoid.
+	opening := strings.TrimSpace(req.Idea)
+	if mode == hubstore.GrillModeFix {
+		if issueID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "fix mode requires an issue_id"})
+			return
+		}
+		run, ok := s.grillFailedRunFor(repo.Root, issueID)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": issueID + " is no longer in a failed state"})
+			return
+		}
+		if err := s.writeGrillDossier(repo.Root, run); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "compile failure dossier: " + err.Error()})
+			return
+		}
+		if opening == "" {
+			opening = grillFixOpeningNote(run)
+		}
+	}
 	if provider == "" {
 		provider = s.grillDefaultProviderFor(repo, mode)
 	}
@@ -275,9 +298,9 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		return
 	}
 	// The opening line — an authoring session's seed idea, an issue grilling's focus
-	// note — grounds the first turn's prompt and opens the conversation, so it is
-	// stored before the turn spawns.
-	if note := strings.TrimSpace(req.Idea); note != "" {
+	// note, a fix session's one-line statement of what failed — grounds the first
+	// turn's prompt and opens the conversation, so it is stored before the turn spawns.
+	if note := opening; note != "" {
 		payload, _ := json.Marshal(struct {
 			Text string `json:"text"`
 		}{Text: note})
@@ -1149,10 +1172,13 @@ func grillValidateMode(mode string) (string, string) {
 	switch mode = strings.TrimSpace(mode); mode {
 	case "", hubstore.GrillModeInterview:
 		return hubstore.GrillModeInterview, ""
-	case hubstore.GrillModeResearch:
-		return hubstore.GrillModeResearch, ""
+	case hubstore.GrillModeResearch, hubstore.GrillModeFix:
+		return mode, ""
 	}
-	return "", fmt.Sprintf("unknown mode %q (expected: %s | %s)", mode, hubstore.GrillModeInterview, hubstore.GrillModeResearch)
+	return "", fmt.Sprintf(
+		"unknown mode %q (expected: %s | %s | %s)",
+		mode, hubstore.GrillModeInterview, hubstore.GrillModeResearch, hubstore.GrillModeFix,
+	)
 }
 
 func grillValidateProvider(provider, mode string) (string, string) {

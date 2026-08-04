@@ -305,7 +305,13 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			description: description,
 			comment:     comment,
 		}
-		plan.addLabels, plan.removeLabels = grillLabelTransition(outcome.Disposition, cfg)
+		// A fix session's rewrite only re-describes a quarantined ticket. Its labels
+		// and ready state stay exactly as the give-up left them: only a requeue may
+		// hand the ticket back to the picker, and not before the failed attempt's
+		// branch and checkpoint are cleared.
+		if grillEffectiveMode(sess.Mode) != hubstore.GrillModeFix {
+			plan.addLabels, plan.removeLabels = grillLabelTransition(outcome.Disposition, cfg)
+		}
 		steps, applied = s.applyGrillOutcome(r.Context(), writer, repo.Root, issueID, plan)
 	}
 	steps = append(detach, steps...)
@@ -521,12 +527,16 @@ func (s *Server) applyGrillOutcome(ctx context.Context, writer tracker.Writer, r
 
 	record("comment", writer.AddComment(ctx, issueID, plan.comment))
 
-	if err := writer.UpdateLabels(ctx, issueID, plan.addLabels, plan.removeLabels); err != nil {
-		record("labels", err)
-	} else {
-		record("labels", nil)
-		patch.AddLabels = plan.addLabels
-		patch.RemoveLabels = plan.removeLabels
+	// A plan with no label transition — a fix session's rewrite — leaves the ticket's
+	// triage state exactly as it was, so it never reaches the tracker at all.
+	if len(plan.addLabels) > 0 || len(plan.removeLabels) > 0 {
+		if err := writer.UpdateLabels(ctx, issueID, plan.addLabels, plan.removeLabels); err != nil {
+			record("labels", err)
+		} else {
+			record("labels", nil)
+			patch.AddLabels = plan.addLabels
+			patch.RemoveLabels = plan.removeLabels
+		}
 	}
 
 	if patch.Description != "" || len(patch.AddLabels) > 0 || len(patch.RemoveLabels) > 0 {

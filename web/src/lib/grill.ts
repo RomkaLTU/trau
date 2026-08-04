@@ -15,8 +15,9 @@ export type GrillRole = 'agent' | 'user' | 'system'
 export type GrillKind = 'question' | 'answer' | 'info' | 'outcome' | 'interjection'
 
 // GrillMode is the session type declared at create: an interview clarifies or
-// authors an issue, research answers a question and delivers a findings report.
-export type GrillMode = 'interview' | 'research'
+// authors an issue, research answers a question and delivers a findings report, and
+// fix diagnoses a failed run and rewrites the ticket for the next attempt.
+export type GrillMode = 'interview' | 'research' | 'fix'
 
 // GrillSession mirrors the hub's GrillSessionView. issue_id is absent for an
 // authoring session anchored to the repo alone; parked_reason carries the cause a
@@ -291,7 +292,9 @@ function base(repo: string): string {
 // A failure names the session type the surface asked for, so the Research page never
 // reports on an interview it never ran.
 function modeNoun(mode?: GrillMode): string {
-  return mode === 'research' ? 'research' : 'interview'
+  if (mode === 'research') return 'research'
+  if (mode === 'fix') return 'propose fix'
+  return 'interview'
 }
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
@@ -754,6 +757,17 @@ export function activeSessionForIssue(
   issueId: string,
 ): GrillSession | undefined {
   return sessions?.find((s) => s.issue_id === issueId && !isSettled(s.state))
+}
+
+// activeFixSessionForIssue narrows that to the ticket's live fix session, the one a
+// Propose fix surface reopens instead of starting a second diagnosis.
+export function activeFixSessionForIssue(
+  sessions: GrillSession[] | undefined,
+  issueId: string,
+): GrillSession | undefined {
+  return sessions?.find(
+    (s) => s.issue_id === issueId && s.mode === 'fix' && !isSettled(s.state),
+  )
 }
 
 // abandonIssueSessions maps an issue's unsettled sessions to abandoned — the

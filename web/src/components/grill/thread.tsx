@@ -28,6 +28,7 @@ import {
   type GrillActivity,
   type GrillBanner,
   type GrillMessage,
+  type GrillMode,
   type GrillSession,
   type PendingAnswer,
   type StreamingReply,
@@ -38,6 +39,18 @@ import { cn } from "@/lib/utils";
 // thread outright. Parking the message each session was reading here is what survives
 // that remount and lets the reader come back to where they were reading.
 const anchors = new Map<string, string>();
+
+const THREAD_AGENT: Record<GrillMode, string> = {
+  interview: "interview agent",
+  research: "research agent",
+  fix: "diagnosis agent",
+};
+
+const THREAD_TRANSCRIPT: Record<GrillMode, string> = {
+  interview: "Interview transcript",
+  research: "Research transcript",
+  fix: "Propose fix transcript",
+};
 
 export function GrillThread({
   session,
@@ -68,16 +81,14 @@ export function GrillThread({
   onResume?: () => void;
   onStop?: () => void;
 }) {
-  // A research session's turns are an investigation, not an interview, and its
-  // labels say so.
-  const research = session.mode === "research";
-  const agent = research ? "research agent" : "interview agent";
+  const agent = THREAD_AGENT[session.mode ?? "interview"];
+  const transcript = THREAD_TRANSCRIPT[session.mode ?? "interview"];
   return (
     <MessageScrollerProvider autoScroll>
       <MessageScroller className="flex-1">
         <Viewport
           sessionId={session.id}
-          label={research ? "Research transcript" : "Interview transcript"}
+          label={transcript}
         >
           <MessageScrollerContent className="gap-5 px-4 py-4">
             {messages.map((m) => (
