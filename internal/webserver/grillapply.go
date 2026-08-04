@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -97,6 +98,14 @@ type grillSubIssue struct {
 	BlockedBy   []int    `json:"blocked_by,omitempty"`
 }
 
+// grillSource is one source a research report consulted. Research that never left
+// the repository has none, so the list is optional throughout.
+type grillSource struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+	Note  string `json:"note,omitempty"`
+}
+
 // GrillApplyStep is one apply step's outcome. Error is set only when Status is
 // failed.
 type GrillApplyStep struct {
@@ -122,6 +131,7 @@ type grillOutcome struct {
 	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
 	Findings            string          `json:"findings"`
+	Sources             []grillSource   `json:"sources"`
 	Labels              []string        `json:"labels"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
 	Summary             string          `json:"summary"`
@@ -287,7 +297,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			r.Context(),
 			writer,
 			sess.IssueID,
-			composeGrillFindings(outcome.Findings, comment),
+			composeGrillFindings(outcome.Findings, comment, outcome.Sources),
 		)
 	default:
 		issueID, ok := grillAnchoredIssue(w, sess)
@@ -1002,9 +1012,24 @@ func composeGrillSummary(summary string, msgs []hubstore.GrillMessage) string {
 }
 
 // composeGrillFindings builds the research comment: the report, then the usual
-// summary comment, so the clarifications that shaped the research stay attached.
-func composeGrillFindings(findings, summary string) string {
-	return "## Research findings\n\n" + strings.TrimSpace(findings) + "\n\n---\n\n" + summary
+// summary comment, so the clarifications that shaped the research stay attached,
+// and last the sources the report cited when it consulted any.
+func composeGrillFindings(findings, summary string, sources []grillSource) string {
+	var b strings.Builder
+	b.WriteString("## Research findings\n\n")
+	b.WriteString(strings.TrimSpace(findings))
+	b.WriteString("\n\n---\n\n")
+	b.WriteString(summary)
+	if len(sources) > 0 {
+		b.WriteString("\n\n### Sources\n")
+		for i, src := range sources {
+			fmt.Fprintf(&b, "\n%d. [%s](%s)", i+1, src.Title, src.URL)
+			if src.Note != "" {
+				b.WriteString(" — " + src.Note)
+			}
+		}
+	}
+	return b.String()
 }
 
 type grillQA struct{ question, answer string }

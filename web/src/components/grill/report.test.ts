@@ -86,6 +86,46 @@ describe("ReportDocument", () => {
     unmount();
   });
 
+  it("lists the sources it cited, linked and named by their domain", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome: {
+        ...outcome,
+        sources: [
+          {
+            title: "Retry docs",
+            url: "https://www.sdk.example/retries",
+            note: "the backoff table",
+          },
+          { title: "Release notes", url: "https://blog.other.example/v3" },
+        ],
+      },
+      warnings: [],
+    });
+    const items = [...container.querySelectorAll("ol > li")];
+    expect(items).toHaveLength(2);
+    const first = items[0].querySelector("a") as HTMLAnchorElement;
+    expect(first.textContent).toBe("Retry docs");
+    expect(first.href).toBe("https://www.sdk.example/retries");
+    expect(first.target).toBe("_blank");
+    expect(items[0].textContent).toContain("sdk.example · the backoff table");
+    expect(items[1].textContent).toContain("blog.other.example");
+    unmount();
+  });
+
+  it("renders no Sources section when the research cited none", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session,
+      outcome: { ...outcome, sources: [] },
+      warnings: [],
+    });
+    expect(container.textContent).not.toContain("Sources");
+    expect(container.querySelector("ol")).toBeNull();
+    unmount();
+  });
+
   it("says so when the session recorded no report, and raises apply warnings", async () => {
     const container = document.createElement("div");
     const unmount = await render(container, {

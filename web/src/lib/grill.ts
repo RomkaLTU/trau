@@ -200,14 +200,23 @@ export interface SubIssueProposal {
   blocked_by?: number[]
 }
 
+// ReportSource is one source a research report consulted. Research settled inside
+// the repository consults none, so a report carrying no sources is normal.
+export interface ReportSource {
+  title: string
+  url: string
+  note?: string
+}
+
 export interface OutcomePayload {
   disposition: string
   // title and labels are carried by a create outcome — the new issue's title and its
   // labels (a single issue defaults to ready-for-agent server-side).
   title?: string
   proposed_description?: string
-  // findings is the research outcome's Markdown report.
+  // findings is the research outcome's Markdown report, sources the ones it cited.
   findings?: string
+  sources?: ReportSource[]
   labels?: string[]
   sub_issues?: SubIssueProposal[]
   summary: string
@@ -801,11 +810,21 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
     proposed_description:
       typeof p.proposed_description === 'string' ? p.proposed_description : undefined,
     findings: typeof p.findings === 'string' ? p.findings : undefined,
+    sources: Array.isArray(p.sources) ? p.sources.map(parseSource) : undefined,
     labels: Array.isArray(p.labels)
       ? p.labels.filter((l): l is string => typeof l === 'string')
       : undefined,
     sub_issues: Array.isArray(p.sub_issues) ? p.sub_issues.map(parseSubIssue) : undefined,
     summary: typeof p.summary === 'string' ? p.summary : '',
+  }
+}
+
+function parseSource(raw: unknown): ReportSource {
+  const p = (raw ?? {}) as Partial<ReportSource>
+  return {
+    title: typeof p.title === 'string' ? p.title : '',
+    url: typeof p.url === 'string' ? p.url : '',
+    note: typeof p.note === 'string' ? p.note : undefined,
   }
 }
 
