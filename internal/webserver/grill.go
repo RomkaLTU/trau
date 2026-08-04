@@ -25,7 +25,9 @@ const grillDefaultProvider = "claude"
 
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
-// carries the session's seed so the queue can title an issue-less draft.
+// carries the session's seed so the queue can title an issue-less draft. ReportTitle
+// is the title a research outcome gave its report, which the Research page reads in
+// place of the seed; it is absent until the session finishes with one.
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
 // reverting to the picker default, and ApplyWarnings the caveats that apply carried,
@@ -38,6 +40,7 @@ type GrillSessionView struct {
 	IssueID          string   `json:"issue_id,omitempty"`
 	IssueDestination string   `json:"issue_destination,omitempty"`
 	IssueTitle       string   `json:"issue_title,omitempty"`
+	ReportTitle      string   `json:"report_title,omitempty"`
 	State            string   `json:"state"`
 	SessionChain     string   `json:"session_chain,omitempty"`
 	Mode             string   `json:"mode"`
@@ -929,6 +932,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		IssueID:          sess.IssueID,
 		IssueDestination: sess.IssueDestination,
 		IssueTitle:       sess.IssueTitle,
+		ReportTitle:      sess.ReportTitle,
 		State:            sess.State,
 		SessionChain:     sess.SessionChain,
 		Mode:             grillEffectiveMode(sess.Mode),

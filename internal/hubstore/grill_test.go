@@ -752,6 +752,45 @@ func TestGrillAuthoringTitleFromSeed(t *testing.T) {
 	}
 }
 
+func TestGrillReportTitleFromResearchOutcome(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	research, _ := g.Create(NewGrillSession{Repo: "acme", Mode: GrillModeResearch})
+	authored, _ := g.Create(NewGrillSession{Repo: "acme"})
+	for _, seed := range []struct {
+		id      int64
+		payload string
+	}{
+		{research.ID, `{"disposition":"research","title":"How the SDK retries","findings":"# Report"}`},
+		{research.ID, `{"disposition":"research","title":"How the SDK retries, revised","findings":"# Report"}`},
+		{authored.ID, `{"disposition":"create","title":"Add a dark-mode toggle"}`},
+	} {
+		if _, _, err := g.AppendMessage(seed.id, NewGrillMessage{
+			Role:    GrillRoleAgent,
+			Kind:    GrillKindOutcome,
+			Payload: seed.payload,
+		}); err != nil {
+			t.Fatalf("seed outcome: %v", err)
+		}
+	}
+
+	sess, found, err := g.Session(research.ID)
+	if err != nil || !found {
+		t.Fatalf("session(%d) = %v, %v", research.ID, found, err)
+	}
+	if sess.ReportTitle != "How the SDK retries, revised" {
+		t.Fatalf("report title = %q, want the latest outcome's", sess.ReportTitle)
+	}
+
+	// A create's proposed title names an issue, not a report, so it stays off the row.
+	other, _, err := g.Session(authored.ID)
+	if err != nil {
+		t.Fatalf("session(%d): %v", authored.ID, err)
+	}
+	if other.ReportTitle != "" {
+		t.Fatalf("create report title = %q, want empty", other.ReportTitle)
+	}
+}
+
 func TestGrillPruneKeepsRecentSettled(t *testing.T) {
 	g, db := testGrill(t, 2)
 

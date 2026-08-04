@@ -58,6 +58,13 @@ const createTicket: OutcomePayload = {
   summary: "one ticket",
 };
 
+const research: OutcomePayload = {
+  disposition: "research",
+  title: "How the SDK retries",
+  findings: "## Conclusion\n\nExponential backoff.",
+  summary: "The SDK backs off exponentially.",
+};
+
 const filedEpic: GrillSession = {
   ...session,
   issue_id: "COD-77",
@@ -108,6 +115,7 @@ function renderReview(
   tracker: string,
   anchorSource: string,
   open: GrillSession = session,
+  reportShown = false,
 ) {
   const seeded = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -144,6 +152,7 @@ function renderReview(
               issueId: "COD-42",
               session: open,
               outcome,
+              reportShown,
               onSession: () => {},
             }),
             createElement(Toaster),
@@ -186,6 +195,27 @@ afterEach(() => {
   host = undefined;
   client = undefined;
   vi.unstubAllGlobals();
+});
+
+describe("OutcomeReview research", () => {
+  it("carries the report itself where nothing else shows it", () => {
+    const el = renderReview(research, "linear", "linear");
+
+    expect(el.textContent).toContain("Research report");
+    expect(el.textContent).toContain("Exponential backoff.");
+    expect(el.textContent).toContain("The SDK backs off exponentially.");
+  });
+
+  it("is the decision alone once the document carries the report", () => {
+    const el = renderReview(research, "linear", "linear", session, true);
+
+    expect(el.textContent).not.toContain("Exponential backoff.");
+    expect(el.textContent).not.toContain("The SDK backs off exponentially.");
+    expect(el.textContent).toContain(
+      "Posts the report as a comment on the issue.",
+    );
+    expect(button("Approve")).toBeTruthy();
+  });
 });
 
 describe("OutcomeReview destination", () => {

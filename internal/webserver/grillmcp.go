@@ -61,14 +61,14 @@ var grillMCPTools = []mcpTool{
 			"a non-empty sub_issues breakdown), \"needs_split\" (too large to slice confidently; just flag it for splitting), " +
 			"\"create\" (author a brand-new issue from a from-scratch session — requires title and proposed_description; add a " +
 			"sub_issues breakdown to file it as an epic instead of a single issue), \"research\" (the session's work was " +
-			"investigation and what it produced is a report, not an issue body — requires findings), or \"no_change\" " +
+			"investigation and what it produced is a report, not an issue body — requires title and findings), or \"no_change\" " +
 			"(nothing needs writing). summary captures the key clarifications reached. Nothing is written to the tracker " +
 			"until the user approves.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
     "disposition": {"type": "string", "enum": ["rewrite", "split", "needs_split", "create", "research", "no_change"], "description": "The proposed outcome."},
-    "title": {"type": "string", "description": "Required when disposition is create: the title of the new issue (or epic) to file."},
+    "title": {"type": "string", "description": "Required when disposition is create (the title of the new issue or epic to file) or research (the report's own title — what the reader sees at the top of the document and in the report list, not the question verbatim)."},
     "proposed_description": {"type": "string", "description": "Required when disposition is rewrite (the full replacement issue description), split (the parent rewrite framing the epic goal), or create (the full description of the new issue or epic)."},
     "findings": {"type": "string", "description": "Required when disposition is research: the complete Markdown research report — the question, what was investigated, the sources consulted, the conclusions, and the recommendation."},
     "labels": {"type": "array", "items": {"type": "string"}, "description": "Optional labels for the created issue when disposition is create. A single issue defaults to the ready-for-agent label; an epic parent gets none by default."},
@@ -367,9 +367,15 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		return
 	}
 	findings := strings.TrimSpace(a.Findings)
-	if disposition == grillDispResearch && findings == "" {
-		respondRPCJSON(w, rpcID, mcpToolError("disposition research requires findings: the full Markdown research report"))
-		return
+	if disposition == grillDispResearch {
+		if findings == "" {
+			respondRPCJSON(w, rpcID, mcpToolError("disposition research requires findings: the full Markdown research report"))
+			return
+		}
+		if title == "" {
+			respondRPCJSON(w, rpcID, mcpToolError("disposition research requires a title: the report's own title"))
+			return
+		}
 	}
 	var subIssues []grillSubIssue
 	if disposition == grillDispSplit || (disposition == grillDispCreate && len(a.SubIssues) > 0) {

@@ -68,14 +68,21 @@ export function GrillThread({
   onResume?: () => void;
   onStop?: () => void;
 }) {
+  // A research session's turns are an investigation, not an interview, and its
+  // labels say so.
+  const research = session.mode === "research";
+  const agent = research ? "research agent" : "interview agent";
   return (
     <MessageScrollerProvider autoScroll>
       <MessageScroller className="flex-1">
-        <Viewport sessionId={session.id}>
+        <Viewport
+          sessionId={session.id}
+          label={research ? "Research transcript" : "Interview transcript"}
+        >
           <MessageScrollerContent className="gap-5 px-4 py-4">
             {messages.map((m) => (
               <MessageScrollerItem key={m.id} messageId={m.id}>
-                <MessageRow message={m} />
+                <MessageRow message={m} agent={agent} />
               </MessageScrollerItem>
             ))}
             {pending.map((p) => (
@@ -93,6 +100,7 @@ export function GrillThread({
             {hydrated && session.state === "running" && (
               <MessageScrollerItem messageId="thinking">
                 <ThinkingRow
+                  agent={agent}
                   text={streaming.holed ? "" : streaming.text}
                   stopping={stopping}
                   stopError={stopError}
@@ -120,9 +128,11 @@ export function GrillThread({
 
 function Viewport({
   sessionId,
+  label,
   children,
 }: {
   sessionId: string;
+  label: string;
   children: React.ReactNode;
 }) {
   const { scrollToMessage } = useMessageScroller();
@@ -145,16 +155,24 @@ function Viewport({
   }, [awayFromEdge, sessionId, visibleMessageIds]);
 
   return (
-    <MessageScrollerViewport aria-label="Interview transcript">
+    <MessageScrollerViewport aria-label={label}>
       {children}
     </MessageScrollerViewport>
   );
 }
 
-function MessageRow({ message }: { message: GrillMessage }) {
+function MessageRow({
+  message,
+  agent,
+}: {
+  message: GrillMessage;
+  agent: string;
+}) {
   switch (message.kind) {
     case "question":
-      return <AgentBubble>{questionPayload(message).text}</AgentBubble>;
+      return (
+        <AgentBubble agent={agent}>{questionPayload(message).text}</AgentBubble>
+      );
     case "answer":
       return (
         <UserBubble text={answerText(message)} auto={isAutoAnswer(message)} />
@@ -172,7 +190,7 @@ function MessageRow({ message }: { message: GrillMessage }) {
       if (message.role === "system") {
         return <SystemNote>{answerText(message)}</SystemNote>;
       }
-      return <AgentBubble>{answerText(message)}</AgentBubble>;
+      return <AgentBubble agent={agent}>{answerText(message)}</AgentBubble>;
     case "outcome":
       return <OutcomeProposal outcome={outcomePayload(message)} />;
     default:
@@ -180,11 +198,17 @@ function MessageRow({ message }: { message: GrillMessage }) {
   }
 }
 
-function AgentBubble({ children }: { children: React.ReactNode }) {
+function AgentBubble({
+  agent,
+  children,
+}: {
+  agent: string;
+  children: React.ReactNode;
+}) {
   return (
     <Message align="start">
       <MessageContent>
-        <Eyebrow>interview agent</Eyebrow>
+        <Eyebrow>{agent}</Eyebrow>
         <Bubble
           variant="outline"
           align="start"
@@ -300,11 +324,13 @@ function PendingRow({
 // so far and grows in place under the same shimmer, reading as provisional until the
 // stored message settles it; a turn that streams nothing keeps the bare word.
 function ThinkingRow({
+  agent,
   text,
   stopping,
   stopError,
   onStop,
 }: {
+  agent: string;
   text: string;
   stopping?: boolean;
   stopError?: string;
@@ -312,7 +338,7 @@ function ThinkingRow({
 }) {
   return (
     <div className="flex flex-col items-start gap-2">
-      <AgentBubble>
+      <AgentBubble agent={agent}>
         <span className="shimmer">{text === "" ? "Thinking" : text}</span>{" "}
         <span className="cursor-block text-teal" aria-hidden="true">
           ▌

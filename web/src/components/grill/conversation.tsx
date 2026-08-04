@@ -5,6 +5,7 @@ import { ArrowRight, Sparkles } from "lucide-react";
 import { BannerRow } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import { OutcomeReview } from "@/components/grill/outcome-review";
+import { ReportDocument } from "@/components/grill/report";
 import { Suggestions } from "@/components/grill/suggestions";
 import { GrillThread } from "@/components/grill/thread";
 import { useOpenConversation } from "@/lib/open-conversation";
@@ -60,6 +61,7 @@ export function GrillConversation({
   initial,
   outcome = "review",
   activity = true,
+  report = false,
   onStatus,
   onApplied,
   onDiscarded,
@@ -71,6 +73,10 @@ export function GrillConversation({
   // A host with no room for the feed — the dock's 520px panel — turns it off outright;
   // everywhere else it follows the reader's own preference.
   activity?: boolean;
+  // report gives a settled research session the pane as a document, with the turns
+  // that produced it behind a disclosure. Only a host whose whole surface is the
+  // report — the Research page — asks for it.
+  report?: boolean;
   onStatus?: (status: GrillStatus) => void;
   onApplied?: (applied: GrillAppliedOutcome) => void;
   onDiscarded?: () => void;
@@ -126,9 +132,13 @@ export function GrillConversation({
   const asked = pendingQuestion(messages);
   const question = asked ? questionPayload(asked) : null;
   const outcomeMsg = latestOutcome(messages);
+  const proposal = outcomeMsg ? outcomePayload(outcomeMsg) : null;
   const reviewing =
     outcomeMsg !== null &&
     (session.state === "finished" || session.state === "applied");
+  // An applied report has nothing left to decide, so the document stands alone.
+  const reporting = report && reviewing && proposal?.disposition === "research";
+  const decided = reporting && session.state === "applied";
 
   // Each proposal is reviewed on its own terms, so a superseding outcome closes the
   // composer the one before it reopened. A follow-up is only sendable while the
@@ -206,74 +216,113 @@ export function GrillConversation({
         ? "Type your answer…"
         : "Pick one of the answers above…";
 
+  const thread = (
+    <GrillThread
+      session={session}
+      messages={messages}
+      hydrated={hydrated}
+      pending={pending}
+      streaming={streaming}
+      activity={
+        activity && activityShown ? state.activity.items : NO_ACTIVITY.items
+      }
+      stalled={stalled}
+      stopping={stop.isPending}
+      stopError={stop.error?.message}
+      onRetry={retry}
+      onDiscard={(id) => dispatch({ type: "send-discard", id })}
+      onResume={resume === "" ? undefined : () => send(resume)}
+      onStop={() => stop.mutate()}
+    />
+  );
+
   return (
     <>
-      <GrillThread
-        session={session}
-        messages={messages}
-        hydrated={hydrated}
-        pending={pending}
-        streaming={streaming}
-        activity={
-          activity && activityShown ? state.activity.items : NO_ACTIVITY.items
-        }
-        stalled={stalled}
-        stopping={stop.isPending}
-        stopError={stop.error?.message}
-        onRetry={retry}
-        onDiscard={(id) => dispatch({ type: "send-discard", id })}
-        onResume={resume === "" ? undefined : () => send(resume)}
-        onStop={() => stop.mutate()}
-      />
+      {reporting && proposal ? (
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <ReportDocument
+            session={session}
+            outcome={proposal}
+            warnings={session.apply_warnings ?? []}
+          />
+          <TranscriptDisclosure>{thread}</TranscriptDisclosure>
+        </div>
+      ) : (
+        thread
+      )}
 
-      <div className="flex flex-col gap-3 border-t p-4">
-        {reviewing && outcomeMsg && outcome === "link" ? (
-          <ProposalLink onOpen={onReview} />
-        ) : reviewing && outcomeMsg ? (
-          <>
-            <OutcomeReview
-              repo={repo}
-              issueId={session.issue_id ?? ""}
-              session={session}
-              outcome={outcomePayload(outcomeMsg)}
-              onSession={(next) => dispatch({ type: "state", session: next })}
-              onApplied={onApplied}
-              onDiscarded={onDiscarded}
-              onAskFollowUp={asking ? undefined : () => setFollowUp(true)}
-            />
-            {asking && (
+      {!decided && (
+        <div className="flex flex-col gap-3 border-t p-4">
+          {reviewing && outcomeMsg && outcome === "link" ? (
+            <ProposalLink onOpen={onReview} />
+          ) : reviewing && proposal ? (
+            <>
+              <OutcomeReview
+                repo={repo}
+                issueId={session.issue_id ?? ""}
+                session={session}
+                outcome={proposal}
+                reportShown={reporting}
+                onSession={(next) => dispatch({ type: "state", session: next })}
+                onApplied={onApplied}
+                onDiscarded={onDiscarded}
+                onAskFollowUp={asking ? undefined : () => setFollowUp(true)}
+              />
+              {asking && (
+                <Composer
+                  repo={repo}
+                  placeholder="Ask a follow-up…"
+                  disabled={sending}
+                  submitting={sending}
+                  onSend={send}
+                />
+              )}
+            </>
+          ) : (
+            <>
+              {showBanner && <BannerRow banner={banner} />}
+              {question && question.options.length > 0 && (
+                <Suggestions
+                  options={question.options}
+                  recommended={question.recommended}
+                  why={question.why}
+                  disabled={sending || !answering}
+                  onPick={send}
+                />
+              )}
               <Composer
                 repo={repo}
-                placeholder="Ask a follow-up…"
-                disabled={sending}
+                placeholder={placeholder}
+                disabled={!answering || !freeText || sending}
                 submitting={sending}
                 onSend={send}
               />
-            )}
-          </>
-        ) : (
-          <>
-            {showBanner && <BannerRow banner={banner} />}
-            {question && question.options.length > 0 && (
-              <Suggestions
-                options={question.options}
-                recommended={question.recommended}
-                why={question.why}
-                disabled={sending || !answering}
-                onPick={send}
-              />
-            )}
-            <Composer
-              repo={repo}
-              placeholder={placeholder}
-              disabled={!answering || !freeText || sending}
-              submitting={sending}
-              onSend={send}
-            />
-          </>
-        )}
-      </div>
+            </>
+          )}
+        </div>
+      )}
     </>
+  );
+}
+
+// The thread is only mounted while the disclosure is open: it measures its own
+// viewport to keep the reader's place, which a collapsed box gives it no room to do.
+function TranscriptDisclosure({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      onToggle={(e) => setOpen(e.currentTarget.open)}
+      className="mx-auto w-full max-w-[72ch] px-6 pb-8"
+    >
+      <summary className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
+        View research transcript
+      </summary>
+      {open && (
+        <div className="mt-2 flex h-96 flex-col rounded-md border border-border">
+          {children}
+        </div>
+      )}
+    </details>
   );
 }
 
@@ -289,7 +338,10 @@ function ProposalLink({ onOpen }: { onOpen?: () => void }) {
       <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
         Proposal ready — review in Inbox
       </span>
-      <ArrowRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <ArrowRight
+        className="size-4 shrink-0 text-muted-foreground"
+        aria-hidden="true"
+      />
     </button>
   );
 }
