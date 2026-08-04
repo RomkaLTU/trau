@@ -961,6 +961,85 @@ func TestBugContent(t *testing.T) {
 	}
 }
 
+// A Jira-tracked run's QA report lands as one comment on the issue through the
+// v3 comment endpoint, with the Markdown converted to real ADF nodes rather than
+// a paragraph still carrying its syntax.
+func TestJiraPostQANoteCommentsThroughTheAPI(t *testing.T) {
+	var (
+		method string
+		path   string
+		sent   []byte
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		sent, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	err := j.PostQANote(context.Background(), "PROJ-7", QANote{
+		Body:   "## Trau QA report\n\nVerify passed: all green\n\n- covered the login flow\n\nPR: https://github.test/pr/7\n",
+		Images: []QAImage{{Name: "proof-1.png", Mime: "image/png"}},
+	})
+	if err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if method != http.MethodPost || path != "/rest/api/3/issue/PROJ-7/comment" {
+		t.Errorf("request = %s %s, want POST /rest/api/3/issue/PROJ-7/comment", method, path)
+	}
+	var doc struct {
+		Body struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type    string `json:"type"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"content"`
+		} `json:"body"`
+	}
+	if err := json.Unmarshal(sent, &doc); err != nil {
+		t.Fatalf("comment body is not JSON: %v", err)
+	}
+	if doc.Body.Type != "doc" {
+		t.Fatalf("comment body = %s, want an ADF document", sent)
+	}
+	kinds := make([]string, 0, len(doc.Body.Content))
+	for _, block := range doc.Body.Content {
+		kinds = append(kinds, block.Type)
+	}
+	if got := strings.Join(kinds, ","); got != "heading,paragraph,bulletList,paragraph" {
+		t.Errorf("ADF blocks = %s, want the heading and list converted to nodes", got)
+	}
+	if got := doc.Body.Content[0].Content[0].Text; got != "Trau QA report" {
+		t.Errorf("heading text = %q, want the report heading without its markdown", got)
+	}
+	if runner.calls["qa_note"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d qa_note calls", runner.calls["qa_note"])
+	}
+}
+
+// Without API credentials the note goes through the Rovo MCP instead, in a prompt
+// carrying the issue and the report body.
+func TestJiraPostQANoteFallsBackToMCP(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"qa_note": {}}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+
+	note := QANote{Body: "## Trau QA report\n\nVerify failed: red tests\n"}
+	if err := j.PostQANote(context.Background(), "PROJ-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if runner.calls["qa_note"] != 1 {
+		t.Fatalf("qa_note runs = %d, want 1", runner.calls["qa_note"])
+	}
+	prompt := runner.prompts["qa_note"]
+	if !strings.Contains(prompt, "PROJ-7") || !strings.Contains(prompt, "Verify failed: red tests") {
+		t.Errorf("MCP prompt = %q, want the issue and the report body", prompt)
+	}
+}
+
 // EnsureLabels is a no-op on Jira: no API call, no MCP prompt, no error.
 func TestJiraEnsureLabelsNoOp(t *testing.T) {
 	runner := &recordingRunner{}

@@ -231,7 +231,7 @@ type QAImage struct {
 }
 
 // QANotePoster is the optional capability of posting a QA note as a comment on
-// an issue. A tracker that cannot answer makes the post a no-op.
+// an issue. Trackers that cannot comment do not implement it.
 type QANotePoster interface {
 	PostQANote(ctx context.Context, id string, note QANote) error
 }
