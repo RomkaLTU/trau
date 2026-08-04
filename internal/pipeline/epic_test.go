@@ -160,7 +160,7 @@ func TestEnsureEpicPRNoCommitsWithoutMergedPRStillFails(t *testing.T) {
 		createErr: errors.New("gh pr create: exit status 1: GraphQL: No commits between main and epic/COD-1 (createPullRequest)"),
 	}
 	p := &Pipeline{Base: "main", EpicID: "COD-1", Git: baseCurrentGit{}, GitHub: gh, Tracker: &epicTracker{title: "x"}}
-	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x", false); err == nil {
+	if _, _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x", false); err == nil {
 		t.Fatal("expected create error to surface when no merged PR exists")
 	}
 }
@@ -426,17 +426,6 @@ func (g *resumedEpicGit) MergeRemote(context.Context, string, string) (bool, err
 	return false, nil
 }
 
-// adoptingEpicGitHub already has the epic PR an earlier finalize opened, so the
-// resume adopts it instead of opening a second one.
-type adoptingEpicGitHub struct {
-	epicGitHub
-	openURL string
-}
-
-func (g *adoptingEpicGitHub) PRURL(context.Context, string) (string, error) {
-	return g.openURL, nil
-}
-
 // A finalize killed mid-release resumes from its own checkpoint: the epic branch is
 // re-adopted by id, the half-merge the dead run left is aborted before the sync
 // starts over, the PR that run opened is adopted rather than duplicated, and the
@@ -444,9 +433,9 @@ func (g *adoptingEpicGitHub) PRURL(context.Context, string) (string, error) {
 func TestFinalizeEpicResumesFromReleasingCheckpoint(t *testing.T) {
 	const epic = "epic/COD-1-checkout-rebuild"
 	tr := doneEpicTracker()
-	gh := &adoptingEpicGitHub{
-		epicGitHub: epicGitHub{checks: []Check{{Name: "ci/test", Bucket: "pass"}}},
-		openURL:    "https://github.test/pr/42",
+	gh := &epicGitHub{
+		checks:  []Check{{Name: "ci/test", Bucket: "pass"}},
+		openURL: "https://github.test/pr/42",
 	}
 	git := &resumedEpicGit{branch: epic, midMerge: true}
 	p := shippableEpicPipeline(t, gh, tr)
@@ -1390,6 +1379,8 @@ type epicGitHub struct {
 	createURL    string
 	createErr    error
 	mergedURL    string
+	openURL      string
+	openDraft    bool
 	prState      string
 	createCalls  int
 	base         string
@@ -1410,10 +1401,13 @@ type epicGitHub struct {
 	editErr      error
 }
 
-func (e *epicGitHub) PRURL(context.Context, string) (string, error) { return "", nil }
+func (e *epicGitHub) PRURL(context.Context, string) (string, bool, error) {
+	return e.openURL, e.openDraft, nil
+}
 func (e *epicGitHub) MergedPRURL(context.Context, string) (string, error) {
 	return e.mergedURL, nil
 }
+func (e *epicGitHub) PRIsDraft(context.Context, string) (bool, error) { return e.openDraft, nil }
 func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string, draft bool) (string, error) {
 	e.createCalls++
 	e.base, e.head, e.title, e.body, e.createDraft = base, head, title, body, draft

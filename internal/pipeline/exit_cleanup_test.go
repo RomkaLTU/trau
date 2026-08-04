@@ -294,7 +294,7 @@ func TestSliceBranchStacksOnEpicBranch(t *testing.T) {
 // A partial epic branch that already has an open PR is tracked: exit hygiene adopts
 // that PR rather than opening a second one.
 func TestSettleEpicBranchAdoptsExistingPR(t *testing.T) {
-	gh := &openPRGitHub{url: "https://github.test/pr/9"}
+	gh := &epicGitHub{openURL: "https://github.test/pr/9"}
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
 	p.GitHub = gh
 	p.Remote = "origin"
@@ -308,13 +308,6 @@ func TestSettleEpicBranchAdoptsExistingPR(t *testing.T) {
 		t.Errorf("opened %d PR(s) for a branch that already has one", gh.createCalls)
 	}
 }
-
-type openPRGitHub struct {
-	epicGitHub
-	url string
-}
-
-func (g *openPRGitHub) PRURL(context.Context, string) (string, error) { return g.url, nil }
 
 // TestEpicMergeMarksDraftReady: the epic ships through whatever PR it has, so a
 // draft an earlier run's exit hygiene opened is taken out of draft before the merge

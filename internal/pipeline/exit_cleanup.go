@@ -206,7 +206,7 @@ func (p *Pipeline) settleEpicBranch(ctx context.Context) {
 			return
 		}
 	}
-	prURL, err := p.ensureEpicPR(ctx, epic, true)
+	prURL, _, err := p.ensureEpicPR(ctx, epic, true)
 	if err != nil {
 		p.logf("  ⚠ couldn't open a PR for epic branch %s (%v) — its %d commit(s) are pushed to %s", epic, err, len(commits), p.Remote)
 		return

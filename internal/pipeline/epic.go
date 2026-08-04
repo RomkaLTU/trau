@@ -122,17 +122,25 @@ func (p *Pipeline) remoteBaseTip(ctx context.Context) string {
 	return tip
 }
 
-// ensureEpicPR returns the epic branch's open PR, opening one when it has none.
-// draft opens it as a draft: exit hygiene tracks an unfinished epic that way, and
-// the finalize that later ships the epic adopts that same PR and marks it ready.
-func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bool) (string, error) {
-	prURL, _ := p.GitHub.PRURL(ctx, epicBranch)
+// draftPRKey records the epic draft PR trau's own exit hygiene opened. Only that
+// PR may later be undrafted and shipped; a draft the marker does not name is one a
+// human parked deliberately, and the finalize that meets it hands the epic over
+// instead. It lives on the checkpoint because the run that reads it is never the
+// run that wrote it.
+const draftPRKey = "DRAFT_PR_URL"
+
+// ensureEpicPR returns the epic branch's open PR and whether it is still a draft,
+// opening one when the branch has none. draft opens it as a draft: exit hygiene
+// tracks an unfinished epic that way, and the finalize that later ships the epic
+// adopts that same PR and marks it ready.
+func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bool) (string, bool, error) {
+	prURL, wasDraft, _ := p.GitHub.PRURL(ctx, epicBranch)
 	if prURL != "" {
-		return prURL, nil
+		return prURL, wasDraft, nil
 	}
 
 	if err := p.assertPRBaseCurrent(ctx, p.Git, p.Base, p.baseRef()); err != nil {
-		return "", err
+		return "", false, err
 	}
 	title, err := p.Tracker.Title(ctx, p.EpicID)
 	if err != nil {
@@ -143,13 +151,24 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bo
 		if strings.Contains(err.Error(), "No commits between") {
 			if merged, _ := p.GitHub.MergedPRURL(ctx, epicBranch); merged != "" {
 				p.logf("  epic PR already merged %s", merged)
-				return merged, nil
+				return merged, false, nil
 			}
 		}
-		return "", err
+		return "", false, err
+	}
+	if draft {
+		if err := p.State.Set(p.EpicID, draftPRKey, prURL); err != nil {
+			p.logf("  epic draft marker error (continuing): %v", err)
+		}
 	}
 	p.logf("  epic PR %s", prURL)
-	return prURL, nil
+	return prURL, draft, nil
+}
+
+// authoredDraft reports whether prURL is the draft trau opened itself. Anything
+// else in draft is a human's explicit "not ready" and is left untouched.
+func (p *Pipeline) authoredDraft(prURL string) bool {
+	return p.EpicID != "" && prURL != "" && p.State.Get(p.EpicID, draftPRKey) == prURL
 }
 
 // epicPRTitle builds the epic PR's Conventional-Commit-style header —
@@ -227,9 +246,13 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: sync with %s: %w", p.EpicID, p.Base, err)
 	}
-	prURL, err := p.ensureEpicPR(ctx, epic, false)
+	prURL, draft, err := p.ensureEpicPR(ctx, epic, false)
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: create PR: %w", p.EpicID, err)
+	}
+	if draft && !p.authoredDraft(prURL) {
+		p.logf("  ⚠ epic %s sits behind a draft PR trau did not open — leaving it parked: %s", p.EpicID, prURL)
+		return p.handOffEpic("a human parked the epic behind a draft PR", prURL)
 	}
 	if !synced {
 		p.logf("  ⚠ epic %s still conflicts with %s — PR left for manual resolution: %s", p.EpicID, p.Base, prURL)
@@ -376,8 +399,9 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		p.checkpointEpicMerged(ctx, prURL)
 		return true, nil
 	}
-	// The PR may be the draft an earlier run's exit hygiene opened; neither a merge
-	// nor a reviewer can take a draft, and one already open for review is not news.
+	// The PR may be the draft an earlier run's exit hygiene opened — the finalize
+	// parks any other draft before it gets here. Neither a merge nor a reviewer can
+	// take a draft, and one already open for review is not news.
 	if err := p.GitHub.MarkPRReady(ctx, pr); err != nil {
 		logger.Verbosef("mark epic PR %s ready: %v", pr, err)
 	}

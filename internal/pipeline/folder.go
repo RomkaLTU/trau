@@ -618,7 +618,7 @@ func (p *Pipeline) openChildPR(ctx context.Context, c folderrepo.Child, branch, 
 	if err := g.Push(ctx, p.Remote, branch, false); err != nil {
 		return "", fmt.Errorf("push %s: %w", branch, err)
 	}
-	if url, err := gh.PRURL(ctx, branch); err == nil && url != "" {
+	if url, _, err := gh.PRURL(ctx, branch); err == nil && url != "" {
 		return url, nil
 	}
 	if err := p.assertPRBaseCurrent(ctx, g, base, base); err != nil {
