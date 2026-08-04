@@ -110,19 +110,20 @@ func TestGrillDeltaText(t *testing.T) {
 	}
 }
 
-// activityJSON renders an extractor's verdict as the frame the stream would carry,
-// which is the contract under test — down to the fields it leaves out. An empty
-// string is a line that yields no activity at all.
-func activityJSON(t *testing.T, act *GrillActivityView) string {
+// activityJSON renders an extractor's verdict as the frames the stream would carry,
+// one per line, which is the contract under test — down to the fields they leave out.
+// An empty string is a line that yields no activity at all.
+func activityJSON(t *testing.T, acts []GrillActivityView) string {
 	t.Helper()
-	if act == nil {
-		return ""
+	lines := make([]string, 0, len(acts))
+	for _, act := range acts {
+		b, err := json.Marshal(act)
+		if err != nil {
+			t.Fatalf("marshal activity: %v", err)
+		}
+		lines = append(lines, string(b))
 	}
-	b, err := json.Marshal(act)
-	if err != nil {
-		t.Fatalf("marshal activity: %v", err)
-	}
-	return string(b)
+	return strings.Join(lines, "\n")
 }
 
 func TestGrillActivityEvent(t *testing.T) {
@@ -132,9 +133,9 @@ func TestGrillActivityEvent(t *testing.T) {
 		want string
 	}{
 		{
-			name: "tool use start",
+			name: "tool use start names the call it opens",
 			line: `{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"WebSearch","input":{}}}}`,
-			want: `{"seq":0,"kind":"tool","name":"WebSearch"}`,
+			want: `{"seq":0,"kind":"tool","id":"toolu_1","name":"WebSearch"}`,
 		},
 		{
 			name: "thinking start",
@@ -142,14 +143,33 @@ func TestGrillActivityEvent(t *testing.T) {
 			want: `{"seq":0,"kind":"thinking"}`,
 		},
 		{
+			name: "thinking delta carries the stretch as it is written",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}}`,
+			want: `{"seq":0,"kind":"thinking","text":"weighing it"}`,
+		},
+		{
+			name: "signature delta closes thinking without adding to it",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Eo0B"}}}`,
+		},
+		{
+			name: "an encrypted stretch's empty delta opens nothing",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}}}`,
+		},
+		{
 			name: "tool result",
 			line: `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"3 results"}]}}`,
-			want: `{"seq":0,"kind":"result","ok":true}`,
+			want: `{"seq":0,"kind":"result","id":"toolu_1","ok":true}`,
 		},
 		{
 			name: "failed tool result",
 			line: `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"no such file","is_error":true}]}}`,
-			want: `{"seq":0,"kind":"result","ok":false}`,
+			want: `{"seq":0,"kind":"result","id":"toolu_1","ok":false}`,
+		},
+		{
+			name: "tools run in parallel each come back",
+			line: `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"3 results"},{"type":"tool_result","tool_use_id":"toolu_2","content":"boom","is_error":true}]}}`,
+			want: `{"seq":0,"kind":"result","id":"toolu_1","ok":true}` + "\n" +
+				`{"seq":0,"kind":"result","id":"toolu_2","ok":false}`,
 		},
 		{
 			name: "text block start",
@@ -164,8 +184,19 @@ func TestGrillActivityEvent(t *testing.T) {
 			line: `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"query\":\"secret\""}}}`,
 		},
 		{
-			name: "whole assistant message",
-			line: `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"WebSearch","input":{"query":"secret"}}]}}`,
+			name: "the closed block fills the call in",
+			line: `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"WebSearch","input":{"query":"sse frame contracts"}}]}}`,
+			want: `{"seq":0,"kind":"tool","id":"toolu_1","name":"WebSearch","detail":"sse frame contracts"}`,
+		},
+		{
+			name: "parallel calls close together",
+			line: `{"type":"assistant","message":{"content":[{"type":"text","text":"Let me look."},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"go test ./..."}},{"type":"tool_use","id":"toolu_2","name":"Glob","input":{"pattern":"**/*.go"}}]}}`,
+			want: `{"seq":0,"kind":"tool","id":"toolu_1","name":"Bash","detail":"go test ./..."}` + "\n" +
+				`{"seq":0,"kind":"tool","id":"toolu_2","name":"Glob","detail":"**/*.go"}`,
+		},
+		{
+			name: "assistant text alone is not tool traffic",
+			line: `{"type":"assistant","message":{"content":[{"type":"text","text":"Let me push back."}]}}`,
 		},
 		{
 			name: "user text is not a tool result",
@@ -541,7 +572,7 @@ func TestGrillRunnerStreamsActivity(t *testing.T) {
 					t.Errorf("activity %+v arrived after the turn settled", ev.Payload)
 				}
 				act := ev.Payload.(GrillActivityView)
-				activity = append(activity, activityJSON(t, &act))
+				activity = append(activity, activityJSON(t, []GrillActivityView{act}))
 			case "state", "message":
 				settled = true
 			}
@@ -552,8 +583,10 @@ func TestGrillRunnerStreamsActivity(t *testing.T) {
 
 	want := []string{
 		`{"seq":1,"kind":"thinking"}`,
-		`{"seq":2,"kind":"tool","name":"WebSearch"}`,
-		`{"seq":3,"kind":"result","ok":true}`,
+		`{"seq":2,"kind":"thinking","text":"weighing it"}`,
+		`{"seq":3,"kind":"tool","id":"toolu_1","name":"WebSearch"}`,
+		`{"seq":4,"kind":"tool","id":"toolu_1","name":"WebSearch","detail":"sse frame contracts"}`,
+		`{"seq":5,"kind":"result","id":"toolu_1","ok":true}`,
 	}
 	if !slices.Equal(activity, want) {
 		t.Errorf("activity = %v, want %v", activity, want)
@@ -690,6 +723,7 @@ printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"conten
 printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}}\n'
 printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"WebSearch","input":{}}}}\n'
 printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}}\n'
+printf '{"type":"assistant","session_id":"sid-stream","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"WebSearch","input":{"query":"sse frame contracts"}}]}}\n'
 printf '{"type":"user","session_id":"sid-stream","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"3 results"}]}}\n'
 printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}}\n'
 printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"Let me "}}}\n'
