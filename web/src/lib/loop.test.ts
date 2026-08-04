@@ -357,6 +357,19 @@ describe('projectLoopState', () => {
       ).toBe('budget')
     })
 
+    it('classifies a budget halt as budget, not a run still in flight', () => {
+      expect(
+        haltFor({
+          failure_class: 'budget',
+          failure_reason: 'per-ticket budget cap $0.50 reached',
+        }),
+      ).toEqual({
+        kind: 'budget',
+        ticket: 'COD-1',
+        reason: 'per-ticket budget cap $0.50 reached',
+      })
+    })
+
     it('reads a clean finish as not halted', () => {
       expect(haltFor({ terminal: true })).toBeNull()
     })

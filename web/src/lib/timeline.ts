@@ -178,6 +178,18 @@ function resolve(
         completedAt: run.updated_at,
       }
     }
+    // A spend ceiling parks the ticket exactly as a provider pause does — blameless
+    // and resumable — so it settles as paused and its class names the cap.
+    if (run.failure_class === 'budget') {
+      return {
+        ...base,
+        status: 'paused',
+        failureClass: 'budget',
+        reason: run.failure_reason,
+        phase: run.phase,
+        completedAt: run.updated_at,
+      }
+    }
     if (run.failure_class === 'faulted' || run.failure_class === 'gave_up') {
       return {
         ...base,
@@ -581,7 +593,9 @@ export function ticketPill(t: TimelineTicket): {
     case 'running':
       return stepPill(t.activity, t.phase ?? '')
     case 'paused':
-      return { state: 'warn', label: 'paused' }
+      return t.failureClass === 'budget'
+        ? { state: 'warn', label: 'over budget' }
+        : { state: 'warn', label: 'paused' }
     case 'stopped':
       return { state: 'info', label: 'stopped' }
     case 'failed':

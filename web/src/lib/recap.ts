@@ -2,11 +2,17 @@ import type { FeedEvent, RepoFeedEvent } from '@/lib/events'
 
 export const STATE_CHANGE_KIND = 'state_change'
 
-export type RecapCategory = 'merged' | 'paused' | 'faulted' | 'quarantined'
+export type RecapCategory =
+  | 'merged'
+  | 'paused'
+  | 'budget'
+  | 'faulted'
+  | 'quarantined'
 
 export const RECAP_CATEGORIES: RecapCategory[] = [
   'merged',
   'paused',
+  'budget',
   'faulted',
   'quarantined',
 ]
@@ -14,7 +20,12 @@ export const RECAP_CATEGORIES: RecapCategory[] = [
 // PUSHED_STATES are the state changes the hub also raises a notification for
 // (notifyRunEvent in internal/webserver/notifications.go), and so pushes to a
 // subscribed browser. A merge is a completion and is never pushed.
-const PUSHED_STATES: RecapCategory[] = ['paused', 'faulted', 'quarantined']
+const PUSHED_STATES: RecapCategory[] = [
+  'paused',
+  'budget',
+  'faulted',
+  'quarantined',
+]
 
 // isPushed reports whether Web Push already carries this state change, so the
 // in-tab notification for it can stand down rather than stack a second one under
@@ -38,6 +49,7 @@ export interface Recap {
   since: string | null
   merged: RecapItem[]
   paused: RecapItem[]
+  budget: RecapItem[]
   faulted: RecapItem[]
   quarantined: RecapItem[]
   total: number
@@ -60,6 +72,7 @@ export function deriveRecap(
     since,
     merged: [],
     paused: [],
+    budget: [],
     faulted: [],
     quarantined: [],
     total: 0,
@@ -121,6 +134,10 @@ export function describeRecapItem(item: RecapItem): string {
       return item.reason
         ? `${who} quarantined — ${item.reason}`
         : `${who} quarantined`
+    case 'budget':
+      return item.reason
+        ? `${who} over budget — ${item.reason}`
+        : `${who} over budget`
     case 'paused':
       switch (pauseReason(item)) {
         case 'usage_window':

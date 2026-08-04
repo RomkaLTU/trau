@@ -672,7 +672,7 @@ func LiveAgentSize(termW, termH int) (cols, rows int) {
 func (m *model) addLog(line string) {
 	m.appendRaw(line)
 	glyph, style, text, isSub := m.classifyLine(line)
-	if glyph == "⏸" && strings.HasPrefix(text, "paused") {
+	if glyph == "⏸" {
 		m.paused = true
 	}
 	if isSub {

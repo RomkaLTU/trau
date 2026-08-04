@@ -120,9 +120,9 @@ func (s *Server) notifyGrillAwaiting(sess hubstore.GrillSession, body string) {
 	s.publishNotification(notif)
 }
 
-// notifyRunEvent records a notification for a run that paused, faulted, was
-// quarantined, left a PR for a human, or delivered an epic to the base — keyed
-// off the same state_change fields the web recap
+// notifyRunEvent records a notification for a run that paused, halted on a budget
+// cap, faulted, was quarantined, left a PR for a human, or delivered an epic to the
+// base — keyed off the same state_change fields the web recap
 // derives (web/src/lib/recap.ts). Every other event kind and state produces nothing.
 func (s *Server) notifyRunEvent(repo registry.Repo, row hubstore.EventRow) {
 	if row.Kind != stateChangeKind {
@@ -217,7 +217,9 @@ func grillNotificationTitle(sess hubstore.GrillSession) string {
 
 func runNotificationKind(state string) string {
 	switch state {
-	case "paused":
+	// A budget halt parks the run as blamelessly as a provider pause, so it rides
+	// the pause kind's routing and distinguishes itself in the title.
+	case "paused", "budget":
 		return hubstore.NotificationRunPaused
 	case "faulted":
 		return hubstore.NotificationRunFaulted
@@ -235,6 +237,8 @@ func runNotificationTitle(state, repo string) string {
 	switch state {
 	case "paused":
 		return "Run paused — " + repo
+	case "budget":
+		return "Run over budget — " + repo
 	case "faulted":
 		return "Run faulted — " + repo
 	case "quarantined":

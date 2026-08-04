@@ -44,6 +44,7 @@ var terminalStates = map[string]bool{
 	"quarantined": true,
 	"paused":      true,
 	"stopped":     true,
+	"budget":      true,
 }
 
 const maxDurationEvents = 5000

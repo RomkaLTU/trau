@@ -650,14 +650,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 // drainClass maps the loop's exit error to the failure class a queue child posts
 // with its drain report. The hub reads an empty class as a clean finish and
 // settles the item done — marking every sub-issue of an epic done with it — so
-// only a nil error may post one. A pause stays a pause and a deliberate stop stays
-// a stop, both parking the item for a resume; every other error, git preflight
-// failures included, posts faulted so the drainer parks the item instead of
-// settling it done with no work behind it. An epic whose finalize declined while
-// children still read open posts a pause too, so a start re-attempts the finalize
-// instead of the item settling done with the epic branch unmerged. An epic whose
-// release was handed to a human posts its own class: there is nothing left to
-// re-attempt, but the epic did not ship either.
+// only a nil error may post one. A pause stays a pause, a deliberate stop stays a
+// stop and a budget halt stays a budget halt, each parking the item for a resume;
+// every other error, git preflight failures included, posts faulted so the drainer
+// parks the item instead of settling it done with no work behind it. An epic whose
+// finalize declined while children still read open posts a pause too, so a start
+// re-attempts the finalize instead of the item settling done with the epic branch
+// unmerged. An epic whose release was handed to a human posts its own class: there
+// is nothing left to re-attempt, but the epic did not ship either.
 func drainClass(err error) (class, reason string) {
 	switch {
 	case err == nil:
@@ -668,18 +668,21 @@ func drainClass(err error) (class, reason string) {
 		return state.FailPaused, err.Error()
 	case pipeline.IsStopped(err):
 		return state.FailStopped, err.Error()
+	case pipeline.IsBudgetHalt(err):
+		return state.FailBudget, err.Error()
 	default:
 		return state.FailFaulted, err.Error()
 	}
 }
 
 // blamelessPause reports whether err parked the run without blaming anything:
-// a provider rate/usage pause, an epic whose finalize declined while children
-// still read open, or an epic release left for a human. All three leave every
-// ticket exactly where it stands, so the summary owes the operator a pause line,
-// not an "aborted" one.
+// a provider rate/usage pause, a spend ceiling reached mid-ticket, an epic whose
+// finalize declined while children still read open, or an epic release left for a
+// human. All of them leave every ticket exactly where it stands, so the summary
+// owes the operator a pause line, not an "aborted" one.
 func blamelessPause(err error) bool {
-	return pipeline.IsPaused(err) || pipeline.IsEpicUnfinalized(err) || pipeline.IsEpicHandOff(err)
+	return pipeline.IsPaused(err) || pipeline.IsBudgetHalt(err) ||
+		pipeline.IsEpicUnfinalized(err) || pipeline.IsEpicHandOff(err)
 }
 
 // applyFault fills a SessionSummary's fault fields from err when the loop stopped
@@ -1784,15 +1787,16 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 		}
 	}
 	// halt reports whether err ends the session as it stands — a blameless provider
-	// pause or a deliberate stop, either way leaving the ticket resumable at its
-	// checkpoint. A stop also takes the signal path's closing line.
+	// pause, a spend ceiling reached mid-ticket, or a deliberate stop, each leaving
+	// the ticket resumable at its checkpoint. A stop also takes the signal path's
+	// closing line; the other two already logged their own.
 	halt := func(err error) bool {
 		if pipeline.IsStopped(err) {
 			report(registry.StateStopping, "", "")
 			con.Logf("⏹ interrupted — stopping")
 			return true
 		}
-		return pipeline.IsPaused(err)
+		return pipeline.IsPaused(err) || pipeline.IsBudgetHalt(err)
 	}
 	// doneSkipped remembers picks that turned out to be already merged. Pick
 	// offering such an id a second time means the tracker is not converging —
@@ -2817,9 +2821,9 @@ func (a *appActions) ReportIdle() { a.reg.SetState(registry.StateIdle, "", "") }
 func (a *appActions) ReportStopping() { a.reg.SetState(registry.StateStopping, "", "") }
 
 // reportAfterRun settles the session state once a run returns: parked, naming
-// the ticket a fault, pause, stop, or give-up left on the recap for a human, or
-// idle when the run finished cleanly. The failure class and reason stay on the
-// checkpoint.
+// the ticket a fault, pause, stop, budget halt, or give-up left on the recap for a
+// human, or idle when the run finished cleanly. The failure class and reason stay
+// on the checkpoint.
 func (a *appActions) reportAfterRun(err error) {
 	if f := pipeline.AsFault(err); f != nil {
 		a.reg.SetState(registry.StateParked, f.ID, "")
@@ -2831,6 +2835,10 @@ func (a *appActions) reportAfterRun(err error) {
 	}
 	if s := pipeline.AsStopped(err); s != nil {
 		a.reg.SetState(registry.StateParked, s.ID, "")
+		return
+	}
+	if b := pipeline.AsBudgetHalt(err); b != nil {
+		a.reg.SetState(registry.StateParked, b.ID, "")
 		return
 	}
 	if g := pipeline.AsGiveUp(err); g != nil {

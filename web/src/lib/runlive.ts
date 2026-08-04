@@ -41,7 +41,7 @@ export function deriveVariant({
 }: VariantInput): RunVariant {
   if (working) return 'live'
   if (phase === 'merged') return 'success'
-  if (failureClass === 'paused') return 'paused'
+  if (failureClass === 'paused' || failureClass === 'budget') return 'paused'
   if (failureClass === 'stopped') return 'stopped'
   if (failureClass === 'faulted' || failureClass === 'gave_up') return 'failure'
   // No checkpoint and no live process: the run has not landed yet. A reported
@@ -90,7 +90,9 @@ export function headerPill(
     case 'success':
       return { state: 'success', label: 'merged' }
     case 'paused':
-      return { state: 'warn', label: 'paused' }
+      return failureClass === 'budget'
+        ? { state: 'warn', label: 'over budget' }
+        : { state: 'warn', label: 'paused' }
     case 'stopped':
       return { state: 'info', label: 'stopped' }
     case 'failure':
@@ -136,7 +138,15 @@ export interface PauseBanner {
   hint: string
 }
 
-export function pauseBanner(reason: string): PauseBanner {
+// A budget halt shares the paused variant but not its remedy: the reason text is
+// about spend, not the provider, and starting again re-halts until the cap moves.
+export function pauseBanner(reason: string, failureClass?: FailureClass): PauseBanner {
+  if (failureClass === 'budget') {
+    return {
+      headline: 'budget stop',
+      hint: `${reason || 'The budget cap was reached'}. Work is saved at its checkpoint — raise BUDGET in Settings, then start the loop again.`,
+    }
+  }
   const provider = reason.split(' ')[0] || 'the provider'
   switch (pauseKind(reason)) {
     case 'reauth':
@@ -195,6 +205,7 @@ const TERMINAL_STATES = new Set([
   'quarantined',
   'paused',
   'stopped',
+  'budget',
 ])
 
 interface TimedEvent {

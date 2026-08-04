@@ -35,13 +35,15 @@ const releaseResumeTries = 2
 // just parked, when the pause is one a re-attempt can clear: a blameless provider
 // rate/auth wall or an unreachable hub the repo opted into re-trying, or a
 // finalize that died mid-release, which strands its repo's queue until something
-// re-enters it. A fault, an unknown outcome and a deliberate stop otherwise stay
-// parked for a human. Each re-attempt waits longer than the last and the budget is
-// bounded, so an item whose condition never clears ends up parked exactly as it
-// does today — a release that spends its budget stamped faulted, which opens the
-// gate it was holding.
+// re-enters it. A fault, an unknown outcome, a deliberate stop and a spend ceiling
+// otherwise stay parked — the last two clear only on a human or the cap's own
+// reset, so re-entering a release over either would burn its re-attempts against
+// an unchanged condition and stamp a blameless park faulted. Each re-attempt waits
+// longer than the last and the tries are bounded, so an item whose condition never
+// clears ends up parked exactly as it does today — a release that spends them
+// stamped faulted, which opens the gate it was holding.
 func (d *drainer) planAutoResume(root string, it queue.Item, class string) {
-	release := class != state.FailStopped && d.crashedRelease(root, it.ID)
+	release := class != state.FailStopped && class != state.FailBudget && d.crashedRelease(root, it.ID)
 	tries := d.autoTries(root)
 	switch {
 	case release && tries < releaseResumeTries:

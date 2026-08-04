@@ -128,6 +128,24 @@ describe('buildTimeline', () => {
     expect(tl.running).toBeUndefined()
   })
 
+  it('settles a budget-halted run as paused, never as still running', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1', status: 'paused' })],
+      [
+        run({
+          ticket: 'COD-1',
+          failure_class: 'budget',
+          failure_reason: 'per-ticket budget cap $0.50 reached',
+        }),
+      ],
+    )
+    const t = tl.settled[0]
+    expect(t.status).toBe('paused')
+    expect(t.failureClass).toBe('budget')
+    expect(ticketPill(t).label).toBe('over budget')
+    expect(tl.running).toBeUndefined()
+  })
+
   it('classifies faulted and gave_up runs as failed', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' })],

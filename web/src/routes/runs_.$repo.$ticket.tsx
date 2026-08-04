@@ -24,6 +24,7 @@ import { cn } from '@/lib/utils'
 import { boardPill } from '@/lib/overview'
 import { addComment } from '@/lib/issues'
 import { runTitle, usePageTitle } from '@/lib/page-title'
+import type { FailureClass } from '@/lib/runs'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import { steerSettled } from '@/lib/steer'
 import {
@@ -71,7 +72,7 @@ function RunDetailPage() {
 
 function Detail({ repo, run }: { repo: string; run: RunDetail }) {
   const pill = boardPill(run)
-  const stopped = run.failure_class === 'stopped'
+  const tone = failureTone(run.failure_class)
   const openPR = run.pr_url ? (
     <Button asChild size="sm" className="font-mono">
       <a href={run.pr_url} target="_blank" rel="noreferrer">
@@ -118,18 +119,8 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
       {run.no_browser && <NoBrowserBanner />}
 
       {run.failure_reason && (
-        <div
-          className={cn(
-            'rounded-lg border px-4 py-3',
-            stopped ? 'border-info/40 bg-info/10' : 'border-fail/40 bg-fail/10',
-          )}
-        >
-          <p
-            className={cn(
-              'font-mono text-sm leading-relaxed',
-              stopped ? 'text-info' : 'text-fail',
-            )}
-          >
+        <div className={cn('rounded-lg border px-4 py-3', tone.box)}>
+          <p className={cn('font-mono text-sm leading-relaxed', tone.text)}>
             {run.failure_reason}
           </p>
         </div>
@@ -192,6 +183,19 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
       </div>
     </div>
   )
+}
+
+// A blameless park keeps the destructive red off the screen: a deliberate stop
+// reads informational, a spend ceiling reads as a warning like its board pill.
+function failureTone(failureClass?: FailureClass): { box: string; text: string } {
+  switch (failureClass) {
+    case 'stopped':
+      return { box: 'border-info/40 bg-info/10', text: 'text-info' }
+    case 'budget':
+      return { box: 'border-warn/40 bg-warn/10', text: 'text-warn' }
+    default:
+      return { box: 'border-fail/40 bg-fail/10', text: 'text-fail' }
+  }
 }
 
 function Empty({ children }: { children: React.ReactNode }) {

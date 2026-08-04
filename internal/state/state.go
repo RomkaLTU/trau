@@ -129,6 +129,7 @@ func StaleCheckpoint(phase string, trackerDone bool) bool {
 // run's exit outcome can name it on the wire.
 const (
 	FailPaused        = "paused"         // a blameless provider rate/usage or auth wall
+	FailBudget        = "budget"         // a spend ceiling reached mid-run; work preserved, resumes once the cap allows
 	FailFaulted       = "faulted"        // an unexpected error; work preserved, still resumable
 	FailGaveUp        = "gave_up"        // a verified dead end; quarantined and needs a human
 	FailStopped       = "stopped"        // a deliberate stop (web Stop, Ctrl-C, hub shutdown); blameless, always resumable
@@ -158,11 +159,11 @@ func FailureClass(phase, stored, reason string) string {
 
 // ResumableRelease reports whether an Epic checkpoint is a release trau still
 // owns and may re-enter: the phase reads releasing, no hand-off marker parked it
-// on a human, and no fault ended it. A blameless park — a provider pause or a
-// deliberate stop — leaves the release trau's to pick back up, while a release
-// nothing will re-attempt must stop holding its repo's queue shut. The loop's
-// re-entry, the hub's automatic re-arm and the queue's release gate all read it,
-// so none of the three can drift from the others.
+// on a human, and no fault ended it. A blameless park — a provider pause, a spend
+// ceiling or a deliberate stop — leaves the release trau's to pick back up, while
+// a release nothing will re-attempt must stop holding its repo's queue shut. The
+// loop's re-entry, the hub's automatic re-arm and the queue's release gate all
+// read it, so none of the three can drift from the others.
 func ResumableRelease(phase, release, failureClass string) bool {
 	return phase == Releasing && release != ReleaseAwaitingHuman && failureClass != FailFaulted
 }
