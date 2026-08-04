@@ -4,6 +4,7 @@ import { ArrowRight, Plus, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { URLLink, WORKSPACE_HINT, WorkspaceBadge } from '@/components/trau/app-urls-panel'
+import { WorkspaceCombobox } from '@/components/trau/workspace-combobox'
 import { appURLsQueryOptions } from '@/lib/app-urls'
 import {
   appURLRowIssue,
@@ -69,6 +70,7 @@ export function StepAppURLs({
       {rows.map((row, index) => (
         <URLRow
           key={index}
+          repo={repo}
           index={index}
           row={row}
           issue={appURLRowIssue(rows, index)}
@@ -126,6 +128,7 @@ export function StepAppURLs({
 }
 
 function URLRow({
+  repo,
   index,
   row,
   issue,
@@ -133,6 +136,7 @@ function URLRow({
   onChange,
   onRemove,
 }: {
+  repo: string
   index: number
   row: AppURLRowFields
   issue: string | null
@@ -169,11 +173,13 @@ function URLRow({
         </div>
         <div className="flex flex-col gap-1.5">
           <FieldLabel htmlFor={`app-url-workspace-${index}`}>workspace</FieldLabel>
-          <TextInput
+          <WorkspaceCombobox
             id={`app-url-workspace-${index}`}
+            repo={repo}
             value={row.workspace}
-            onChange={(e) => onChange({ workspace: e.target.value })}
-            placeholder="default"
+            onChange={(workspace) => onChange({ workspace })}
+            label="App URL workspace"
+            className="h-auto border-border px-2.5 py-1.5 font-mono text-sm"
           />
         </div>
       </div>
