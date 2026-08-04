@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/proofsbranch"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -71,7 +72,133 @@ func TestDeliveryPostsOneQANoteWithTheVerifyFactsAndPRLink(t *testing.T) {
 		}
 	}
 	if len(tr.notes[0].Images) != 0 {
-		t.Errorf("QA note carried %d images, want none in this slice", len(tr.notes[0].Images))
+		t.Errorf("QA note carried %d images with no proofs fetch wired, want none", len(tr.notes[0].Images))
+	}
+}
+
+// qaProofs is a run's harvested screenshots: one captioned by the verifier, one
+// left to the default naming.
+func qaProofs(context.Context, string) ([]proofsbranch.Proof, error) {
+	return []proofsbranch.Proof{
+		{Seq: 1, Mime: "image/png", Caption: "home", Bytes: []byte("png-1")},
+		{Seq: 2, Mime: "image/png", Bytes: []byte("png-2")},
+	}, nil
+}
+
+// A delivered run's note carries every verify screenshot: the bytes a native-upload
+// provider needs, plus the trau-proofs URL a link-only provider embeds — inline on
+// a public repo, clickable on a private one.
+func TestDeliveryQANoteCarriesProofBytesAndPublishedURLs(t *testing.T) {
+	const id = "COD-91431"
+	cases := []struct {
+		name     string
+		private  bool
+		wantRaw  string
+		wantBlob string
+	}{
+		{"public repo", false, "https://raw.githubusercontent.com/acme/web/trau-proofs/COD-91431/proof-1.png", ""},
+		{"private repo", true, "", "https://github.com/acme/web/blob/trau-proofs/COD-91431/proof-1.png"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := newQATracker()
+			p := newQADeliveryPipeline(t, tr, id)
+			p.FetchProofs = qaProofs
+			p.PublishProofs = func(context.Context, string, string) (proofsbranch.Publication, error) {
+				return proofsbranch.Publication{
+					Owner:   "acme",
+					Repo:    "web",
+					Branch:  proofsbranch.Branch,
+					Private: tc.private,
+					Files: []proofsbranch.File{
+						{Path: id + "/proof-1.png", Caption: "home"},
+						{Path: id + "/proof-2.png", Caption: id + " proof-2.png"},
+					},
+				}, nil
+			}
+
+			if err := p.CommitAndPR(context.Background(), id); err != nil {
+				t.Fatalf("CommitAndPR = %v, want nil", err)
+			}
+			if len(tr.notes) != 1 {
+				t.Fatalf("posted %d QA notes, want exactly 1", len(tr.notes))
+			}
+			images := tr.notes[0].Images
+			if len(images) != 2 {
+				t.Fatalf("QA note carried %d images, want both screenshots", len(images))
+			}
+			want := tracker.QAImage{
+				Name:    "proof-1.png",
+				Mime:    "image/png",
+				Caption: "home",
+				Bytes:   []byte("png-1"),
+				RawURL:  tc.wantRaw,
+				BlobURL: tc.wantBlob,
+			}
+			if got := images[0]; got.Name != want.Name || got.Mime != want.Mime || got.Caption != want.Caption ||
+				string(got.Bytes) != string(want.Bytes) || got.RawURL != want.RawURL || got.BlobURL != want.BlobURL {
+				t.Errorf("first image = %+v, want %+v", got, want)
+			}
+			if got := images[1].Caption; got != id+" proof-2.png" {
+				t.Errorf("uncaptioned proof reads %q, want the ticket and its filename", got)
+			}
+		})
+	}
+}
+
+// On the terminal-failure path nothing is published, so the note carries the bytes
+// a native-upload provider can still show and no URLs at all.
+func TestTerminalFailureQANoteCarriesProofBytesWithoutURLs(t *testing.T) {
+	id := "COD-91432"
+	writeHandoff(t, id)
+	tr := newQATracker()
+	runner := &verdictRunner{path: verifyPath(id), v: verdict{Summary: "the dashboard stayed blank"}}
+	p := newTestPipeline(t, runner, tr)
+	p.QANotes = true
+	p.FetchProofs = qaProofs
+
+	var giveUp *GiveUpError
+	if err := p.Verify(context.Background(), id); !errors.As(err, &giveUp) {
+		t.Fatalf("Verify err = %v, want a *GiveUpError", err)
+	}
+	if len(tr.notes) != 1 {
+		t.Fatalf("posted %d QA notes, want exactly 1", len(tr.notes))
+	}
+	images := tr.notes[0].Images
+	if len(images) != 2 {
+		t.Fatalf("QA note carried %d images, want both screenshots", len(images))
+	}
+	for _, img := range images {
+		if len(img.Bytes) == 0 {
+			t.Errorf("%s carries no bytes, want the screenshot itself", img.Name)
+		}
+		if img.RawURL != "" || img.BlobURL != "" {
+			t.Errorf("%s claims URLs %q/%q, want none — nothing was published", img.Name, img.RawURL, img.BlobURL)
+		}
+	}
+}
+
+// Screenshots are best-effort: a failed fetch still leaves the text report on the
+// ticket rather than costing the run its note.
+func TestQANoteProofsFetchFailureStillPostsTheTextNote(t *testing.T) {
+	id := "COD-91433"
+	tr := newQATracker()
+	p := newQADeliveryPipeline(t, tr, id)
+	p.FetchProofs = func(context.Context, string) ([]proofsbranch.Proof, error) {
+		return nil, errors.New("hub unreachable")
+	}
+
+	if err := p.CommitAndPR(context.Background(), id); err != nil {
+		t.Fatalf("CommitAndPR = %v, want nil", err)
+	}
+	if len(tr.notes) != 1 {
+		t.Fatalf("posted %d QA notes, want exactly 1", len(tr.notes))
+	}
+	if len(tr.notes[0].Images) != 0 {
+		t.Errorf("QA note carried %d images after a failed fetch, want none", len(tr.notes[0].Images))
+	}
+	if !strings.Contains(tr.notes[0].Body, "PR: "+qaNotePR) {
+		t.Errorf("QA note lost its report:\n%s", tr.notes[0].Body)
 	}
 }
 

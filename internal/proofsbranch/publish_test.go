@@ -94,8 +94,8 @@ func TestFilename(t *testing.T) {
 		{7, "", "proof-7"},
 	}
 	for _, tc := range cases {
-		if got := filename(tc.seq, tc.mime); got != tc.want {
-			t.Errorf("filename(%d, %q) = %q, want %q", tc.seq, tc.mime, got, tc.want)
+		if got := Filename(tc.seq, tc.mime); got != tc.want {
+			t.Errorf("Filename(%d, %q) = %q, want %q", tc.seq, tc.mime, got, tc.want)
 		}
 	}
 }

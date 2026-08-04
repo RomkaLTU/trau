@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"path"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/proofsbranch"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -42,8 +44,10 @@ func qaNoteOf(lines []string) tracker.QANote {
 }
 
 // postQANote comments the report on the ticket, best-effort: a failed post only
-// warns, so it never blocks delivery or the give-up path.
-func (p *Pipeline) postQANote(ctx context.Context, id string, note tracker.QANote) {
+// warns, so it never blocks delivery or the give-up path. pub is the run's proofs
+// publication when it reached one — the give-up path publishes nothing and passes
+// the zero value.
+func (p *Pipeline) postQANote(ctx context.Context, id string, note tracker.QANote, pub proofsbranch.Publication) {
 	if !p.QANotes {
 		return
 	}
@@ -51,7 +55,45 @@ func (p *Pipeline) postQANote(ctx context.Context, id string, note tracker.QANot
 	if !ok {
 		return
 	}
+	note.Images = p.qaImages(ctx, id, pub)
 	if err := poster.PostQANote(ctx, id, note); err != nil {
 		p.logf("  ⚠ QA note not posted: %v", err)
 	}
+}
+
+// qaImages reads the run's verify screenshots back for the note: bytes for the
+// providers that upload natively, plus the trau-proofs URLs of whichever ones this
+// run published so the link-only providers embed exactly what the PR body does. A
+// failed fetch warns and yields no images — the text note still posts.
+func (p *Pipeline) qaImages(ctx context.Context, id string, pub proofsbranch.Publication) []tracker.QAImage {
+	if p.FetchProofs == nil {
+		return nil
+	}
+	proofs, err := p.FetchProofs(ctx, id)
+	if err != nil {
+		p.logf("  ⚠ QA note screenshots unavailable: %v", err)
+		return nil
+	}
+	published := make(map[string]string, len(pub.Files))
+	for _, f := range pub.Files {
+		published[path.Base(f.Path)] = f.Path
+	}
+	images := make([]tracker.QAImage, 0, len(proofs))
+	for _, pr := range proofs {
+		img := tracker.QAImage{
+			Name:    proofsbranch.Filename(pr.Seq, pr.Mime),
+			Mime:    pr.Mime,
+			Caption: sanitize.FeedLine(proofsbranch.Caption(pr, id)),
+			Bytes:   pr.Bytes,
+		}
+		if onBranch, ok := published[img.Name]; ok {
+			if pub.Private {
+				img.BlobURL = proofBlobURL(pub, onBranch)
+			} else {
+				img.RawURL = proofRawURL(pub, onBranch)
+			}
+		}
+		images = append(images, img)
+	}
+	return images
 }

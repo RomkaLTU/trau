@@ -856,12 +856,17 @@ func TestLinearPostQANoteCommentsThroughTheAPI(t *testing.T) {
 }
 
 // With no API key the note goes through the Linear MCP instead, in a prompt
-// carrying the issue and the report body.
+// carrying the issue and the report body. A prompt cannot carry image bytes, so
+// the screenshots are dropped rather than half-described.
 func TestLinearPostQANoteFallsBackToMCP(t *testing.T) {
 	runner := &recordingRunner{responses: map[string]agent.Result{"qa_note": {}}}
 	l := &Linear{Runner: runner, Team: "COD"}
+	note := QANote{
+		Body:   "## Trau QA report\n\nVerify failed: red tests\n",
+		Images: []QAImage{{Name: "proof-1.png", Mime: "image/png", Caption: "home", Bytes: []byte("png-1")}},
+	}
 
-	if err := l.PostQANote(context.Background(), "COD-7", QANote{Body: "## Trau QA report\n\nVerify failed: red tests\n"}); err != nil {
+	if err := l.PostQANote(context.Background(), "COD-7", note); err != nil {
 		t.Fatalf("PostQANote error: %v", err)
 	}
 	if runner.calls["qa_note"] != 1 {
@@ -870,5 +875,144 @@ func TestLinearPostQANoteFallsBackToMCP(t *testing.T) {
 	prompt := runner.prompts["qa_note"]
 	if !strings.Contains(prompt, "COD-7") || !strings.Contains(prompt, "Verify failed: red tests") {
 		t.Errorf("MCP prompt = %q, want the issue and the report body", prompt)
+	}
+	if strings.Contains(prompt, "proof-1.png") {
+		t.Errorf("MCP prompt mentions a screenshot it cannot carry:\n%s", prompt)
+	}
+}
+
+// linearUpload is one PUT the fake asset store received.
+type linearUpload struct {
+	path        string
+	contentType string
+	token       string
+	body        string
+}
+
+// newLinearUploadServer fakes the Linear endpoints a QA note with screenshots
+// touches: the issue lookup, the fileUpload mutation (refused for a filename in
+// refuse), the pre-signed PUT target, and commentCreate. It records the uploads it
+// received and the comment bodies it was asked to post.
+func newLinearUploadServer(t *testing.T, refuse map[string]bool, uploads *[]linearUpload, bodies *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		payload, _ := io.ReadAll(r.Body)
+		if r.Method == http.MethodPut {
+			*uploads = append(*uploads, linearUpload{
+				path:        r.URL.Path,
+				contentType: r.Header.Get("Content-Type"),
+				token:       r.Header.Get("X-Linear-Upload"),
+				body:        string(payload),
+			})
+			return
+		}
+		q := string(payload)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(q, "query Issue"):
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-7","team":{"id":"team-1","key":"COD"}}]}}}`)
+		case strings.Contains(q, "mutation FileUpload"):
+			var req struct {
+				Variables struct {
+					Filename    string `json:"filename"`
+					ContentType string `json:"contentType"`
+					Size        int    `json:"size"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(payload, &req)
+			name := req.Variables.Filename
+			if refuse[name] {
+				_, _ = io.WriteString(w, `{"errors":[{"message":"asset store unavailable"}]}`)
+				return
+			}
+			if req.Variables.ContentType != "image/png" || req.Variables.Size == 0 {
+				t.Errorf("fileUpload vars for %s = %+v, want the mime and byte count", name, req.Variables)
+			}
+			_, _ = fmt.Fprintf(w, `{"data":{"fileUpload":{"success":true,"uploadFile":{"uploadUrl":"http://%s/upload/%s","assetUrl":"https://uploads.linear.app/%s","headers":[{"key":"X-Linear-Upload","value":"token-%s"}]}}}}`,
+				r.Host, name, name, name)
+		case strings.Contains(q, "mutation CommentCreate"):
+			var req struct {
+				Variables struct {
+					Body string `json:"body"`
+				} `json:"variables"`
+			}
+			_ = json.Unmarshal(payload, &req)
+			*bodies = append(*bodies, req.Variables.Body)
+			_, _ = io.WriteString(w, `{"data":{"commentCreate":{"success":true}}}`)
+		default:
+			t.Errorf("unexpected GraphQL query: %s", q)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+}
+
+var linearQAImages = []QAImage{
+	{Name: "proof-1.png", Mime: "image/png", Caption: "home", Bytes: []byte("png-1")},
+	{Name: "proof-2.png", Mime: "image/png", Caption: "settings", Bytes: []byte("png-2")},
+}
+
+// Every screenshot is uploaded to Linear's asset store — bytes PUT to the
+// pre-signed URL under the headers Linear handed back — and the one comment the
+// run posts embeds each returned asset URL under its caption.
+func TestLinearPostQANoteUploadsScreenshotsAndEmbedsThem(t *testing.T) {
+	var uploads []linearUpload
+	var bodies []string
+	srv := newLinearUploadServer(t, nil, &uploads, &bodies)
+	defer srv.Close()
+	l := &Linear{Team: "COD", APIKey: "lin_key", endpoint: srv.URL}
+
+	note := QANote{Body: "## Trau QA report\n\nVerify passed\n", Images: linearQAImages}
+	if err := l.PostQANote(context.Background(), "COD-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+
+	want := []linearUpload{
+		{path: "/upload/proof-1.png", contentType: "image/png", token: "token-proof-1.png", body: "png-1"},
+		{path: "/upload/proof-2.png", contentType: "image/png", token: "token-proof-2.png", body: "png-2"},
+	}
+	if len(uploads) != len(want) {
+		t.Fatalf("received %d uploads, want %d", len(uploads), len(want))
+	}
+	for i, w := range want {
+		if uploads[i] != w {
+			t.Errorf("upload %d = %+v, want %+v", i, uploads[i], w)
+		}
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("sent %d commentCreate mutations, want exactly 1", len(bodies))
+	}
+	wantBody := note.Body +
+		"\n![home](https://uploads.linear.app/proof-1.png)\n" +
+		"\n![settings](https://uploads.linear.app/proof-2.png)\n"
+	if bodies[0] != wantBody {
+		t.Errorf("comment body = %q, want %q", bodies[0], wantBody)
+	}
+}
+
+// An asset store that refuses one file costs the note that image and nothing
+// else: the comment still posts, carrying the report and the screenshots that did
+// upload.
+func TestLinearPostQANoteSkipsAnImageThatFailsToUpload(t *testing.T) {
+	var uploads []linearUpload
+	var bodies []string
+	srv := newLinearUploadServer(t, map[string]bool{"proof-2.png": true}, &uploads, &bodies)
+	defer srv.Close()
+	l := &Linear{Team: "COD", APIKey: "lin_key", endpoint: srv.URL}
+
+	note := QANote{Body: "## Trau QA report\n\nVerify passed\n", Images: linearQAImages}
+	if err := l.PostQANote(context.Background(), "COD-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if len(uploads) != 1 {
+		t.Fatalf("received %d uploads, want only the one the store accepted", len(uploads))
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("sent %d commentCreate mutations, want exactly 1", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "![home](https://uploads.linear.app/proof-1.png)") {
+		t.Errorf("comment lost the uploaded screenshot:\n%s", bodies[0])
+	}
+	if strings.Contains(bodies[0], "settings") {
+		t.Errorf("comment embeds a screenshot that never uploaded:\n%s", bodies[0])
 	}
 }

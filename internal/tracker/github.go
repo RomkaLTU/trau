@@ -179,7 +179,7 @@ func (g *GitHub) quarantinePrompt(id, reason string) string {
 
 // PostQANote leaves the run's QA report as a comment on the issue. The body is
 // multi-line Markdown, so it reaches the agent's gh command as a file rather than
-// as prompt text the shell would have to quote. note.Images is ignored.
+// as prompt text the shell would have to quote.
 func (g *GitHub) PostQANote(ctx context.Context, id string, note QANote) error {
 	f, err := os.CreateTemp("", "trau-qa-note-*.md")
 	if err != nil {
@@ -187,7 +187,7 @@ func (g *GitHub) PostQANote(ctx context.Context, id string, note QANote) error {
 	}
 	path := f.Name()
 	defer func() { _ = os.Remove(path) }()
-	_, err = f.WriteString(note.Body)
+	_, err = f.WriteString(g.qaNoteBody(note))
 	_ = f.Close()
 	if err != nil {
 		return fmt.Errorf("qa note for %s: %w", id, err)
@@ -195,6 +195,25 @@ func (g *GitHub) PostQANote(ctx context.Context, id string, note QANote) error {
 
 	_, err = g.Runner.Run(ctx, g.qaNotePrompt(id, path), "qa_note")
 	return err
+}
+
+// qaNoteBody is the comment body: the report followed by the run's published
+// trau-proofs screenshots, embedded inline on a public repo and linked on a
+// private one, whose image proxy cannot render repo-hosted files. GitHub offers no
+// upload API for issue comments, so an image the run never published — a terminal
+// failure opens no PR and pushes no proofs — is left out.
+func (g *GitHub) qaNoteBody(note QANote) string {
+	var b strings.Builder
+	b.WriteString(note.Body)
+	for _, img := range note.Images {
+		switch {
+		case img.RawURL != "":
+			b.WriteString("\n![" + img.Caption + "](" + img.RawURL + ")\n")
+		case img.BlobURL != "":
+			b.WriteString("\n[" + img.Caption + "](" + img.BlobURL + ")\n")
+		}
+	}
+	return b.String()
 }
 
 func (g *GitHub) qaNotePrompt(id, bodyPath string) string {
