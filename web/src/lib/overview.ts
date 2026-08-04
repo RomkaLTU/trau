@@ -63,6 +63,8 @@ export function boardPill(
       return { state: "warn", label: "paused" };
     case "stopped":
       return { state: "info", label: "stopped" };
+    case "budget":
+      return { state: "warn", label: "over budget" };
     case "faulted":
       return { state: "fail", label: "fault" };
     case "gave_up":
@@ -237,6 +239,8 @@ export function attentionPill(cls: FailureClass): {
       return { state: "warn", label: "paused" };
     case "stopped":
       return { state: "info", label: "stopped" };
+    case "budget":
+      return { state: "warn", label: "over budget" };
     case "faulted":
       return { state: "fail", label: "fault" };
     case "gave_up":

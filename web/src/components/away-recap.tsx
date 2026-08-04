@@ -4,6 +4,7 @@ import {
   Bell,
   BellOff,
   ChevronRight,
+  CircleDollarSign,
   CirclePause,
   GitMerge,
   TriangleAlert,
@@ -31,6 +32,7 @@ interface CategoryMeta {
 const CATEGORY_META: Record<RecapCategory, CategoryMeta> = {
   merged: { label: 'Merged', icon: GitMerge, text: 'text-emerald-600 dark:text-emerald-400' },
   paused: { label: 'Paused', icon: CirclePause, text: 'text-amber-600 dark:text-amber-400' },
+  budget: { label: 'Over budget', icon: CircleDollarSign, text: 'text-amber-600 dark:text-amber-400' },
   faulted: { label: 'Faulted', icon: TriangleAlert, text: 'text-destructive' },
   quarantined: { label: 'Quarantined', icon: Ban, text: 'text-orange-600 dark:text-orange-400' },
 }

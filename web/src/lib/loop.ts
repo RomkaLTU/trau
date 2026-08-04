@@ -87,13 +87,18 @@ function executingTickets(items: QueueItem[]): Set<string> {
 }
 
 // haltFor names one settled ticket in the banner's vocabulary, matching the pill
-// its row already shows: a give-up is a budget stop when the reason says so and
-// a quarantine otherwise.
+// its row already shows. A spend ceiling parks the ticket paused under its own
+// class; checkpoints written before that class existed still arrive as a give-up
+// whose reason says budget.
 function haltFor(t: TimelineTicket): LoopHalt | null {
   const reason = t.reason ?? ''
   switch (t.status) {
     case 'paused':
-      return { kind: 'paused', ticket: t.id, reason }
+      return {
+        kind: t.failureClass === 'budget' ? 'budget' : 'paused',
+        ticket: t.id,
+        reason,
+      }
     case 'stopped':
       return { kind: 'stopped', ticket: t.id, reason }
     case 'failed':

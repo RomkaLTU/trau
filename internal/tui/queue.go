@@ -27,9 +27,9 @@ type QueueRow struct {
 	Branch        string
 	FailureReason string
 	// FailureClass is the checkpoint's classified failure (state.FailPaused /
-	// FailStopped / FailFaulted / FailGaveUp), or "" when the row has no failure. It
-	// drives which recovery the Handle confirm offers per class — resume vs the
-	// destructive reset.
+	// FailStopped / FailBudget / FailFaulted / FailGaveUp), or "" when the row has no
+	// failure. It drives which recovery the Handle confirm offers per class — resume
+	// vs the destructive reset.
 	FailureClass string
 	Tokens       int
 	Cost         float64
@@ -133,12 +133,12 @@ func queueVerbs(r QueueRow, live bool) (open, logs, resume, branch, reset bool) 
 func (r QueueRow) needsAttention() bool { return r.FailureClass != "" }
 
 // canResume reports whether the Handle confirm should offer Resume for this row's
-// failure class: paused (re-run after the human clears the block), stopped, and
-// faulted (resume from the preserved checkpoint). Quarantined (gave_up) is
-// terminal.
+// failure class: paused (re-run after the human clears the block), stopped, budget
+// (re-run once the cap allows), and faulted (resume from the preserved checkpoint).
+// Quarantined (gave_up) is terminal.
 func (r QueueRow) canResume() bool {
 	switch r.FailureClass {
-	case state.FailPaused, state.FailStopped, state.FailFaulted:
+	case state.FailPaused, state.FailStopped, state.FailBudget, state.FailFaulted:
 		return true
 	default:
 		return false
@@ -161,6 +161,8 @@ func failureLabel(class string) string {
 		return "paused"
 	case state.FailStopped:
 		return "stopped"
+	case state.FailBudget:
+		return "over budget"
 	case state.FailGaveUp:
 		return "quarantined"
 	default:
@@ -169,9 +171,11 @@ func failureLabel(class string) string {
 }
 
 // attentionGlyph is the class-colored mark for the menu Handle item, matching the
-// rail: ⏸ for a blameless paused/stopped row, ⚠ for faulted/quarantined.
+// rail: ⏸ for a blameless paused/stopped/over-budget row, ⚠ for faulted or
+// quarantined.
 func attentionGlyph(s Styles, class string) (string, lipgloss.Style) {
-	if class == state.FailPaused || class == state.FailStopped {
+	switch class {
+	case state.FailPaused, state.FailStopped, state.FailBudget:
 		return "⏸", s.Warning
 	}
 	return "⚠", s.Error

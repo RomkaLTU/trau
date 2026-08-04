@@ -48,6 +48,7 @@ import {
 import { sessionStatePill } from "@/lib/overview";
 import { phaseLogsQueryOptions, type PhaseLog } from "@/lib/phaselogs";
 import { runDetailQueryOptions, type RunDetail } from "@/lib/rundetail";
+import type { FailureClass } from "@/lib/runs";
 import { isSyncLog, syncState, type SyncState } from "@/lib/steps";
 import {
   deriveElapsedMs,
@@ -219,13 +220,10 @@ function activityRow(ev: FeedEvent): ActivityRow {
     case "state_change": {
       const state = fieldStr(ev, "state");
       const reason = fieldStr(ev, "reason");
+      const parked = state === "paused" || state === "budget";
       const glyphClass =
-        state === "merged"
-          ? "text-done"
-          : state === "paused"
-            ? "text-warn"
-            : "text-fail";
-      const glyph = state === "merged" ? "✓" : state === "paused" ? "⚠" : "✗";
+        state === "merged" ? "text-done" : parked ? "text-warn" : "text-fail";
+      const glyph = state === "merged" ? "✓" : parked ? "⚠" : "✗";
       return {
         glyph,
         glyphClass,
@@ -432,8 +430,14 @@ function Recap({
   );
 }
 
-function PausedBanner({ reason }: { reason: string }) {
-  const banner = pauseBanner(reason);
+function PausedBanner({
+  reason,
+  failureClass,
+}: {
+  reason: string;
+  failureClass?: FailureClass;
+}) {
+  const banner = pauseBanner(reason, failureClass);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3">
       <span className="inline-flex items-center gap-2 font-mono text-sm text-warn">
@@ -822,7 +826,10 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
       <div className="flex flex-col gap-4 px-6 py-4">
         {variant === "paused" && !takenOverHere && (
-          <PausedBanner reason={run?.failure_reason ?? ""} />
+          <PausedBanner
+            reason={run?.failure_reason ?? ""}
+            failureClass={run?.failure_class}
+          />
         )}
 
         {variant === "stopped" && !takenOverHere && <StoppedBanner />}

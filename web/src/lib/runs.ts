@@ -4,7 +4,12 @@ import { apiFetch } from './api'
 import type { Handback } from './handback'
 import type { RepoView } from './instances'
 
-export type FailureClass = 'paused' | 'stopped' | 'faulted' | 'gave_up'
+export type FailureClass =
+  | 'paused'
+  | 'stopped'
+  | 'budget'
+  | 'faulted'
+  | 'gave_up'
 
 export type PRStatus = 'awaiting-merge' | 'merged' | 'closed'
 

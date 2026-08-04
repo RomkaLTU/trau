@@ -396,6 +396,39 @@ func AsStopped(err error) *StoppedError {
 	return nil
 }
 
+// BudgetError signals a configured spend ceiling was reached before an agent call
+// partway through a ticket. Exhaustion is transient — caps reset — and says nothing
+// about the ticket's merits, so unlike a give-up it neither quarantines nor blames:
+// the partial work is committed to the feature branch, PHASE stays at its last
+// checkpoint, and the next run resumes the ticket once the cap allows. The loop
+// driver ends the session on it, the same courtesy BudgetExhausted pays the tickets
+// a spent day never picks.
+type BudgetError struct {
+	ID     string
+	Phase  string
+	Reason string
+}
+
+func (e *BudgetError) Error() string {
+	return fmt.Sprintf("budget cap reached on %s during %s: %s", e.ID, NextPhaseLabel(e.Phase), e.Reason)
+}
+
+// IsBudgetHalt reports whether err is (or wraps) a *BudgetError.
+func IsBudgetHalt(err error) bool {
+	var b *BudgetError
+	return errors.As(err, &b)
+}
+
+// AsBudgetHalt extracts the *BudgetError from err (traversing wraps), or nil when
+// err is not a budget halt. Callers use it to name the ticket the cap left parked.
+func AsBudgetHalt(err error) *BudgetError {
+	var b *BudgetError
+	if errors.As(err, &b) {
+		return b
+	}
+	return nil
+}
+
 // CrossProjectError signals a refusal: the ticket belongs to a different Linear
 // project than the one this repo owns (config PROJECT). It is raised before any
 // branch/checkpoint/build work, so nothing is left to clean up — the run simply
@@ -1083,6 +1116,9 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 //   - nil / ErrAlreadyDone: nothing went wrong — pass through.
 //   - paused: a blameless provider rate/usage limit — pass through; the work
 //     stays on its branch and the loop driver stops picking new tickets.
+//   - over budget: a spend ceiling reached mid-run — preserve the WIP and end the
+//     session, leaving the checkpoint for the next run to resume from. A cap is
+//     transient and blameless, so nothing is quarantined over it.
 //   - give-up: a verified dead end — finalize+quarantine (idempotent, so the
 //     give-ups verify/CI already finalized are not double-handled).
 //   - stopped: the run's own context was canceled, so a human stopped the run —
@@ -1098,6 +1134,8 @@ func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) e
 		return err
 	case IsPaused(err):
 		return err
+	case IsBudgetHalt(err):
+		return p.haltForBudget(ctx, id, AsBudgetHalt(err))
 	case errors.Is(err, state.ErrHubUnreachable):
 		return p.pauseHubUnreachable(id)
 	case isGiveUp(err):
@@ -1173,6 +1211,23 @@ func (p *Pipeline) stop(ctx context.Context, id string) error {
 	p.logf("  ⏹ %s stopped during %s — work saved, ticket left resumable", id, label)
 	p.emitState(id, phase, "stopped", label)
 	return &StoppedError{ID: id, Phase: phase}
+}
+
+// haltForBudget preserves the partial work of a ticket cut short by a spend ceiling
+// and returns a *BudgetError tagged with the phase it halted in. It is the mid-run
+// counterpart of the loop-level BudgetExhausted gate: PHASE is left at its
+// checkpoint and nothing is quarantined, so the day's ceiling costs the ticket a
+// resume rather than a human.
+func (p *Pipeline) haltForBudget(ctx context.Context, id string, b *BudgetError) error {
+	phase := p.State.Get(id, "PHASE")
+	label := NextPhaseLabel(phase)
+	p.preserveAndClean(ctx, id, fmt.Sprintf("wip(%s): stopped for budget — rerun trau to resume", id))
+	_ = p.State.Set(id, "FAILURE_REASON", b.Reason)
+	_ = p.State.Set(id, "FAILURE_CLASS", state.FailBudget)
+	p.logf("  ⏸ budget cap reached during %s — %s", label, b.Reason)
+	p.logf("  ↳ %s left resumable on its branch; rerun trau once the budget allows", id)
+	p.emitState(id, phase, "budget", b.Reason)
+	return &BudgetError{ID: id, Phase: phase, Reason: b.Reason}
 }
 
 // Both budgets stay under the hub's SIGKILL escalation grace, so a stopped run's
@@ -3783,9 +3838,10 @@ func (p *Pipeline) emitEvent(kind string, fields map[string]any) {
 
 // emitState records a durable state_change for id — the signal the dashboard
 // recap and browser notifications consume. state ∈ {merged, quarantined, faulted,
-// paused, stopped}; reason distinguishes a blameless pause (usage_window vs
-// reauth), names the phase a fault or stop cut short, and carries the give-up text
-// for a quarantine. No-op without a durable log.
+// paused, stopped, budget}; reason distinguishes a blameless pause (usage_window vs
+// reauth), names the phase a fault or stop cut short, names the cap a budget halt
+// reached, and carries the give-up text for a quarantine. No-op without a durable
+// log.
 func (p *Pipeline) emitState(id, phase, st, reason string) {
 	if p.Events == nil {
 		return
@@ -3862,7 +3918,7 @@ func (p *Pipeline) recoverStep(ctx context.Context, id, phase, prompt string, ch
 	runs := 0
 	for ci, runner := range chain {
 		for attempt := 0; ; attempt++ {
-			if err := p.guardBudget(ctx, id); err != nil {
+			if err := p.guardBudget(id); err != nil {
 				return "", err
 			}
 			runs++
@@ -4013,10 +4069,10 @@ func isAuthFailure(err error) bool {
 
 // guardBudget enforces the configured spend ceilings before an agent call. It
 // reads the LIVE ledger totals from the hub (this ticket's total and the day's spend
-// across all buckets) and, on the first cap reached, quarantines the ticket via
-// giveUp with a cost-overrun reason — halting before the next call adds to the bill.
-// A nil ledger or no configured cap is a no-op (back-compat).
-func (p *Pipeline) guardBudget(ctx context.Context, id string) error {
+// across all buckets) and, on the first cap reached, returns a *BudgetError so the
+// run halts before the next call adds to the bill. A nil ledger or no configured cap
+// is a no-op (back-compat).
+func (p *Pipeline) guardBudget(id string) error {
 	if p.Tokens == nil || !p.Budget.Enabled() {
 		return nil
 	}
@@ -4025,7 +4081,7 @@ func (p *Pipeline) guardBudget(ctx context.Context, id string) error {
 	if !ok {
 		return nil
 	}
-	return p.giveUp(ctx, id, "budget cap reached — "+b.Reason())
+	return &BudgetError{ID: id, Reason: b.Reason()}
 }
 
 // dailySpend reads the day's accumulated spend across every ticket bucket from the
@@ -4041,9 +4097,10 @@ func (p *Pipeline) dailySpend() budget.Spend {
 
 // BudgetExhausted reports whether today's spend has already reached a configured
 // DAILY cap, with a human reason. The loop calls it before picking or resuming a
-// ticket so a day already over budget stops the run cleanly — rather than
-// quarantining every remaining ticket against the same exhausted ceiling. Per-ticket
-// caps are not consulted here; those are enforced inline by guardBudget.
+// ticket so a day already over budget stops the run cleanly — rather than starting
+// tickets that would only halt against the same exhausted ceiling. Per-ticket caps
+// are not consulted here; those are enforced inline by guardBudget, which halts the
+// ticket in flight without quarantining it either.
 func (p *Pipeline) BudgetExhausted() (string, bool) {
 	if p.Tokens == nil || !p.Budget.Enabled() {
 		return "", false
@@ -5023,10 +5080,10 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	_ = os.Remove(verdictPath)
 	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, verifyTestEffortNote(p.TestEffort), ticketCtx, proofsOn))
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
-	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
-	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
-	// attempts and cascades into a bogus quarantine + HITL bug. The panel path
-	// (runPanel) already does this; this is the single-verifier mirror.
+	// A provider pause (rate/usage limit) or a budget halt must propagate, not be
+	// recorded as a verify failure — otherwise a transient 429 or a spend ceiling
+	// burns repair/bugfix attempts and cascades into a bogus quarantine + HITL bug.
+	// The panel path (runPanel) already does this; this is the single-verifier mirror.
 	if agentErr != nil && isFatalAgentErr(agentErr) {
 		return verdict{}, agentErr
 	}
@@ -5056,10 +5113,10 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // merges them by the configured policy, and writes the merged verdict to
 // verifyPath(id). Members run concurrently when PanelParallel is on so panel wall
 // clock is the slowest member rather than the sum; results stay position-indexed
-// so the merge is identical to the sequential path. A provider pause or budget
-// give-up from any member is propagated so the loop stops cleanly (the ticket
-// stays resumable on its branch) instead of being recorded as a dissenting fail;
-// a plain timeout/crash counts as that member failing.
+// so the merge is identical to the sequential path. A provider pause or a budget
+// halt from any member is propagated so the loop stops cleanly (the ticket stays
+// resumable on its branch) instead of being recorded as a dissenting fail; a plain
+// timeout/crash counts as that member failing.
 func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string, proofsOn bool) (verdict, error) {
 	results := make([]panelResult, len(p.VerifyPanel))
 	member := func(ctx context.Context, i int) error {
@@ -5122,11 +5179,11 @@ func (p *Pipeline) fanOutPanel(ctx context.Context, member func(context.Context,
 }
 
 // isFatalAgentErr reports whether an agent error must abort the panel and the
-// phase (a provider pause that should leave the ticket resumable, or a budget
-// give-up that already quarantined it) rather than being treated as one verifier
-// dissenting.
+// phase (a provider pause or a spend ceiling, both of which leave the ticket
+// resumable, or a give-up that already quarantined it) rather than being treated
+// as one verifier dissenting.
 func isFatalAgentErr(err error) bool {
-	if IsPaused(err) {
+	if IsPaused(err) || IsBudgetHalt(err) {
 		return true
 	}
 	var g *GiveUpError

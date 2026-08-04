@@ -87,6 +87,27 @@ func TestNotifyRunEventPushesDeepLink(t *testing.T) {
 	}
 }
 
+// TestNotifyRunEventPushesBudgetHalt keeps a spend ceiling on the notification path
+// rather than letting it fall through unclassified: it parks the run like any other
+// pause, so it rides the pause kind's tag and routing while the title names the cap.
+func TestNotifyRunEventPushesBudgetHalt(t *testing.T) {
+	s, delivered := newNotifyPushServer(t)
+	repo := registry.Repo{Root: filepath.Join(t.TempDir(), "demo"), Name: "demo"}
+
+	s.notifyRunEvent(repo, stateChangeRow(t, "budget", "COD-9", "per-ticket budget cap $0.50 reached"))
+
+	payload := awaitPush(t, delivered)
+	want := PushPayload{
+		Title: "Run over budget — demo",
+		Body:  "per-ticket budget cap $0.50 reached",
+		Tag:   "run_pausedCOD-9",
+		URL:   "/runs/demo/COD-9",
+	}
+	if payload != want {
+		t.Errorf("payload = %+v, want %+v", payload, want)
+	}
+}
+
 // TestNotifyRunEventPushesOnlyNeedsAttention keeps the push set to the states that
 // actually want the user: a completed run stays in-tab, and so does any event kind
 // the run producer does not classify.
