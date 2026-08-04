@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -127,9 +128,11 @@ type terminalSession interface {
 type terminalStarter func(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error)
 
 type ptySession struct {
-	cmd  *pty.Cmd
-	tty  pty.Pty
-	ours io.Closer
+	cmd       *pty.Cmd
+	tty       pty.Pty
+	ours      io.Closer
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // startPTY is the production terminalStarter: a POSIX pty on unix, a ConPTY on
@@ -180,12 +183,47 @@ func handOverSlave(p pty.Pty) io.Closer {
 func (s *ptySession) Read(p []byte) (int, error)  { return s.tty.Read(p) }
 func (s *ptySession) Write(p []byte) (int, error) { return s.tty.Write(p) }
 func (s *ptySession) Wait() error                 { return s.cmd.Wait() }
-func (s *ptySession) Close() error                { return s.ours.Close() }
+
+// Close is single-shot because the teardown closes the terminal and Run's
+// deferred cleanup closes it again: ConPTY's ClosePseudoConsole neither guards
+// against nor clears an already-freed handle, and closing one takes the whole
+// trau process down with it.
+func (s *ptySession) Close() error {
+	s.closeOnce.Do(func() { s.closeErr = s.ours.Close() })
+	return s.closeErr
+}
+
 func (s *ptySession) Kill() error {
 	if s.cmd.Process == nil {
 		return nil
 	}
 	return s.cmd.Process.Kill()
+}
+
+// phaseEndGrace is how long a child gets to exit on its own once its terminal has
+// been closed, before the teardown ends it outright.
+const phaseEndGrace = 3 * time.Second
+
+// endSession tears the agent's terminal down in the order a git child mid-index-write
+// can survive: closing the master is the hangup — SIGHUP to the child session on unix,
+// console-close semantics under ConPTY — which git answers by removing its index.lock,
+// where an outright kill strands it, on Windows permanently since there is no signal
+// git can trap. Only a child still running when the grace is out is killed, and exited
+// is the session's own Wait, so the backstop needs no liveness probe. Nothing outside
+// this seam could reach the child anyway: it is its own session leader, so neither a
+// group signal nor KillGroup lands on it (ADR 0023 §7).
+func endSession(sess terminalSession, exited <-chan error, grace time.Duration) {
+	_ = sess.Close()
+	if grace <= 0 {
+		grace = phaseEndGrace
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-exited:
+	case <-timer.C:
+		_ = sess.Kill()
+	}
 }
 
 // ClaudeDefaultModel is the model a claude child runs under when no config layer
@@ -238,6 +276,7 @@ type ClaudeInteractive struct {
 	now                func() time.Time
 	start              terminalStarter
 	steerPoll          time.Duration
+	endGrace           time.Duration
 }
 
 func (c *ClaudeInteractive) Provider() string { return "claude" }
@@ -392,7 +431,10 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			c.emit(label, res, c.clock().Sub(start), err)
 			return res, fmt.Errorf("claude interactive run (%s): read result: %w", label, err)
 		} else if ok {
-			_ = sess.Kill()
+			endSession(sess, wait, c.endGrace)
+			// The closed terminal ends the drain, and its last chunk can still name a
+			// skill, so the capture is only complete once it has returned.
+			<-drainDone
 			res := c.enrich(Result{Final: final}, sessionID, skills)
 			dur := c.clock().Sub(start)
 			c.report(label, res, dur, nil)

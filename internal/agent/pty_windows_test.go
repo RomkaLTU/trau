@@ -56,3 +56,21 @@ func TestStartPTYResolvesABareBinViaPATH(t *testing.T) {
 	defer mu.Unlock()
 	t.Fatalf("child output never arrived; transcript so far: %q", buf.String())
 }
+
+// The phase-end teardown closes the terminal and Run's deferred cleanup closes it
+// again. Against a real ConPTY a second close of the same pseudoconsole ends the
+// trau process outright, so an unguarded Close does not fail this test — it kills
+// the test binary before the assertions below are ever reached.
+func TestEndSessionSurvivesTheDeferredSecondClose(t *testing.T) {
+	sess, err := startPTY(t.Context(), "cmd", t.TempDir(), []string{"/c", "echo trau-pty-ok"}, 80, 24)
+	if err != nil {
+		t.Fatalf("startPTY: %v", err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- sess.Wait() }()
+
+	endSession(sess, wait, 10*time.Second)
+	if err := sess.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
