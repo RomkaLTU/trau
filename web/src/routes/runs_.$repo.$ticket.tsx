@@ -17,6 +17,7 @@ import {
   SteerNotesTimeline,
   StatusPill,
   TerminalCard,
+  UnverifiedCriteriaBanner,
   useRepoRouteScope,
   type RunState,
 } from '@/components/trau'
@@ -118,6 +119,8 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
       {run.no_skills && <NoSkillsBanner />}
 
       {run.no_browser && <NoBrowserBanner />}
+
+      {run.unverified_criteria && <UnverifiedCriteriaBanner />}
 
       {run.failure_reason && (
         <div className={cn('rounded-lg border px-4 py-3', tone.box)}>

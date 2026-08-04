@@ -273,15 +273,16 @@ type MCPQueueStatus struct {
 type MCPRun struct {
 	Repo string `json:"repo"`
 	RunView
-	Total     SpendResponse `json:"total"`
-	Costs     []PhaseCost   `json:"costs"`
-	Anomalies []AnomalyView `json:"anomalies,omitempty"`
-	Verdict   *VerdictView  `json:"verdict,omitempty"`
-	Artifacts ArtifactSet   `json:"artifacts"`
-	Events    []FeedEvent   `json:"events"`
-	NoSkills  bool          `json:"no_skills,omitempty"`
-	NoBrowser bool          `json:"no_browser,omitempty"`
-	Removed   bool          `json:"removed,omitempty"`
+	Total              SpendResponse `json:"total"`
+	Costs              []PhaseCost   `json:"costs"`
+	Anomalies          []AnomalyView `json:"anomalies,omitempty"`
+	Verdict            *VerdictView  `json:"verdict,omitempty"`
+	Artifacts          ArtifactSet   `json:"artifacts"`
+	Events             []FeedEvent   `json:"events"`
+	NoSkills           bool          `json:"no_skills,omitempty"`
+	NoBrowser          bool          `json:"no_browser,omitempty"`
+	UnverifiedCriteria bool          `json:"unverified_criteria,omitempty"`
+	Removed            bool          `json:"removed,omitempty"`
 }
 
 // MCPSteerNote is what steer_agent answers with: the repo the note was queued in
@@ -651,17 +652,18 @@ func (s *Server) mcpGetRun(args json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("read spend: %w", err)
 	}
 	return MCPRun{
-		Repo:      repo.Name,
-		RunView:   detail.RunView,
-		Total:     spendResponse(total),
-		Costs:     detail.Costs,
-		Anomalies: detail.Anomalies,
-		Verdict:   detail.Verdict,
-		Artifacts: detail.Artifacts,
-		Events:    s.mcpRunEvents(repo, ticket, a.Events),
-		NoSkills:  detail.NoSkills,
-		NoBrowser: detail.NoBrowser,
-		Removed:   detail.Removed,
+		Repo:               repo.Name,
+		RunView:            detail.RunView,
+		Total:              spendResponse(total),
+		Costs:              detail.Costs,
+		Anomalies:          detail.Anomalies,
+		Verdict:            detail.Verdict,
+		Artifacts:          detail.Artifacts,
+		Events:             s.mcpRunEvents(repo, ticket, a.Events),
+		NoSkills:           detail.NoSkills,
+		NoBrowser:          detail.NoBrowser,
+		UnverifiedCriteria: detail.UnverifiedCriteria,
+		Removed:            detail.Removed,
 	}, nil
 }
 

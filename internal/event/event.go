@@ -56,6 +56,12 @@ const KindVerifyNoProofs = "verify_no_proofs"
 // event is the only durable trace of the miss.
 const KindVerdictMissing = "verdict_missing"
 
+// KindCriteriaUnverified marks a slice that shipped a PR while its verdict still
+// carried acceptance criteria the verifier could not settle. The work is preserved
+// and reviewable, but the merge is handed to a human instead of taken on green CI,
+// and this is the durable flag the web UI raises the run under.
+const KindCriteriaUnverified = "criteria_unverified"
+
 // KindProofsPublishFailed marks a delivery that could not publish its verify
 // screenshots to the trau-proofs branch; the PR ships without the QA section.
 const KindProofsPublishFailed = "proofs_publish_failed"

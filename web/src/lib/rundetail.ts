@@ -96,6 +96,7 @@ export interface RunDetail extends Run {
   artifacts: Artifacts
   no_skills?: boolean
   no_browser?: boolean
+  unverified_criteria?: boolean
   removed?: boolean
 }
 

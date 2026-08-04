@@ -35,6 +35,11 @@ type RunDetail struct {
 	// durable verify_no_browser warning, surfaced so the page can flag browser QA
 	// that never happened on a front-end diff.
 	NoBrowser bool `json:"no_browser,omitempty"`
+	// UnverifiedCriteria is true when this run shipped a PR whose verdict still
+	// carried criteria the verifier could not settle — the durable
+	// criteria_unverified warning, surfaced so the page can flag work that was
+	// deliberately left for a human to merge.
+	UnverifiedCriteria bool `json:"unverified_criteria,omitempty"`
 	// Removed is true when the run's ticket is a synced issue the tracker no longer
 	// holds — deleted, archived, or moved out of the Project and tombstoned by a
 	// reconciliation sweep. The run detail still renders from its durable artifacts;
@@ -147,7 +152,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 // not-removed on any store error so a store hiccup never fails an
 // otherwise-renderable run.
 func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunDetail {
-	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), s.stores.Events(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket), s.noBrowserWarning(repo, ticket))
+	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), s.stores.Events(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket), s.noBrowserWarning(repo, ticket), s.unverifiedCriteriaWarning(repo, ticket))
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
 	}
@@ -178,6 +183,18 @@ func (s *Server) noBrowserWarning(repo registry.Repo, ticket string) bool {
 	return has
 }
 
+// unverifiedCriteriaWarning reports whether the authoritative event table carries a
+// criteria_unverified warning for ticket — a slice that shipped with acceptance
+// criteria verify could not settle (ADR 0008). A store error degrades to no warning
+// rather than failing an otherwise-renderable run.
+func (s *Server) unverifiedCriteriaWarning(repo registry.Repo, ticket string) bool {
+	has, err := s.stores.Events().HasKind(repo.Root, event.KindCriteriaUnverified, ticket)
+	if err != nil {
+		logger.Verbosef("unverified-criteria flag %s/%s: %v", repo.Name, ticket, err)
+	}
+	return has
+}
+
 // runViewFor resolves a ticket's checkpoint row for the detail page from the
 // authoritative checkpoints table (ADR 0008) — the same table the board reads.
 // Legacy state files are folded in by the caller's importCheckpoints before this
@@ -197,7 +214,7 @@ func (s *Server) runViewFor(root, ticket string) (RunView, bool) {
 	return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
 }
 
-func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, evs *hubstore.Events, root, ticket string, view RunView, noSkills, noBrowser bool) RunDetail {
+func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, evs *hubstore.Events, root, ticket string, view RunView, noSkills, noBrowser, unverifiedCriteria bool) RunDetail {
 	costs := phaseCosts(toks, root, ticket)
 	all, err := arts.All(root, ticket)
 	if err != nil {
@@ -224,8 +241,9 @@ func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, evs *hubstore.Ev
 			BuildNotes: hasNotes,
 			Tokens:     len(costs) > 0,
 		},
-		NoSkills:  noSkills,
-		NoBrowser: noBrowser,
+		NoSkills:           noSkills,
+		NoBrowser:          noBrowser,
+		UnverifiedCriteria: unverifiedCriteria,
 	}
 }
 
