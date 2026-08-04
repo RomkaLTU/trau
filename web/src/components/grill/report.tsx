@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { Check, Copy, Download, Printer, TriangleAlert } from "lucide-react";
 
 import { noReport, WarningList } from "@/components/grill/outcome-review";
@@ -170,15 +171,29 @@ function ReportActions({
 }
 
 // A report is read long after the day it was written, so the document dates itself —
-// off updated_at, the moment the session finished — and names what wrote it.
+// off updated_at, the moment the session finished — and names what wrote it. A report
+// that answered a question about an issue reaches back to it.
 function ReportMeta({ session }: { session: GrillSession }) {
   const parts = [
     reportDate(session.updated_at),
     [session.provider, session.model].filter(Boolean).join(" · "),
   ].filter((part) => part !== "");
+  const issueId = session.issue_id ?? "";
   return (
     <p className="font-mono text-xs text-muted-foreground">
       {parts.join("  ·  ")}
+      {issueId && (
+        <>
+          {"  ·  "}
+          <Link
+            to="/backlog"
+            search={{ issue: issueId }}
+            className="text-primary underline-offset-2 hover:underline"
+          >
+            {issueId}
+          </Link>
+        </>
+      )}
     </p>
   );
 }
