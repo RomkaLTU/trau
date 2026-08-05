@@ -17,7 +17,7 @@ import {
 describe('activityStep', () => {
   it('groups every Activity into Build, Verify, or Ship', () => {
     expect(['build', 'lintfix', 'cleanup', 'handoff'].map(activityStep)).toEqual([0, 0, 0, 0])
-    expect(['verify', 'repair', 'bugfix'].map(activityStep)).toEqual([1, 1, 1])
+    expect(['testgate', 'verify', 'repair', 'bugfix'].map(activityStep)).toEqual([1, 1, 1, 1])
     expect(['commit', 'pr', 'ci-wait', 'merge'].map(activityStep)).toEqual([2, 2, 2, 2])
   })
 
