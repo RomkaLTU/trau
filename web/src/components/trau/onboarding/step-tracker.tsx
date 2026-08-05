@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { ArrowRight, Plug } from 'lucide-react'
 
+import { TRACKER_PROVIDERS, trackerProviderMeta } from '@/components/trau/tracker-providers'
 import { Button } from '@/components/ui/button'
 import {
   Select,
@@ -25,19 +26,7 @@ import {
   type TrackerProvider,
 } from '@/lib/onboarding'
 import { writeProjectTracker } from '@/lib/projects'
-import { cn } from '@/lib/utils'
 import { Callout, FieldLabel, Hint, SecretInput, TextInput } from './ui'
-
-const PROVIDERS: { id: TrackerProvider; name: string; blurb: string }[] = [
-  { id: 'linear', name: 'Linear', blurb: 'Sync issues from a Linear team. Needs an API key.' },
-  { id: 'jira', name: 'Jira', blurb: 'Sync from a Jira project. Needs a site URL, email + token.' },
-  {
-    id: 'azure',
-    name: 'Azure DevOps',
-    blurb: 'Sync from an Azure DevOps team project. Needs an organization URL + PAT.',
-  },
-  { id: 'internal', name: 'Internal', blurb: "No external tracker — issues live in trau's own store." },
-]
 
 const BINDING_LABEL: Partial<Record<TrackerProvider, string>> = {
   linear: 'linear team',
@@ -63,6 +52,14 @@ function codeHome(inspection: RepoInspection): string {
   if (inspection.kind === 'folder') return "each child repo's own remote"
   if (inspection.forge === '') return 'this machine, with no remote configured'
   return forgeLabel(inspection.forge)
+}
+
+function CredsFound() {
+  return (
+    <span className="rounded-full border border-teal/50 bg-teal/10 px-1.5 py-0.5 font-mono text-[0.6rem] text-teal">
+      creds found
+    </span>
+  )
 }
 
 export function StepTracker({
@@ -136,8 +133,10 @@ export function StepTracker({
     onSuccess: () => provider && onContinue(provider, fields),
   })
 
+  const selected = trackerProviderMeta(provider)
   const needsBinding = provider !== null && provider !== 'internal'
-  const hasExisting = provider !== null && credentialLayer(inspection, provider) !== null
+  const existingLayer = provider !== null ? credentialLayer(inspection, provider) : null
+  const hasExisting = existingLayer !== null
   const canTest = provider !== null && trackerCanTest(provider, fields, hasExisting)
   const canContinue = trackerCanContinue(provider, fields, testState)
 
@@ -168,46 +167,39 @@ export function StepTracker({
         </Hint>
       </div>
 
-      <div
-        role="radiogroup"
-        aria-label="Tracker provider"
-        className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
-      >
-        {PROVIDERS.map((p) => {
-          const active = provider === p.id
-          const suggested =
-            p.id !== 'internal' && credentialLayer(inspection, p.id) !== null && !active
-          return (
-            <button
-              key={p.id}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              onClick={() => choose(p.id)}
-              className={cn(
-                'flex flex-col gap-1.5 rounded-md border p-3 text-left transition-colors',
-                active
-                  ? 'border-primary/60 bg-primary/5'
-                  : 'border-border bg-secondary/20 hover:border-ring/40',
+      <div className="flex flex-col gap-2">
+        <FieldLabel htmlFor="tracker-provider">tracker provider</FieldLabel>
+        <Select
+          value={provider ?? undefined}
+          onValueChange={(v) => choose(v as TrackerProvider)}
+        >
+          <SelectTrigger id="tracker-provider" className="w-full">
+            <SelectValue placeholder="Choose a tracker">
+              {selected && (
+                <>
+                  <selected.Icon />
+                  <span className="font-mono text-sm text-foreground">{selected.name}</span>
+                </>
               )}
-            >
-              <span className="flex items-center gap-2 font-mono text-sm text-foreground">
-                <span aria-hidden="true" className={active ? 'text-primary' : 'text-muted-foreground'}>
-                  {active ? '●' : '○'}
-                </span>
-                {p.name}
-                {suggested && (
-                  <span className="rounded-full border border-teal/50 bg-teal/10 px-1.5 py-0.5 font-mono text-[0.6rem] text-teal">
-                    creds found
-                  </span>
-                )}
-              </span>
-              <span className="font-sans text-xs leading-relaxed text-muted-foreground">
-                {p.blurb}
-              </span>
-            </button>
-          )
-        })}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {TRACKER_PROVIDERS.map((p) => (
+              <SelectItem key={p.id} value={p.id}>
+                <p.Icon />
+                <span className="font-mono text-sm">{p.name}</span>
+                {credentialLayer(inspection, p.id) !== null && <CredsFound />}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {selected && <Hint>{selected.blurb}</Hint>}
+        {selected && existingLayer && (
+          <Hint>
+            creds found — {selected.name} credentials are already stored in the{' '}
+            {existingLayer === 'user' ? 'user config (~/.trau.ini)' : 'project config'}.
+          </Hint>
+        )}
       </div>
 
       {provider && (
