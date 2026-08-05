@@ -25,6 +25,12 @@ const KindExploreUsage = "explore_usage"
 // installed — the agent skipped the skills the repo expected it to use.
 const KindBuildNoSkills = "build_no_skills"
 
+// KindSkillLoadFailed marks a phase that tried to load a skill its prompt named
+// and could not — the model re-typed the name (spaces after the hyphens is the
+// observed signature) and the Skill tool rejected it. It carries each raw attempt
+// next to the skill it was meant to be.
+const KindSkillLoadFailed = "skill_load_failed"
+
 // KindSkillsPlanned records the skill set a phase's prompt named and the step
 // that produced it, so it can be compared against the skills the agent_call
 // reports the agent actually loaded.

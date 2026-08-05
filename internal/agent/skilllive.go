@@ -97,7 +97,9 @@ func (c *skillCapture) unmatchedSightings() []string {
 // repo can actually load: a redrawn or wrapped line loses characters, so
 // "wb-eature" is the terminal's account of "web-feature". A sighting that
 // resolves to nothing, or to two entries equally well, resolves to nothing at
-// all — the loaded set never carries a guess.
+// all — the loaded set never carries a guess. No installed skill has a space in
+// its name, so a sighting carrying one is the model's mistyping rather than
+// terminal damage, and never snaps.
 type skillSnapper struct{ inventory []string }
 
 // newSkillSnapper de-duplicates the inventory: a repo that installs a known
@@ -108,6 +110,9 @@ func newSkillSnapper(inventory []string) skillSnapper {
 }
 
 func (s skillSnapper) snap(sighting string) (string, bool) {
+	if strings.ContainsAny(sighting, " \t") {
+		return "", false
+	}
 	if slices.Contains(s.inventory, sighting) {
 		return sighting, true
 	}
@@ -190,14 +195,16 @@ func editDistance(a, b string) int {
 }
 
 var (
-	skillCallRe   = regexp.MustCompile(`Skill\(([a-z0-9][a-z0-9._:-]*)\)`)
+	skillCallRe   = regexp.MustCompile(`Skill\(([a-z0-9][a-z0-9._: -]*)\)`)
 	skillLaunchRe = regexp.MustCompile(`(?i)Launching skill:[ \t]+([a-z0-9][a-z0-9._:-]*)`)
 )
 
 // claudeSkills extracts skill names from Claude Code's terminal output: the
 // Skill(<name>) tool-call header and the "Launching skill: <name>" line. ANSI
 // styling is stripped first so a name drawn with interleaved color or cursor codes
-// still matches. Names are returned in order of appearance.
+// still matches. The call header admits spaces so a mistyped name is seen at all
+// rather than vanishing; the snapper keeps such a sighting out of the loaded set.
+// Names are returned in order of appearance.
 func claudeSkills(s string) []string {
 	s = StripANSI(s)
 	type hit struct {
@@ -217,6 +224,57 @@ func claudeSkills(s string) []string {
 	out := make([]string, 0, len(hits))
 	for _, h := range hits {
 		out = append(out, h.name)
+	}
+	return out
+}
+
+// SkillNameKey folds a name typed at the Skill tool to the form every spelling of
+// one skill shares: the model re-types a name with spaces after the hyphens, and
+// neither that nor its casing changes which skill it meant.
+func SkillNameKey(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), ""))
+}
+
+// SkillAttemptMatches reports whether raw, a name the agent typed at the Skill
+// tool, was meant to be the installed skill name. Past whitespace and case the
+// model also swaps a separator or drops a character, so the snapper's own
+// edit-distance bound decides the rest: the tolerance that lets a mangled sighting
+// into the loaded set is exactly the one that has to be able to take it back out.
+func SkillAttemptMatches(raw, name string) bool {
+	a, b := SkillNameKey(raw), SkillNameKey(name)
+	switch {
+	case a == "" || b == "":
+		return false
+	case a == b:
+		return true
+	case len(a) < snapMinLen:
+		return false
+	}
+	return editDistance(a, b) <= snapMaxEdits
+}
+
+// dropSkills removes from names every skill an errored Skill call was meant to be:
+// the transcript is the authority on what loaded, however confidently the terminal
+// drew the mangle. The raw input the tool rejected and the canonical name a live
+// sighting snapped to are different spellings of one attempt, so they are matched
+// loosely rather than compared. A name the transcript itself settled as loaded is
+// never dropped, so a mangle the agent went on to retype correctly stays in.
+func dropSkills(names, failed, loaded []string) []string {
+	if len(names) == 0 || len(failed) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		attempted := slices.ContainsFunc(failed, func(raw string) bool {
+			return SkillAttemptMatches(raw, name)
+		})
+		if attempted && !slices.Contains(loaded, name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

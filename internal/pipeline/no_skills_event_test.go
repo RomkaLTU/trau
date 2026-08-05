@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/agent"
@@ -127,6 +128,208 @@ func TestWarnVerifyWithoutSkillsEmitsEvent(t *testing.T) {
 	}
 }
 
+// TestWarnSkillLoadFailedEmitsEvent is the COD-1502 partial-failure guard: a
+// prompt-named skill the agent tried to load and could not is warned about by
+// name — next to the raw input it typed — even when other skills loaded. A skill
+// a later retry loaded is the nudge working, not a failure, and evidence that
+// resolves to nothing the prompt named stays debug-only.
+func TestWarnSkillLoadFailedEmitsEvent(t *testing.T) {
+	named := []string{"tdd", "vercel-react-best-practices"}
+
+	cases := []struct {
+		name        string
+		named       []string
+		skills      []string
+		attempts    []string
+		known       bool
+		wantSkill   string
+		wantAttempt string
+	}{
+		{
+			name:        "one skill loads while another is mangled",
+			named:       named,
+			skills:      []string{"tdd"},
+			attempts:    []string{"vercel- react- best- practices"},
+			known:       true,
+			wantSkill:   "vercel-react-best-practices",
+			wantAttempt: "vercel- react- best- practices",
+		},
+		{
+			name:        "nothing loaded at all",
+			named:       named,
+			attempts:    []string{"vercel- react- best- practices"},
+			known:       true,
+			wantSkill:   "vercel-react-best-practices",
+			wantAttempt: "vercel- react- best- practices",
+		},
+		{
+			name:        "a mangle carrying no space at all",
+			named:       []string{"tdd", "code-review"},
+			skills:      []string{"tdd"},
+			attempts:    []string{"code_review"},
+			known:       true,
+			wantSkill:   "code-review",
+			wantAttempt: "code_review",
+		},
+		{
+			name:     "a failed attempt the agent then retried correctly",
+			named:    named,
+			skills:   []string{"tdd", "vercel-react-best-practices"},
+			attempts: []string{"vercel- react- best- practices"},
+			known:    true,
+		},
+		{
+			name:     "an attempt at a skill the prompt never named",
+			named:    []string{"tdd"},
+			skills:   []string{"tdd"},
+			attempts: []string{"artifact- design"},
+			known:    true,
+		},
+		{
+			name:   "no evidence of an attempt",
+			named:  named,
+			skills: []string{"tdd"},
+			known:  true,
+		},
+		{
+			name:     "an unobserved run stays silent",
+			named:    named,
+			attempts: []string{"vercel- react- best- practices"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			p := newTestPipeline(t, routedRunner{provider: "claude"}, &fakeTracker{})
+			p.Events = event.New(&buf)
+			p.SkillsExpected = func(string) bool { return true }
+			p.buildProvider = "claude"
+			p.buildSkills = tc.skills
+			p.buildSkillAttempts = tc.attempts
+			p.buildSkillsKnown = tc.known
+
+			p.warnBuildWithoutSkills("COD-1", tc.named)
+
+			evs := kindEvents(t, &buf, event.KindSkillLoadFailed)
+			if tc.wantSkill == "" {
+				if len(evs) != 0 {
+					t.Fatalf("emitted %d skill_load_failed events, want 0", len(evs))
+				}
+				return
+			}
+			if len(evs) != 1 {
+				t.Fatalf("emitted %d skill_load_failed events, want exactly 1", len(evs))
+			}
+			ev := evs[0]
+			if ev.Phase != "build" {
+				t.Errorf("phase = %q, want %q", ev.Phase, "build")
+			}
+			if got := strField(ev.Fields, "ticket"); got != "COD-1" {
+				t.Errorf("ticket = %q, want %q", got, "COD-1")
+			}
+			skill, attempt := firstAttempt(t, ev)
+			if skill != tc.wantSkill {
+				t.Errorf("attempt skill = %q, want %q", skill, tc.wantSkill)
+			}
+			if attempt != tc.wantAttempt {
+				t.Errorf("attempt raw input = %q, want %q", attempt, tc.wantAttempt)
+			}
+			for _, want := range []string{tc.wantSkill, tc.wantAttempt} {
+				if !strings.Contains(ev.Msg, want) {
+					t.Errorf("message %q does not name %q", ev.Msg, want)
+				}
+			}
+		})
+	}
+}
+
+// TestNoSkillsWarningNamesMangledAttempts pins the zero-loaded warning's evidence:
+// it fires exactly as before, but when the phase left mangled attempts behind it
+// names them instead of the bare generic line and carries them in the payload.
+func TestNoSkillsWarningNamesMangledAttempts(t *testing.T) {
+	var buf bytes.Buffer
+	p := newTestPipeline(t, routedRunner{provider: "claude"}, &fakeTracker{})
+	p.Events = event.New(&buf)
+	p.SkillsExpected = func(string) bool { return true }
+	p.verifyProvider = "claude"
+	p.verifySkillsKnown = true
+	p.verifySkillAttempts = []string{"code- review"}
+
+	p.warnVerifyWithoutSkills("COD-1", []string{"code-review"})
+
+	evs := kindEvents(t, &buf, event.KindVerifyNoSkills)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d verify_no_skills events, want exactly 1", len(evs))
+	}
+	ev := evs[0]
+	for _, want := range []string{"verify loaded no skills", "code-review", "code- review"} {
+		if !strings.Contains(ev.Msg, want) {
+			t.Errorf("message %q does not name %q", ev.Msg, want)
+		}
+	}
+	if skill, attempt := firstAttempt(t, ev); skill != "code-review" || attempt != "code- review" {
+		t.Errorf("attempt = %q/%q, want %q/%q", skill, attempt, "code-review", "code- review")
+	}
+}
+
+// TestBuildCarriesFailedSkillAttemptsIntoTheWarning drives the whole build phase:
+// the agent result's failed attempts have to survive the phase capture and reach
+// the warning, with the loaded skill suppressing the zero-loaded event.
+func TestBuildCarriesFailedSkillAttemptsIntoTheWarning(t *testing.T) {
+	id := "COD-91502"
+	writeHandoff(t, id)
+	var buf bytes.Buffer
+	p := newTestPipeline(t, skillResultRunner{res: agent.Result{
+		Skills:       []string{"web-feature"},
+		SkillsKnown:  true,
+		SkillsFailed: []string{"td d"},
+	}}, &fakeTracker{})
+	p.Events = event.New(&buf)
+	p.SkillsExpected = func(string) bool { return true }
+	p.RepoRoot = repoWithSkill(t, "web-feature", "tdd")
+
+	if err := p.build(context.Background(), id, false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	evs := kindEvents(t, &buf, event.KindSkillLoadFailed)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d skill_load_failed events, want exactly 1", len(evs))
+	}
+	if skill, attempt := firstAttempt(t, evs[0]); skill != "tdd" || attempt != "td d" {
+		t.Errorf("attempt = %q/%q, want %q/%q", skill, attempt, "tdd", "td d")
+	}
+	if evs := kindEvents(t, &buf, event.KindBuildNoSkills); len(evs) != 0 {
+		t.Fatalf("emitted %d build_no_skills events for a build that loaded a skill, want 0", len(evs))
+	}
+}
+
+// skillResultRunner answers every phase with one fixed skill outcome, so a phase
+// can be driven end to end over a chosen mix of loaded and failed Skill calls.
+type skillResultRunner struct{ res agent.Result }
+
+func (r skillResultRunner) Route(string) (string, string, string) { return "claude", "", "" }
+
+func (r skillResultRunner) Run(context.Context, string, string) (agent.Result, error) {
+	return r.res, nil
+}
+
+// firstAttempt reads the failed-attempt pair an event carries: the raw name the
+// agent typed and the skill it was meant to be.
+func firstAttempt(t *testing.T, ev event.Event) (skill, attempt string) {
+	t.Helper()
+	attempts, ok := ev.Fields["attempts"].([]any)
+	if !ok || len(attempts) == 0 {
+		t.Fatalf("event %s carries no attempts: %v", ev.Kind, ev.Fields)
+	}
+	pair, ok := attempts[0].(map[string]any)
+	if !ok {
+		t.Fatalf("attempt is not an object: %v", attempts[0])
+	}
+	return strField(pair, "skill"), strField(pair, "attempt")
+}
+
 // seqVerdictRunner writes the next verdict in the sequence on each call (the
 // last one repeats), reporting a confirmed empty skill set (SkillsKnown, no
 // names), so a fail→repair→pass verify can be driven end-to-end and its
@@ -189,15 +392,17 @@ func TestVerifyNoSkillsEmittedExactlyOnce(t *testing.T) {
 	}
 }
 
-func repoWithSkill(t *testing.T, name string) string {
+func repoWithSkill(t *testing.T, names ...string) string {
 	t.Helper()
 	root := t.TempDir()
-	dir := filepath.Join(root, ".claude", "skills", name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# "+name), 0o644); err != nil {
-		t.Fatal(err)
+	for _, name := range names {
+		dir := filepath.Join(root, ".claude", "skills", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# "+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return root
 }

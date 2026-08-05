@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -25,6 +26,11 @@ func TestClaudeSkills(t *testing.T) {
 			[]string{"alpha", "beta", "gamma"},
 		},
 		{"prose without parens", "used the Skill tool but named none", nil},
+		{
+			"space-mangled call is still seen",
+			"● Skill(vercel- react- best- practices)",
+			[]string{"vercel- react- best- practices"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,6 +57,30 @@ func TestMergeSkills(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := mergeSkills(tc.live, tc.transcript); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("mergeSkills(%v, %v) = %v, want %v", tc.live, tc.transcript, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDropSkills pins the transcript's authority over the terminal: a name whose
+// every Skill call errored leaves the loaded set, however the PTY drew it.
+func TestDropSkills(t *testing.T) {
+	cases := []struct {
+		name                  string
+		names, failed, loaded []string
+		want                  []string
+	}{
+		{"failed name is dropped", []string{"tdd", "code-review"}, []string{"code-review"}, nil, []string{"tdd"}},
+		{"nothing failed", []string{"tdd"}, nil, nil, []string{"tdd"}},
+		{"every name failed", []string{"tdd"}, []string{"tdd"}, nil, nil},
+		{"a mangled attempt leaves the loaded names alone", []string{"tdd"}, []string{"code- review"}, nil, []string{"tdd"}},
+		{"the name a mangle snapped to is dropped", []string{"code-review"}, []string{"code_review"}, nil, nil},
+		{"a mangle the transcript settled as loaded stays", []string{"code-review"}, []string{"code_review"}, []string{"code-review"}, []string{"code-review"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dropSkills(tc.names, tc.failed, tc.loaded); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("dropSkills(%v, %v, %v) = %v, want %v", tc.names, tc.failed, tc.loaded, got, tc.want)
 			}
 		})
 	}
@@ -93,6 +123,8 @@ func TestSkillSnapper(t *testing.T) {
 		{"artifact-design", ""},
 		{"typescr", ""},
 		{"web", ""},
+		{"web- feature", ""},
+		{"pest- testing", ""},
 	}
 	snap := newSkillSnapper(mangleInventory)
 	for _, tc := range cases {
@@ -160,6 +192,56 @@ func TestSkillCaptureSnapsMangles(t *testing.T) {
 	}
 }
 
+// TestSkillCaptureKeepsSpacedSightingsOut is the COD-1502 live-capture guard: the
+// model re-typing a name with a space after every hyphen is a typo the Skill tool
+// rejects, not terminal redraw damage the snapper should repair — the sighting has
+// to be visible as evidence without ever counting as loaded, however close it sits
+// to an installed name.
+func TestSkillCaptureKeepsSpacedSightingsOut(t *testing.T) {
+	c := newSkillCapture(claudeSkills, newSkillSnapper(mangleInventory))
+	_, _ = c.Write([]byte("● Skill(web- feature)\n● Skill(pest-testing)\n"))
+
+	if got, want := c.skills(), []string{"pest-testing"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("skills = %v, want %v", got, want)
+	}
+	if got, want := c.unmatchedSightings(), []string{"web- feature"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("unmatchedSightings = %v, want %v", got, want)
+	}
+}
+
+// TestEnrichSeparatesFailedSkillCalls is the COD-1502 result-boundary guard: the
+// transcript decides what loaded, so a Skill call the tool rejected is reported as
+// a failed attempt and kept out of Skills — even when the terminal drew it and its
+// raw input sits within the snapper's edit-distance tolerance of an installed name.
+func TestEnrichSeparatesFailedSkillCalls(t *testing.T) {
+	const sessionID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	root := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", root)
+	writeTranscript(t, filepath.Join(root, "projects", "-Users-dev-repo", sessionID+".jsonl"),
+		`{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":10,"output_tokens":2},"content":[{"type":"tool_use","id":"t1","name":"Skill","input":{"skill":"tdd"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":12,"output_tokens":2},"content":[{"type":"tool_use","id":"t2","name":"Skill","input":{"skill":"code- review"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","is_error":true}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":14,"output_tokens":2},"content":[{"type":"tool_use","id":"t3","name":"Skill","input":{"skill":"golang_pro"}}]}}`,
+		`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t3","is_error":true}]}}`,
+	)
+
+	live := newSkillCapture(claudeSkills, newSkillSnapper([]string{"tdd", "code-review", "golang-pro"}))
+	_, _ = live.Write([]byte("● Skill(tdd)\n● Skill(code- review)\n● Skill(golang_pro)\n"))
+
+	res := (&ClaudeInteractive{}).enrich(Result{}, sessionID, live)
+
+	if want := []string{"tdd"}; !reflect.DeepEqual(res.Skills, want) {
+		t.Errorf("Skills = %v, want %v", res.Skills, want)
+	}
+	if want := []string{"code- review", "golang_pro"}; !reflect.DeepEqual(res.SkillsFailed, want) {
+		t.Errorf("SkillsFailed = %v, want %v", res.SkillsFailed, want)
+	}
+	if want := []string{"code- review"}; !reflect.DeepEqual(res.SkillsUnmatched, want) {
+		t.Errorf("SkillsUnmatched = %v, want %v", res.SkillsUnmatched, want)
+	}
+}
+
 // scriptSession delivers one scripted chunk of terminal output, then signals it
 // has been drained and blocks until the run kills it — so a test can let the live
 // capture consume the output before ending the run.
@@ -215,6 +297,13 @@ func TestClaudeLiveCaptureRecordsSkills(t *testing.T) {
 			output:        "● Skill(bubbleta)\n● Skill(bubbltea)\n● Skill(artifact-design)\n",
 			wantSkills:    []string{"bubbletea"},
 			wantUnmatched: []string{"artifact-design"},
+			wantKnown:     true,
+		},
+		{
+			name:          "a space-mangled call is evidence, never a load",
+			output:        "● Skill(bubbletea)\n● Skill(vercel- react- best- practices)\n",
+			wantSkills:    []string{"bubbletea"},
+			wantUnmatched: []string{"vercel- react- best- practices"},
 			wantKnown:     true,
 		},
 		{

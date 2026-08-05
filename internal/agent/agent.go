@@ -78,7 +78,8 @@ func (u Usage) cost(model string) float64 {
 // call produced any recoverable skill evidence; false is the Unknown state, which
 // is distinct from a confirmed-empty Skills so a missing transcript is not read as
 // "loaded none". Skills holds only names the repo can actually load;
-// SkillsUnmatched carries the evidence that resolved to none of them. Usage and
+// SkillsUnmatched carries the evidence that resolved to none of them, and
+// SkillsFailed the raw inputs of Skill calls the tool rejected. Usage and
 // NumTurns cover the whole call including any subagents it dispatched, and CostUSD
 // prices that combined total; Subagent, SubagentTurns, Dispatches, and Explores
 // isolate that share.
@@ -97,6 +98,7 @@ type Result struct {
 	Skills          []string
 	SkillsKnown     bool
 	SkillsUnmatched []string
+	SkillsFailed    []string
 }
 
 // Runner runs one prompt to completion in a fresh process and returns the final
@@ -564,7 +566,8 @@ func (c *ClaudeInteractive) enrich(res Result, sessionID string, live *skillCapt
 		res.Model = stats.Model
 	}
 	settled, unmatched := live.snap.snapAll(stats.Skills)
-	res.Skills = mergeSkills(live.skills(), settled)
+	res.SkillsFailed = stats.SkillsFailed
+	res.Skills = dropSkills(mergeSkills(live.skills(), settled), res.SkillsFailed, settled)
 	res.SkillsUnmatched = appendSkills(live.unmatchedSightings(), unmatched...)
 	res.SkillsKnown = ok || len(res.Skills) > 0
 	if res.Model == "" {
@@ -604,6 +607,9 @@ func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, ru
 	}
 	if len(res.SkillsUnmatched) > 0 {
 		fields["skills_unmatched"] = res.SkillsUnmatched
+	}
+	if len(res.SkillsFailed) > 0 {
+		fields["skills_failed"] = res.SkillsFailed
 	}
 	if runErr != nil {
 		fields["error"] = runErr.Error()

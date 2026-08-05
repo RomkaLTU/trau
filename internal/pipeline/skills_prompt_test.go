@@ -84,6 +84,41 @@ func TestRepairPromptsReuseBuildSkillsNote(t *testing.T) {
 	mustNotContain(t, "lintFixInstruction", lintfix, "Skill tool")
 }
 
+// TestSkillsPromptsHardenAgainstMangledNames is the COD-1502 guard: Claude Code's
+// Skill tool matches exactly and suggests nothing, so a model that re-types a name
+// with spaces runs the phase without the skill. Every instruct-mode sentence that
+// names a set must therefore say the names are literal and tell the agent to retry
+// on "Unknown skill"; a repo that names nothing keeps its self-selection wording.
+func TestSkillsPromptsHardenAgainstMangledNames(t *testing.T) {
+	const (
+		exact = "Pass each name to the Skill tool exactly as written — the names contain no spaces"
+		retry = `if a Skill call returns "Unknown skill", re-call it with the name copied exactly from this list`
+	)
+
+	build := skillsPrompt(prompts.Renderer{}, []string{"golang-pro"}, []string{"golang-pro"}, nil)
+	mustContain(t, "skillsPrompt(resolved)", build, exact, retry)
+	verify := verifySkillsPrompt(prompts.Renderer{}, []string{"tdd"}, []string{"tdd"}, []string{"browser-harness"})
+	mustContain(t, "verifySkillsPrompt(resolved)", verify, exact, retry)
+
+	none := skillsPrompt(prompts.Renderer{}, nil, nil, nil)
+	mustNotContain(t, "skillsPrompt(none)", none, exact, retry)
+}
+
+// TestInjectModeCarriesNoSkillsSentence pins that the retry nudge rides the
+// instruct-mode sentence alone: an inject-mode phase hands the agent SKILL.md
+// content and never names the Skill tool, so it is unchanged by the hardening.
+func TestInjectModeCarriesNoSkillsSentence(t *testing.T) {
+	p := newTestPipeline(t, routedRunner{provider: "codex"}, &fakeTracker{})
+	p.RepoRoot = repoWithSkill(t, "web-feature")
+	p.SkillsMode = skillsModeInject
+
+	got := p.resolveSkills(agent.SkillSet{Names: []string{"web-feature"}}, []string{"web-feature"}, agent.PhaseBuild)
+	if got.note != "" {
+		t.Fatalf("inject-mode note = %q, want empty", got.note)
+	}
+	mustNotContain(t, "inject-mode injection", got.injection, "Unknown skill", "exactly as written")
+}
+
 // failingVerdictRunner records every prompt and fails the first verify verdict,
 // so one Verify drives the verify and repair prompts through the real phase code.
 type failingVerdictRunner struct {

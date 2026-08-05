@@ -22,12 +22,14 @@ type transcriptStats struct {
 	Model         string   // last non-empty message.model seen
 	Context       int      // high-water mark: max(input+cache_read+cache_creation) over turns
 	Skills        []string // skills loaded via the Skill tool, in first-seen order
+	SkillsFailed  []string // raw Skill inputs whose call came back an error, in first-seen order
 }
 
 // sessionLine is the subset of a transcript line we read. Only assistant lines
 // carry usage/model; tool_use blocks inside their content name the skills loaded
-// and the subagents dispatched. isSidechain marks a line produced by a subagent
-// rather than by the orchestrator.
+// and the subagents dispatched; the tool_result blocks on the user lines that
+// follow report whether each of those calls succeeded. isSidechain marks a line
+// produced by a subagent rather than by the orchestrator.
 type sessionLine struct {
 	Type      string `json:"type"`
 	Sidechain bool   `json:"isSidechain"`
@@ -40,14 +42,47 @@ type sessionLine struct {
 			CacheCreation int `json:"cache_creation_input_tokens"`
 		} `json:"usage"`
 		Content []struct {
-			Type  string `json:"type"`
-			Name  string `json:"name"`
-			Input struct {
+			Type      string `json:"type"`
+			Name      string `json:"name"`
+			ID        string `json:"id"`
+			ToolUseID string `json:"tool_use_id"`
+			IsError   bool   `json:"is_error"`
+			Input     struct {
 				Skill        string `json:"skill"`
 				SubagentType string `json:"subagent_type"`
 			} `json:"input"`
 		} `json:"content"`
 	} `json:"message"`
+}
+
+// skillCall is one Skill tool_use: the id its tool_result will quote, and the
+// name the agent actually typed.
+type skillCall struct{ id, name string }
+
+// settleSkillCalls splits the session's Skill calls by outcome. A name is loaded
+// when any of its calls came back without an error, so a mangled attempt the agent
+// retried correctly counts as loaded. A call with no matching result — a transcript
+// cut off mid-tool — is read as loaded, the pre-tool_result behavior.
+func settleSkillCalls(calls []skillCall, errored map[string]bool) (loaded, failed []string) {
+	succeeded := make(map[string]bool, len(calls))
+	for _, c := range calls {
+		if !errored[c.id] {
+			succeeded[c.name] = true
+		}
+	}
+	seen := make(map[string]bool, len(calls))
+	for _, c := range calls {
+		if seen[c.name] {
+			continue
+		}
+		seen[c.name] = true
+		if succeeded[c.name] {
+			loaded = append(loaded, c.name)
+		} else {
+			failed = append(failed, c.name)
+		}
+	}
+	return loaded, failed
 }
 
 // isSubagentTool reports whether name is a subagent-dispatch tool. "Task" is the
@@ -152,14 +187,16 @@ func parseTranscriptFile(path string) (transcriptStats, bool) {
 }
 
 // parseTranscript sums usage across assistant lines, tracks the context
-// high-water mark, records the model, collects skills loaded via the Skill tool,
-// and counts the subagents the orchestrator dispatched. Sidechain lines are subagent
-// turns: their usage lands in the totals and in Subagent, but they neither raise the
-// orchestrator's context high-water mark nor count toward its dispatch tally.
+// high-water mark, records the model, collects the skills the Skill tool actually
+// loaded — a call whose tool_result came back an error is a failed attempt, not a
+// load — and counts the subagents the orchestrator dispatched. Sidechain lines are
+// subagent turns: their usage lands in the totals and in Subagent, but they neither
+// raise the orchestrator's context high-water mark nor count toward its dispatch tally.
 // Malformed lines are skipped. ok is false when no assistant line carried usage.
 func parseTranscript(r interface{ Read([]byte) (int, error) }) (transcriptStats, bool) {
 	var st transcriptStats
-	seenSkill := map[string]bool{}
+	var skillCalls []skillCall
+	errored := map[string]bool{}
 	any := false
 
 	sc := bufio.NewScanner(bufio.NewReader(r))
@@ -170,7 +207,18 @@ func parseTranscript(r interface{ Read([]byte) (int, error) }) (transcriptStats,
 			continue
 		}
 		var ln sessionLine
-		if err := json.Unmarshal(b, &ln); err != nil || ln.Type != "assistant" {
+		if err := json.Unmarshal(b, &ln); err != nil {
+			continue
+		}
+		if ln.Type == "user" {
+			for _, blk := range ln.Message.Content {
+				if blk.Type == "tool_result" && blk.IsError && blk.ToolUseID != "" {
+					errored[blk.ToolUseID] = true
+				}
+			}
+			continue
+		}
+		if ln.Type != "assistant" {
 			continue
 		}
 		if ln.Message.Model != "" {
@@ -180,9 +228,8 @@ func parseTranscript(r interface{ Read([]byte) (int, error) }) (transcriptStats,
 			if blk.Type != "tool_use" {
 				continue
 			}
-			if blk.Name == "Skill" && blk.Input.Skill != "" && !seenSkill[blk.Input.Skill] {
-				seenSkill[blk.Input.Skill] = true
-				st.Skills = append(st.Skills, blk.Input.Skill)
+			if blk.Name == "Skill" && blk.Input.Skill != "" {
+				skillCalls = append(skillCalls, skillCall{id: blk.ID, name: blk.Input.Skill})
 			}
 			if isSubagentTool(blk.Name) && !ln.Sidechain {
 				st.Dispatches++
@@ -212,5 +259,6 @@ func parseTranscript(r interface{ Read([]byte) (int, error) }) (transcriptStats,
 			st.Context = ctx
 		}
 	}
+	st.Skills, st.SkillsFailed = settleSkillCalls(skillCalls, errored)
 	return st, any
 }
