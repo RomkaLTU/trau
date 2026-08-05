@@ -26,6 +26,8 @@ export interface NavItem {
   loop?: boolean
   /** Show the triage inbox count — total, with the awaiting-answer count emphasized. */
   inbox?: boolean
+  /** Light up while a research session is working. */
+  research?: boolean
   /** Page acts on a single repo — the link is disabled under "All projects". */
   requiresProject?: boolean
 }
@@ -66,6 +68,7 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: FlaskConical,
         to: '/research',
         requiresProject: true,
+        research: true,
       },
     ],
   },
