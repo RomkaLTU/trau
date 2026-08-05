@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -539,6 +540,146 @@ func TestAzureAddAndRemoveLabelIgnoreBlanks(t *testing.T) {
 	}
 }
 
+// An Azure-tracked run's QA report lands on the work item's own discussion, with
+// the Markdown rendered into the HTML the field stores.
+func TestAzurePostQANoteWritesTheDiscussionAsHTML(t *testing.T) {
+	az, patches := azureServer(t, map[string]string{"patch": `{"id":7}`})
+
+	err := az.PostQANote(context.Background(), "CON-7", QANote{
+		Body: "## Trau QA report\n\nVerify passed: all green\n\nPR: https://github.test/pr/7\n",
+	})
+	if err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+	if len(*patches) != 1 {
+		t.Fatalf("got %d patches, want 1 discussion write: %+v", len(*patches), *patches)
+	}
+	if got := (*patches)[0].path; !strings.HasSuffix(got, "/workitems/7") {
+		t.Errorf("patched %q, want the work item behind CON-7", got)
+	}
+	const want = "<div>## Trau QA report</div><div>Verify passed: all green</div>" +
+		"<div>PR: https://github.test/pr/7</div>"
+	body, _ := (*patches)[0].value("System.History").(string)
+	if body != want {
+		t.Errorf("discussion body = %q, want %q", body, want)
+	}
+}
+
+var azureQAImages = []QAImage{
+	{Name: "proof-1.png", Mime: "image/png", Caption: "home", Bytes: []byte("png-1")},
+	{Name: "proof-2.png", Mime: "image/png", Caption: "settings", Bytes: []byte("png-2")},
+}
+
+// azureQAServer stands in for the organization while a QA note posts: an
+// attachment upload answers with a URL built from the fileName — refused for a
+// name in refuse — and every PATCH is recorded.
+func azureQAServer(t *testing.T, refuse map[string]bool) (*AzureDevOps, *[]recordedPatch, *[]string) {
+	t.Helper()
+	patches := &[]recordedPatch{}
+	uploads := &[]string{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/attachments"):
+			name := r.URL.Query().Get("fileName")
+			if refuse[name] {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"attachment store unavailable"}`))
+				return
+			}
+			*uploads = append(*uploads, name)
+			_, _ = fmt.Fprintf(w, `{"id":"guid-%s","url":"%sguid-%s?fileName=%s"}`, name, azureAttachmentBase, name, name)
+		case r.Method == http.MethodPatch:
+			body, _ := io.ReadAll(r.Body)
+			var ops []recordedOp
+			_ = json.Unmarshal(body, &ops)
+			*patches = append(*patches, recordedPatch{path: r.URL.Path, ops: ops})
+			_, _ = w.Write([]byte(`{"id":7}`))
+		default:
+			t.Errorf("unrouted request %s %s", r.Method, r.URL.RequestURI())
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &AzureDevOps{OrgURL: srv.URL, PAT: "pat", Project: "Contoso"}, patches, uploads
+}
+
+const azureAttachmentBase = "https://dev.azure.com/acme/_apis/wit/attachments/"
+
+func (p recordedPatch) relations() []map[string]any {
+	out := []map[string]any{}
+	for _, op := range p.ops {
+		if op.Path != "/relations/-" {
+			continue
+		}
+		if rel, ok := op.Value.(map[string]any); ok {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// Every screenshot is uploaded to the work item: the discussion embeds them under
+// the report, and an AttachedFile relation lists them under Attachments too.
+func TestAzurePostQANoteUploadsScreenshotsAndEmbedsThem(t *testing.T) {
+	az, patches, uploads := azureQAServer(t, nil)
+
+	note := QANote{Body: "Verify passed: all green", Images: azureQAImages}
+	if err := az.PostQANote(context.Background(), "CON-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+
+	if !slices.Equal(*uploads, []string{"proof-1.png", "proof-2.png"}) {
+		t.Errorf("uploads = %v, want both screenshots", *uploads)
+	}
+	if len(*patches) != 2 {
+		t.Fatalf("got %d patches, want the discussion write and the relation write: %+v", len(*patches), *patches)
+	}
+	body, _ := (*patches)[0].value("System.History").(string)
+	want := "<div>Verify passed: all green</div>" +
+		`<div><img src="` + azureAttachmentBase + `guid-proof-1.png?fileName=proof-1.png" alt="home"></div>` +
+		`<div><img src="` + azureAttachmentBase + `guid-proof-2.png?fileName=proof-2.png" alt="settings"></div>`
+	if body != want {
+		t.Errorf("discussion body = %q, want %q", body, want)
+	}
+	relations := (*patches)[1].relations()
+	if len(relations) != 2 {
+		t.Fatalf("got %d relations, want one per screenshot: %+v", len(relations), relations)
+	}
+	for i, name := range []string{"proof-1.png", "proof-2.png"} {
+		wantURL := azureAttachmentBase + "guid-" + name + "?fileName=" + name
+		if relations[i]["rel"] != "AttachedFile" || relations[i]["url"] != wantURL {
+			t.Errorf("relation %d = %+v, want an AttachedFile pointing at %s", i, relations[i], wantURL)
+		}
+	}
+}
+
+// An attachment store that refuses one file costs the note that image and nothing
+// else: the report still posts, carrying the screenshots that did upload.
+func TestAzurePostQANoteSkipsAnImageThatFailsToUpload(t *testing.T) {
+	az, patches, uploads := azureQAServer(t, map[string]bool{"proof-2.png": true})
+
+	note := QANote{Body: "Verify passed: all green", Images: azureQAImages}
+	if err := az.PostQANote(context.Background(), "CON-7", note); err != nil {
+		t.Fatalf("PostQANote error: %v", err)
+	}
+
+	if !slices.Equal(*uploads, []string{"proof-1.png"}) {
+		t.Errorf("uploads = %v, want only the one the store accepted", *uploads)
+	}
+	if len(*patches) != 2 {
+		t.Fatalf("got %d patches, want the discussion write and the relation write: %+v", len(*patches), *patches)
+	}
+	body, _ := (*patches)[0].value("System.History").(string)
+	if !strings.Contains(body, `alt="home"`) {
+		t.Errorf("discussion lost the uploaded screenshot: %q", body)
+	}
+	if strings.Contains(body, "settings") {
+		t.Errorf("discussion embeds a screenshot that never uploaded: %q", body)
+	}
+	if got := (*patches)[1].relations(); len(got) != 1 {
+		t.Errorf("relations = %+v, want only the uploaded screenshot", got)
+	}
+}
+
 func TestAzureFileBugCreatesTaggedWorkItem(t *testing.T) {
 	dir := t.TempDir()
 	verdict := filepath.Join(dir, "verdict.json")
@@ -646,5 +787,8 @@ func TestAzureSatisfiesOptionalCapabilities(t *testing.T) {
 	}
 	if _, ok := pm.(TeamLister); !ok {
 		t.Error("AzureDevOps does not implement TeamLister")
+	}
+	if _, ok := pm.(QANotePoster); !ok {
+		t.Error("AzureDevOps does not implement QANotePoster")
 	}
 }

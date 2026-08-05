@@ -23,11 +23,16 @@ import {
   CommandSeparator,
 } from '@/components/ui/command'
 import { loadRepoUsage, sortRepos } from '@/lib/active-repo'
+import { runningGrillsQueryOptions } from '@/lib/grill'
 import { instancesQueryOptions, type RepoView } from '@/lib/instances'
 import {
+  activityBreakdown,
+  isActiveState,
   repoBadgeState,
   reposBadgeState,
+  sumActivity,
   toSessionState,
+  type RepoBadge,
   type RepoBadgeState,
 } from '@/lib/overview'
 import { matchesQuery } from '@/lib/palette-filter'
@@ -54,8 +59,19 @@ const GROUP_HEADING =
 
 const RECENT_REPOS = 5
 
-function useRepoBadgeStates(): Map<string, RepoBadgeState> {
+const IDLE_BADGE: RepoBadge = {
+  state: 'none',
+  loops: 0,
+  interviews: 0,
+  research: 0,
+}
+
+// A repo is at work whenever an agent is: a live loop, or an interview or research
+// session mid-turn — a pre-grill pass among them, since its sessions run as
+// interviews. Sessions blocked on the user are not work, and stay out of it.
+function useRepoBadgeStates(): Map<string, RepoBadge> {
   const { data } = useQuery(instancesQueryOptions)
+  const { data: grills } = useQuery(runningGrillsQueryOptions())
   return useMemo(() => {
     const byRepo = new Map<string, ReturnType<typeof toSessionState>[]>()
     for (const inst of data?.instances ?? []) {
@@ -63,10 +79,32 @@ function useRepoBadgeStates(): Map<string, RepoBadgeState> {
       states.push(toSessionState(inst.session_state))
       byRepo.set(inst.repo, states)
     }
-    const badges = new Map<string, RepoBadgeState>()
-    for (const [name, states] of byRepo) badges.set(name, repoBadgeState(states))
+    const running = new Map<string, { interviews: number; research: number }>()
+    for (const sess of grills?.sessions ?? []) {
+      const counts = running.get(sess.repo) ?? { interviews: 0, research: 0 }
+      if (sess.mode === 'research') counts.research += 1
+      else counts.interviews += 1
+      running.set(sess.repo, counts)
+    }
+    const badges = new Map<string, RepoBadge>()
+    for (const name of new Set([...byRepo.keys(), ...running.keys()])) {
+      const states = byRepo.get(name) ?? []
+      const counts = running.get(name) ?? { interviews: 0, research: 0 }
+      const grilling = counts.interviews + counts.research > 0
+      badges.set(name, {
+        state: grilling ? 'active' : repoBadgeState(states),
+        loops: states.filter(isActiveState).length,
+        ...counts,
+      })
+    }
     return badges
-  }, [data])
+  }, [data, grills])
+}
+
+// The breakdown is what a teal icon means, so it rides on the tooltip each surface
+// already carries rather than a second one of its own.
+function withBreakdown(title: string, breakdown: string): string {
+  return breakdown === '' ? title : `${title}\n${breakdown}`
 }
 
 export function RepoSwitcher({ onOpen }: { onOpen: () => void }) {
@@ -77,19 +115,22 @@ export function RepoSwitcher({ onOpen }: { onOpen: () => void }) {
   const project = active
     ? projectNameForRoot(active.root, projectData?.projects ?? [])
     : ''
+  const badge = (repo ? badges.get(repo) : undefined) ?? IDLE_BADGE
+  const everywhere = activityBreakdown(sumActivity([...badges.values()]))
+  const breakdown = isAll ? everywhere : activityBreakdown(badge)
 
   return (
     <button
       type="button"
       onClick={onOpen}
       aria-haspopup="dialog"
-      title="Switch repo"
+      title={withBreakdown('Switch repo', breakdown)}
       className="flex w-full items-center gap-2.5 rounded-md border border-border bg-input px-2.5 py-2 text-left transition-colors hover:border-ring/50"
     >
       {isAll ? (
-        <AllReposIcon />
+        <AllReposIcon active={everywhere !== ''} />
       ) : (
-        <RepoIcon state={repo ? (badges.get(repo) ?? 'none') : 'none'} />
+        <RepoIcon state={badge.state} />
       )}
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate font-mono text-sm text-foreground">
@@ -213,7 +254,7 @@ export function RepoSwitcherDialog({
     value: `${group}:${r.root}`,
     repo: r,
     qualifier: qualifiers.get(r.root),
-    state: badges.get(r.name) ?? 'none',
+    badge: badges.get(r.name) ?? IDLE_BADGE,
     active: r.name === scoped,
     onSelect: () => pick(r.root),
   })
@@ -358,19 +399,28 @@ function ProjectRows({
 }) {
   const rows = repos.map((r) => option(r))
   const count = `${repos.length} ${repos.length === 1 ? 'repo' : 'repos'}`
+  // The dot rides on the header rather than the disclosure, so a member at work is
+  // as visible with the project folded as open.
+  const breakdown = activityBreakdown(sumActivity(rows.map((r) => r.badge)))
   return (
     <>
       <CommandItem
         value={`project:${project.id}`}
         onSelect={() => onToggle(project.id)}
-        title={`${project.name}\n${count}`}
+        title={withBreakdown(`${project.name}\n${count}`, breakdown)}
         aria-expanded={expanded}
         className="gap-2.5 px-2.5 py-1.5"
       >
-        <RepoIcon state={reposBadgeState(rows.map((r) => r.state))} />
+        <RepoIcon state={reposBadgeState(rows.map((r) => r.badge.state))} />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm text-foreground">
-            {project.name}
+          <span className="flex items-center gap-1.5 text-sm text-foreground">
+            <span className="truncate">{project.name}</span>
+            {breakdown !== '' && (
+              <span
+                aria-hidden="true"
+                className="size-1 shrink-0 rounded-full bg-teal"
+              />
+            )}
           </span>
           <span className="truncate text-[0.65rem] text-muted-foreground">
             {count}
@@ -397,7 +447,7 @@ interface RepoOptionRow {
   value: string
   repo: RepoView
   qualifier?: string
-  state: RepoBadgeState
+  badge: RepoBadge
   active: boolean
   onSelect: () => void
 }
@@ -407,7 +457,7 @@ function RepoOption({
   repo,
   project = '',
   qualifier,
-  state,
+  badge,
   active,
   inset = false,
   onSelect,
@@ -420,10 +470,13 @@ function RepoOption({
     <CommandItem
       value={value}
       onSelect={onSelect}
-      title={`${repo.name}\n${subtitle}`}
+      title={withBreakdown(
+        `${repo.name}\n${subtitle}`,
+        activityBreakdown(badge),
+      )}
       className={cn('gap-2.5 py-1.5 pr-2.5', inset ? 'pl-7' : 'pl-2.5')}
     >
-      <RepoIcon state={state} />
+      <RepoIcon state={badge.state} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span
           className={cn(
@@ -465,11 +518,14 @@ function repoSubtitle(repo: RepoView): string {
   return `folder repo, ${count} ${count === 1 ? 'repository' : 'repositories'} · ${repo.root}`
 }
 
-function AllReposIcon() {
+function AllReposIcon({ active = false }: { active?: boolean }) {
   return (
     <span
       aria-hidden="true"
-      className="flex size-7 shrink-0 items-center justify-center rounded-md border border-primary/40 bg-secondary text-primary"
+      className={cn(
+        'flex size-7 shrink-0 items-center justify-center rounded-md border bg-secondary',
+        active ? 'border-teal/50 text-teal' : 'border-primary/40 text-primary',
+      )}
     >
       <FolderGit2 className="size-3.5 text-current" />
     </span>

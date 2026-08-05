@@ -414,6 +414,47 @@ func (c *Client) AddComment(ctx context.Context, identifier, body string) error 
 	return c.do(ctx, commentCreateMutation, map[string]any{"issueId": issue.ID, "body": body}, &dst)
 }
 
+// UploadFile stores data in Linear's asset store and returns the asset URL a
+// comment embeds it by. Linear answers the fileUpload mutation with a pre-signed
+// URL and the headers the PUT to it must carry; the bytes never travel through
+// the GraphQL endpoint.
+func (c *Client) UploadFile(ctx context.Context, filename, contentType string, data []byte) (string, error) {
+	if c.apiKey == "" {
+		return "", ErrNotEnabled
+	}
+	vars := map[string]any{
+		"filename":    filename,
+		"contentType": contentType,
+		"size":        len(data),
+	}
+	var dst fileUploadResponse
+	if err := c.do(ctx, fileUploadMutation, vars, &dst); err != nil {
+		return "", err
+	}
+	up := dst.Data.FileUpload.UploadFile
+	if up.UploadURL == "" || up.AssetURL == "" {
+		return "", fmt.Errorf("linear: no upload URL for %q", filename)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, up.UploadURL, bytes.NewReader(data))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", contentType)
+	for _, h := range up.Headers {
+		req.Header.Set(h.Key, h.Value)
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode >= 300 {
+		return "", fmt.Errorf("linear: upload %q: HTTP %d", filename, res.StatusCode)
+	}
+	return up.AssetURL, nil
+}
+
 // UpdateDescription replaces the issue's description. The human identifier is
 // resolved to the issue's node id first, the same as AddComment.
 func (c *Client) UpdateDescription(ctx context.Context, identifier, description string) error {
@@ -926,6 +967,22 @@ type commentCreateResponse struct {
 		CommentCreate struct {
 			Success bool `json:"success"`
 		} `json:"commentCreate"`
+	} `json:"data"`
+}
+
+type fileUploadResponse struct {
+	Data struct {
+		FileUpload struct {
+			Success    bool `json:"success"`
+			UploadFile struct {
+				UploadURL string `json:"uploadUrl"`
+				AssetURL  string `json:"assetUrl"`
+				Headers   []struct {
+					Key   string `json:"key"`
+					Value string `json:"value"`
+				} `json:"headers"`
+			} `json:"uploadFile"`
+		} `json:"fileUpload"`
 	} `json:"data"`
 }
 

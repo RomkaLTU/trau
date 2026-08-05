@@ -255,11 +255,20 @@ func (r *issueResponse) toIssue() *Issue {
 	return iss
 }
 
-// do performs a request against the REST v3 API and decodes the JSON response
-// into dst (which may be nil for calls with no body of interest). It sets the
-// Basic-auth header, honours a 429 Retry-After up to maxRetries, and maps auth
-// and not-found statuses onto the typed sentinels.
+// do performs a JSON request against the REST v3 API and decodes the JSON
+// response into dst (which may be nil for calls with no body of interest).
 func (c *Client) do(ctx context.Context, method, path string, body []byte, dst any) error {
+	var header http.Header
+	if body != nil {
+		header = http.Header{"Content-Type": {"application/json"}}
+	}
+	return c.send(ctx, method, path, body, header, dst)
+}
+
+// send issues one request carrying header on top of the Basic-auth and Accept
+// headers every call sets, honours a 429 Retry-After up to maxRetries, and maps
+// auth and not-found statuses onto the typed sentinels.
+func (c *Client) send(ctx context.Context, method, path string, body []byte, header http.Header, dst any) error {
 	endpoint := c.baseURL + apiPrefix + path
 	for attempt := 0; ; attempt++ {
 		var reader io.Reader
@@ -272,8 +281,10 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, dst a
 		}
 		req.Header.Set("Authorization", c.auth)
 		req.Header.Set("Accept", "application/json")
-		if body != nil {
-			req.Header.Set("Content-Type", "application/json")
+		for name, values := range header {
+			for _, v := range values {
+				req.Header.Add(name, v)
+			}
 		}
 
 		res, err := c.http.Do(req)

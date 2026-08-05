@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -35,6 +37,10 @@ const (
 	grillDestTracker  = "tracker"
 	grillDestInternal = "internal"
 )
+
+// grillApplyInProgress stays distinct from the state conflicts so the review can wait
+// for the settle rather than report a failure the user never caused.
+const grillApplyInProgress = "apply already in progress"
 
 // GrillApplyRequest is the body of POST /grill/{sid}/apply. ProposedDescription is
 // the possibly user-edited replacement from the review UI; empty falls back to the
@@ -145,6 +151,8 @@ type grillOutcome struct {
 // inbound sync sees no divergence (ADR 0007). An anchored session applied to the
 // internal store detaches its ticket first, so the plan runs against the internal
 // issue that ticket became — the recovery path when the tracker is unreachable.
+// One apply at a time per session: a second is refused outright, and while the first
+// holds the guard every session resource reports the session as applying.
 func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -173,6 +181,14 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no proposed outcome to apply"})
 		return
 	}
+	if !s.beginGrillApply(sid) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": grillApplyInProgress})
+		return
+	}
+	// The settle releases the guard itself; this covers the paths that give up before
+	// reaching one, which would otherwise strand the indicator.
+	defer func() { s.releaseGrillApply(sess) }()
+	s.publishGrillState(sess)
 
 	var req GrillApplyRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
@@ -328,6 +344,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 // this pass is the only one that can record what the conversion left behind.
 func (s *Server) writeGrillPartial(w http.ResponseWriter, sess hubstore.GrillSession, steps []GrillApplyStep, warnings []string) {
 	s.recordGrillWarnings(&sess, warnings)
+	s.releaseGrillApply(sess)
 	writeJSON(w, http.StatusOK, GrillApplyResponse{
 		Session:  s.grillSessionView("", sess),
 		Applied:  false,
@@ -364,6 +381,61 @@ func (s *Server) stampGrillResearchMode(sess *hubstore.GrillSession) {
 	} else {
 		*sess = stamped
 	}
+}
+
+// beginGrillApply / releaseGrillApply flag which sessions have an apply in flight, so
+// a second Create cannot file while the first is still writing and every surface can
+// report the session as applying meanwhile. Only the call that actually held the guard
+// announces the settle, so the handler's catch-all release stays quiet behind a settle
+// that already spoke. The flag is in-memory only: a hub restarted mid-apply leaves the
+// session finished, and the re-apply's own idempotency recovers it.
+func (s *Server) beginGrillApply(sid int64) bool {
+	s.grillApplyMu.Lock()
+	defer s.grillApplyMu.Unlock()
+	if s.grillApplying[sid] {
+		return false
+	}
+	s.grillApplying[sid] = true
+	return true
+}
+
+func (s *Server) releaseGrillApply(sess hubstore.GrillSession) {
+	s.grillApplyMu.Lock()
+	held := s.grillApplying[sess.ID]
+	delete(s.grillApplying, sess.ID)
+	s.grillApplyMu.Unlock()
+	if held {
+		s.publishGrillState(sess)
+	}
+}
+
+func (s *Server) grillApplyInFlight(sid int64) bool {
+	s.grillApplyMu.Lock()
+	defer s.grillApplyMu.Unlock()
+	return s.grillApplying[sid]
+}
+
+// grillApplyingSessions returns the sessions whose apply the hub is still writing. An
+// apply only ever runs on a finished session, which the awaiting query never returns,
+// so the dock would otherwise lose sight of the session between handing the outcome
+// over and the settle.
+func (s *Server) grillApplyingSessions() []hubstore.GrillSession {
+	s.grillApplyMu.Lock()
+	ids := slices.Sorted(maps.Keys(s.grillApplying))
+	s.grillApplyMu.Unlock()
+
+	out := make([]hubstore.GrillSession, 0, len(ids))
+	for _, id := range ids {
+		sess, ok, err := s.stores.Grill().Session(id)
+		if err != nil {
+			logger.Verbosef("grill apply %d: read applying session: %v", id, err)
+			continue
+		}
+		if ok {
+			out = append(out, sess)
+		}
+	}
+	return out
 }
 
 // grillAnchoredIssue returns the session's anchor issue for the dispositions that
@@ -474,10 +546,10 @@ func (s *Server) settleGrillApplied(w http.ResponseWriter, sess *hubstore.GrillS
 	s.recordGrillWarnings(sess, warnings)
 	if applied, err := s.stores.Grill().Transition(sess.ID, hubstore.GrillApplied, ""); err == nil {
 		*sess = applied
-		s.publishGrillState(applied)
 	} else {
 		logger.Verbosef("grill apply %d: settle applied: %v", sess.ID, err)
 	}
+	s.releaseGrillApply(*sess)
 	if steps == nil {
 		steps = []GrillApplyStep{}
 	}

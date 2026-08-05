@@ -606,6 +606,62 @@ func TestGrillListAwaitingExcludesClosedIssue(t *testing.T) {
 	}
 }
 
+func TestGrillListRunning(t *testing.T) {
+	g, db := testGrill(t, 0)
+	seedGrillIssues(t, db, "acme", map[string]string{
+		"COD-1": "started",
+		"COD-2": "started",
+		"COD-3": "done",
+	})
+
+	cases := []struct {
+		name  string
+		repo  string
+		issue string
+		mode  string
+		state string
+		want  bool
+	}{
+		{name: "interview mid-turn", repo: "acme", issue: "COD-1", mode: GrillModeInterview, want: true},
+		{name: "research mid-turn", repo: "other", issue: "OTH-1", mode: GrillModeResearch, want: true},
+		{name: "legacy row with no mode", repo: "acme", issue: "COD-2", want: true},
+		{name: "draft with no issue", repo: "acme", want: true},
+		{name: "waiting on the user", repo: "acme", issue: "OTH-2", state: GrillWaiting},
+		{name: "parked", repo: "acme", issue: "OTH-3", state: GrillParked},
+		{name: "stalled", repo: "other", issue: "OTH-4", state: GrillStalled},
+		{name: "finished", repo: "other", issue: "OTH-5", state: GrillFinished},
+		{name: "running on a closed issue", repo: "acme", issue: "COD-3"},
+	}
+
+	ids := make([]int64, len(cases))
+	for i, tc := range cases {
+		sess, err := g.Create(NewGrillSession{Repo: tc.repo, IssueID: tc.issue, Mode: tc.mode})
+		if err != nil {
+			t.Fatalf("create %s: %v", tc.name, err)
+		}
+		if tc.state != "" {
+			if _, err := g.Transition(sess.ID, tc.state, ""); err != nil {
+				t.Fatalf("transition %s to %s: %v", tc.name, tc.state, err)
+			}
+		}
+		ids[i] = sess.ID
+	}
+
+	running, err := g.ListRunning()
+	if err != nil {
+		t.Fatalf("list running: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, sess := range running {
+		got[sess.ID] = true
+	}
+	for i, tc := range cases {
+		if got[ids[i]] != tc.want {
+			t.Errorf("%s listed = %v, want %v", tc.name, got[ids[i]], tc.want)
+		}
+	}
+}
+
 func TestGrillListExcludesClosedIssue(t *testing.T) {
 	g, db := testGrill(t, 0)
 	seedGrillIssues(t, db, "acme", map[string]string{"COD-1": "done", "COD-2": "started", "COD-3": "done"})

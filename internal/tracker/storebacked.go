@@ -368,6 +368,20 @@ func (in *StoreBacked) RemoveLabel(ctx context.Context, id, label string) error 
 	return nil
 }
 
+// PostQANote leaves the run's QA report on the ticket: an internal issue takes the
+// comment through the store, a synced one through the external tracker that owns
+// it. An external tracker that cannot comment makes the note a no-op.
+func (in *StoreBacked) PostQANote(ctx context.Context, id string, note QANote) error {
+	if in.isInternal(id) {
+		return in.internal().PostQANote(ctx, id, note)
+	}
+	poster, ok := in.Writes.(QANotePoster)
+	if !ok {
+		return nil
+	}
+	return poster.PostQANote(ctx, id, note)
+}
+
 // FileBug files the verify loop's HITL blocker as an internal issue, never in the
 // external tracker (ADR 0007): trau does not create issues in a synced tracker. It
 // carries the QA verdict and needs-human labels, and is not marked ready so the loop

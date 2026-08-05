@@ -222,6 +222,118 @@ func TestAddCommentWithBlankBodyMakesNoRequest(t *testing.T) {
 	}
 }
 
+// A screenshot reaches the attachment store as raw bytes named through the query
+// string, and the response's URL is the handle a comment and a relation use.
+func TestUploadAttachmentPostsRawBytes(t *testing.T) {
+	var (
+		method      string
+		path        string
+		query       string
+		contentType string
+		sent        string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		query = r.URL.Query().Get("fileName")
+		contentType = r.Header.Get("Content-Type")
+		body, _ := io.ReadAll(r.Body)
+		sent = string(body)
+		_, _ = w.Write([]byte(`{"id":"guid-1","url":"https://dev.azure.com/acme/_apis/wit/attachments/guid-1?fileName=proof-1.png"}`))
+	}))
+	defer srv.Close()
+
+	at, err := New(srv.URL, "pat").UploadAttachment(context.Background(), "Contoso", "proof-1.png", []byte("png-bytes"))
+	if err != nil {
+		t.Fatalf("UploadAttachment returned error: %v", err)
+	}
+	if method != http.MethodPost || path != "/Contoso/_apis/wit/attachments" {
+		t.Errorf("request = %s %s, want POST /Contoso/_apis/wit/attachments", method, path)
+	}
+	if query != "proof-1.png" {
+		t.Errorf("fileName = %q, want proof-1.png", query)
+	}
+	if contentType != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want application/octet-stream", contentType)
+	}
+	if sent != "png-bytes" {
+		t.Errorf("body = %q, want the raw bytes", sent)
+	}
+	if at != "https://dev.azure.com/acme/_apis/wit/attachments/guid-1?fileName=proof-1.png" {
+		t.Errorf("attachment URL = %q, want the one the API returned", at)
+	}
+}
+
+// The discussion body renders the report and then each uploaded screenshot, so
+// the note shows its proof inline.
+func TestAddCommentWithImagesEmbedsImgTags(t *testing.T) {
+	var gotOps []patchOp
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotOps)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	images := []Attachment{
+		{URL: "https://dev.azure.com/acme/_apis/wit/attachments/guid-1?fileName=proof-1.png", Caption: "home"},
+		{URL: "https://dev.azure.com/acme/_apis/wit/attachments/guid-2?fileName=proof-2.png", Caption: `settings "wide"`},
+	}
+	err := New(srv.URL, "pat").AddCommentWithImages(context.Background(), "Contoso", 1, "Verify passed", images)
+	if err != nil {
+		t.Fatalf("AddCommentWithImages returned error: %v", err)
+	}
+	if len(gotOps) != 1 || gotOps[0].Path != "/fields/System.History" {
+		t.Fatalf("ops = %+v, want one System.History write", gotOps)
+	}
+	want := "<div>Verify passed</div>" +
+		`<div><img src="https://dev.azure.com/acme/_apis/wit/attachments/guid-1?fileName=proof-1.png" alt="home"></div>` +
+		`<div><img src="https://dev.azure.com/acme/_apis/wit/attachments/guid-2?fileName=proof-2.png" alt="settings &#34;wide&#34;"></div>`
+	if body, _ := gotOps[0].Value.(string); body != want {
+		t.Errorf("discussion body = %q, want %q", body, want)
+	}
+}
+
+// The same uploads are linked as AttachedFile relations, so the work item lists
+// them under Attachments whatever the discussion renders.
+func TestAttachFilesAddsAttachedFileRelations(t *testing.T) {
+	var gotOps []patchOp
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotOps)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+
+	files := []Attachment{{URL: "https://dev.azure.com/acme/_apis/wit/attachments/guid-1", Caption: "home"}}
+	if err := New(srv.URL, "pat").AttachFiles(context.Background(), "Contoso", 1, files); err != nil {
+		t.Fatalf("AttachFiles returned error: %v", err)
+	}
+	if gotPath != "/Contoso/_apis/wit/workitems/1" {
+		t.Errorf("path = %q, want the work item", gotPath)
+	}
+	if len(gotOps) != 1 || gotOps[0].Path != "/relations/-" {
+		t.Fatalf("ops = %+v, want one relation add", gotOps)
+	}
+	rel, _ := gotOps[0].Value.(map[string]any)
+	if rel["rel"] != relAttachedFile || rel["url"] != files[0].URL {
+		t.Errorf("relation = %+v, want an %s pointing at the upload", rel, relAttachedFile)
+	}
+}
+
+// No screenshot, no relation write: the note is a comment on its own.
+func TestAttachFilesWithoutFilesMakesNoRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("AttachFiles must not call the API with no files")
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "pat").AttachFiles(context.Background(), "Contoso", 1, nil); err != nil {
+		t.Errorf("AttachFiles returned error: %v", err)
+	}
+}
+
 func TestWriteOpsWithoutCredentialsAreNotEnabled(t *testing.T) {
 	c := New("", "")
 	ctx := context.Background()

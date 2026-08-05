@@ -78,10 +78,11 @@ export function loadRepoUsage(): RepoUsage {
 // by name so repos with no history keep a stable order.
 export function sortRepos(
   repos: readonly RepoView[],
-  badges: ReadonlyMap<string, RepoBadgeState>,
+  badges: ReadonlyMap<string, { state: RepoBadgeState }>,
   usage: RepoUsage,
 ): RepoView[] {
-  const rank = (repo: RepoView) => (badges.get(repo.name) === 'active' ? 0 : 1)
+  const rank = (repo: RepoView) =>
+    badges.get(repo.name)?.state === 'active' ? 0 : 1
   return [...repos].sort(
     (a, b) =>
       rank(a) - rank(b) ||

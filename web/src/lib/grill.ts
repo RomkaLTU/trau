@@ -30,6 +30,8 @@ export type GrillMode = 'interview' | 'research' | 'fix'
 // answering its own recommendations, so only a question needing the user's taste is
 // ever asked. report_title is the title a research outcome gave its report, which the
 // Research page names the session by; a session finished without one keeps the seed.
+// applying marks an apply the hub is still writing, so a reload and a second tab read
+// it from the hub rather than from a mutation they never ran.
 export interface GrillSession {
   id: string
   repo: string
@@ -45,6 +47,7 @@ export interface GrillSession {
   model?: string
   model_options?: string[]
   auto_accept?: boolean
+  applying?: boolean
   parked_reason?: string
   created_at: string
   updated_at: string
@@ -414,6 +417,24 @@ export const awaitingGrillsQueryOptions = () =>
     refetchInterval: 5_000,
   })
 
+const runningGrillsQueryKey = ['grill-running'] as const
+
+async function fetchRunningGrills(): Promise<GrillAwaitingResponse> {
+  const res = await apiFetch('/api/v1/grill?state=running')
+  if (!res.ok) throw new Error(await errorMessage(res, 'list running interviews failed'))
+  return res.json()
+}
+
+// The running feed is what turns a repo's switcher icon teal, so it polls at the
+// awaiting feed's cadence: a session that starts or settles shows within one poll.
+export const runningGrillsQueryOptions = () =>
+  queryOptions({
+    queryKey: runningGrillsQueryKey,
+    queryFn: fetchRunningGrills,
+    staleTime: 10_000,
+    refetchInterval: 5_000,
+  })
+
 // sortAwaiting ranks the awaiting feed the way the inbox ranks attention: a session
 // blocked on a live question leads a parked or stalled one, then latest activity
 // first. A session with no readable timestamp sorts after everything dated.
@@ -455,22 +476,25 @@ export function dropAwaiting(client: QueryClient, sid: string): void {
   )
 }
 
-// The states a collapsed dock stands for, named as its badge names them: the session
-// it holds while the interviewer works, then the states the hub blocks on the user
-// with, in the order the feed ranks them.
-const DOCK_STATES: { state: GrillState; label: string }[] = [
-  { state: 'running', label: 'thinking' },
-  { state: 'waiting', label: 'waiting' },
-  { state: 'parked', label: 'parked' },
-  { state: 'stalled', label: 'stalled' },
+// What a collapsed dock stands for, named as its badge names them: the session whose
+// apply the hub is still writing, the one it holds while the interviewer works, then
+// the states the hub blocks on the user with, in the order the feed ranks them.
+// Applying is what the hub is doing to a finished session rather than a state of its
+// own, so it takes a predicate the others answer by state alone.
+const DOCK_STATES: { label: string; holds: (session: GrillSession) => boolean }[] = [
+  { label: 'applying', holds: (s) => s.applying === true },
+  { label: 'thinking', holds: (s) => s.state === 'running' },
+  { label: 'waiting', holds: (s) => s.state === 'waiting' },
+  { label: 'parked', holds: (s) => s.state === 'parked' },
+  { label: 'stalled', holds: (s) => s.state === 'stalled' },
 ]
 
 // awaitingBreakdown explains a collapsed dock's count — "1 waiting · 2 stalled" — so
 // the badge reconciles with the sessions the interview page lists.
 export function awaitingBreakdown(sessions: readonly GrillAwaitingSession[]): string {
-  return DOCK_STATES.map(({ state, label }) => ({
+  return DOCK_STATES.map(({ label, holds }) => ({
     label,
-    count: sessions.filter((s) => s.state === state).length,
+    count: sessions.filter(holds).length,
   }))
     .filter(({ count }) => count > 0)
     .map(({ count, label }) => `${count} ${label}`)
@@ -642,6 +666,27 @@ export interface AzureHierarchyChoice {
   parent: string
 }
 
+// GrillApplyError carries the refusal's status so a card can tell the hub's
+// one-apply-at-a-time guard from a real failure.
+export class GrillApplyError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'GrillApplyError'
+    this.status = status
+  }
+}
+
+// The hub's answer to a second apply while the first is still writing.
+export const APPLY_IN_PROGRESS = 'apply already in progress'
+
+// isApplyInProgress reports whether an apply lost the race to another tab's. It is not
+// a failure to show: the settle arrives over the stream.
+export function isApplyInProgress(err: unknown): boolean {
+  return err instanceof GrillApplyError && err.status === 409 && err.message === APPLY_IN_PROGRESS
+}
+
 export async function applyGrill(
   sid: string,
   proposedDescription: string,
@@ -673,7 +718,7 @@ export async function applyGrill(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  if (!res.ok) throw new Error(await errorMessage(res, 'apply failed'))
+  if (!res.ok) throw new GrillApplyError(await errorMessage(res, 'apply failed'), res.status)
   return res.json()
 }
 

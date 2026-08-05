@@ -140,8 +140,10 @@ describe('sortRepos', () => {
 
   function badges(
     states: Record<string, RepoBadgeState>,
-  ): Map<string, RepoBadgeState> {
-    return new Map(Object.entries(states))
+  ): Map<string, { state: RepoBadgeState }> {
+    return new Map(
+      Object.entries(states).map(([name, state]) => [name, { state }]),
+    )
   }
 
   function names(sorted: RepoView[]): string[] {
