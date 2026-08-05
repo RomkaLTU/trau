@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/event"
@@ -17,23 +18,47 @@ import (
 func TestProofsEnabled(t *testing.T) {
 	cases := []struct {
 		name    string
-		note    string
+		browser string
 		setting string
 		want    bool
 	}{
-		{"no browser note", "", "on", false},
-		{"browser note, default", "drive the app", "", true},
-		{"browser note, on", "drive the app", "on", true},
-		{"browser note, off", "drive the app", "off", false},
-		{"browser note, off mixed case", "drive the app", "OFF", false},
+		{"auto, default", "auto", "", true},
+		{"auto, on", "auto", "on", true},
+		{"always, default", "always", "", true},
+		{"auto, padded and mixed case", " Auto ", "", true},
+		{"auto, off", "auto", "off", false},
+		{"auto, off mixed case", "auto", "OFF", false},
+		{"never", "never", "on", false},
+		{"browser verify unset", "", "on", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &Pipeline{VerifyProofs: tc.setting}
-			if got := p.proofsEnabled(tc.note); got != tc.want {
-				t.Errorf("proofsEnabled(%q) with VERIFY_PROOFS=%q = %v, want %v", tc.note, tc.setting, got, tc.want)
+			p := &Pipeline{BrowserVerify: tc.browser, VerifyProofs: tc.setting}
+			if got := p.proofsEnabled(); got != tc.want {
+				t.Errorf("proofsEnabled() with BROWSER_VERIFY=%q VERIFY_PROOFS=%q = %v, want %v", tc.browser, tc.setting, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestProofsContractShipsWithoutAppURL(t *testing.T) {
+	const id = "COD-1498-noappurl"
+	p := newTestPipeline(t, &verdictRunner{}, &fakeTracker{})
+	p.BrowserVerify = "auto"
+	p.AppURL = ""
+
+	if browserNote(p.BrowserVerify, p.sliceAppURL(context.Background())) != "" {
+		t.Fatal("precondition: an unconfigured APP_URL must still yield an empty browser note")
+	}
+	if !p.proofsEnabled() {
+		t.Fatal("proofsEnabled() = false with BROWSER_VERIFY=auto and no APP_URL, want the contract shipped anyway")
+	}
+
+	prompt := verifyTail(p.prompts, id, "", verifyPath(id), "", "", "", "", "", "", "", "", p.proofsEnabled())
+	for _, want := range []string{proofs.Dir(id), "manifest.json", "start_recording"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("verify prompt for a run with no APP_URL is missing %q", want)
+		}
 	}
 }
 
@@ -62,6 +87,7 @@ func TestHarvestProofsWarnsWhenDrivenButAbsent(t *testing.T) {
 	var buf bytes.Buffer
 	p := newTestPipeline(t, &verdictRunner{}, &fakeTracker{})
 	p.Events = event.New(&buf)
+	p.BrowserVerify = "auto"
 	p.VerifyProofs = "on"
 
 	proofs.Remove(id)
@@ -81,11 +107,71 @@ func TestHarvestProofsWarnsWhenDrivenButAbsent(t *testing.T) {
 	}
 }
 
+func TestHarvestProofsSilentWhenContractNeverShipped(t *testing.T) {
+	const id = "COD-1498-nocontract"
+	var buf bytes.Buffer
+	p := newTestPipeline(t, &verdictRunner{}, &fakeTracker{})
+	p.Events = event.New(&buf)
+	p.BrowserVerify = "never"
+	p.VerifyProofs = "on"
+
+	proofs.Remove(id)
+	if err := writeVerdictFile(verifyPath(id), verdict{Pass: true, Browser: "driven"}); err != nil {
+		t.Fatalf("write verdict: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(verifyPath(id)) })
+
+	p.harvestProofs(context.Background(), id)
+
+	if evs := kindEvents(t, &buf, event.KindVerifyNoProofs); len(evs) != 0 {
+		t.Fatalf("emitted %d verify_no_proofs events for a run that never got the proofs contract, want 0", len(evs))
+	}
+}
+
+func TestHarvestProofsUploadsManifestlessScreenshots(t *testing.T) {
+	const id = "COD-1498-nomanifest"
+	var buf bytes.Buffer
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 16)...)
+	t.Cleanup(func() { proofs.Remove(id) })
+
+	proofs.Reset(id)
+	if err := os.WriteFile(filepath.Join(proofs.Dir(id), "01-inbox.png"), png, 0o644); err != nil {
+		t.Fatalf("write shot: %v", err)
+	}
+	if err := writeVerdictFile(verifyPath(id), verdict{Pass: true, Browser: "driven"}); err != nil {
+		t.Fatalf("write verdict: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(verifyPath(id)) })
+
+	var gotShots []hubclient.ProofScreenshot
+	p := newTestPipeline(t, &verdictRunner{}, &fakeTracker{})
+	p.Events = event.New(&buf)
+	p.BrowserVerify = "auto"
+	p.VerifyProofs = "on"
+	p.UploadProofs = func(_ context.Context, _, _ string, shots []hubclient.ProofScreenshot) error {
+		gotShots = shots
+		return nil
+	}
+
+	p.harvestProofs(context.Background(), id)
+
+	if len(gotShots) != 1 {
+		t.Fatalf("uploaded %d screenshots from a manifest-less proofs dir, want 1", len(gotShots))
+	}
+	if gotShots[0].Filename != "01-inbox.png" || gotShots[0].Mime != "image/png" {
+		t.Errorf("screenshot = %+v, want the saved png", gotShots[0])
+	}
+	if evs := kindEvents(t, &buf, event.KindVerifyNoProofs); len(evs) != 0 {
+		t.Fatalf("emitted %d verify_no_proofs events for a run whose screenshots were harvested, want 0", len(evs))
+	}
+}
+
 func TestHarvestProofsSilentWhenNotDriven(t *testing.T) {
 	const id = "COD-1146-quiet"
 	var buf bytes.Buffer
 	p := newTestPipeline(t, &verdictRunner{}, &fakeTracker{})
 	p.Events = event.New(&buf)
+	p.BrowserVerify = "auto"
 	p.VerifyProofs = "on"
 
 	proofs.Remove(id)
@@ -115,6 +201,7 @@ func TestHarvestProofsUploadsAndCleansUp(t *testing.T) {
 		gotShots []hubclient.ProofScreenshot
 	)
 	p := newTestPipeline(t, &verdictRunner{}, &fakeTracker{})
+	p.BrowserVerify = "auto"
 	p.VerifyProofs = "on"
 	p.UploadProofs = func(_ context.Context, ticket, traceDir string, shots []hubclient.ProofScreenshot) error {
 		if ticket != id {
@@ -155,6 +242,7 @@ func TestHarvestProofsOffSkipsUpload(t *testing.T) {
 
 	called := false
 	p := newTestPipeline(t, &verdictRunner{}, &fakeTracker{})
+	p.BrowserVerify = "auto"
 	p.VerifyProofs = "off"
 	p.UploadProofs = func(context.Context, string, string, []hubclient.ProofScreenshot) error {
 		called = true

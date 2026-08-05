@@ -52,7 +52,8 @@ const KindVerifyNoSkills = "verify_no_skills"
 const KindVerifyNoBrowser = "verify_no_browser"
 
 // KindVerifyNoProofs marks a verify that reported driving the browser but left no
-// proofs (screenshots/trace) for the loop to harvest. Advisory only — a run is
+// proofs (screenshots/trace) for the loop to harvest. It fires only for a run the
+// verify agent was actually handed the proofs contract in. Advisory only — a run is
 // never failed or paused over missing proofs.
 const KindVerifyNoProofs = "verify_no_proofs"
 

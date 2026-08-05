@@ -2212,6 +2212,12 @@ func (p *Pipeline) restoreHandoff(id string) {
 func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	p.restoreHandoff(id)
 	p.restoreRubric(id)
+	// Every attempt Resets the contract directory into existence, but only the
+	// passing path harvests (and so clears) it — without this a run that fails,
+	// pauses or gives up leaves its directory under /tmp for good.
+	if p.proofsEnabled() {
+		defer proofs.Remove(id)
+	}
 
 	handoff := handoffPath(id)
 	fi, err := os.Stat(handoff)
@@ -2466,19 +2472,35 @@ func (p *Pipeline) warnNoBrowser(id string, v verdict) {
 	}
 }
 
-// proofsEnabled reports whether this verify run should record a trace and
-// screenshots and harvest them to the hub: the browser gate is active for the
-// slice (note != "") and VERIFY_PROOFS is not off (empty reads as on, the default).
-func (p *Pipeline) proofsEnabled(note string) bool {
-	return note != "" && !strings.EqualFold(strings.TrimSpace(p.VerifyProofs), "off")
+// proofsEnabled reports whether this verify run ships the browser-proofs contract
+// and harvests whatever it produces: BROWSER_VERIFY names a driving mode (auto or
+// always — never, and empty, read as off like the gate itself) and VERIFY_PROOFS
+// is not off (empty reads as on, the default).
+//
+// Deliberately independent of APP_URL: verify agents reach UI trau never named,
+// and gating on the browser note (empty without an APP_URL) meant exactly those
+// runs drove the browser with no instruction to save anything. The contract is
+// self-limiting instead — an agent that drives no browser skips it.
+func (p *Pipeline) proofsEnabled() bool {
+	if strings.EqualFold(strings.TrimSpace(p.VerifyProofs), "off") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(p.BrowserVerify)) {
+	case "auto", "always":
+		return true
+	default:
+		return false
+	}
 }
 
 // harvestProofs ships the proofs the verify agent saved under /tmp for the run to
 // the hub, then clears the directory. Best-effort: a harvest failure logs one
 // warning and never fails or pauses the run. When the last verdict reported
 // driving the browser yet no proofs turned up, it emits an advisory warning event.
+// Gated on the same proofsEnabled the prompt is, so the warning can only fire for a
+// run the verify agent actually received the proofs contract in.
 func (p *Pipeline) harvestProofs(ctx context.Context, id string) {
-	if strings.EqualFold(strings.TrimSpace(p.VerifyProofs), "off") {
+	if !p.proofsEnabled() {
 		return
 	}
 	defer proofs.Remove(id)
@@ -4984,9 +5006,10 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 		_ = os.Remove(qaCapturePath(id))
 		defer p.ingestQACapture(ctx, id)
 	}
-	proofsOn := p.proofsEnabled(note)
+	proofsOn := p.proofsEnabled()
 	if proofsOn {
 		ctx = agent.WithBrowserRecording(ctx)
+		proofs.Reset(id)
 	}
 	if len(p.VerifyPanel) > 0 {
 		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx, proofsOn)

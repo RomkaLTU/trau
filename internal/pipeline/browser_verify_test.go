@@ -9,6 +9,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/proofs"
 )
 
 // filesGit is a worktreeLister returning a fixed changed-file set so the UI
@@ -173,6 +174,7 @@ func TestGateBrowserVerifyAlwaysReVerifies(t *testing.T) {
 		var buf bytes.Buffer
 		runner := &verdictRunner{path: verifyPath(id), v: verdict{Pass: true, Browser: "driven", BrowserNotes: "exercised the dashboard"}}
 		t.Cleanup(func() { _ = os.Remove(verifyPath(id)) })
+		t.Cleanup(func() { proofs.Remove(id) })
 		p := newTestPipeline(t, runner, &fakeTracker{})
 		p.Git = filesGit{files: uiFiles}
 		p.Events = event.New(&buf)
@@ -203,6 +205,7 @@ func TestGateBrowserVerifyAlwaysReVerifies(t *testing.T) {
 			id := "COD-3" + name
 			runner := &verdictRunner{path: verifyPath(id), v: verdict{Pass: true, Browser: "skipped", BrowserNotes: "cannot reach APP_URL"}}
 			t.Cleanup(func() { _ = os.Remove(verifyPath(id)) })
+			t.Cleanup(func() { proofs.Remove(id) })
 			tr := &fakeTracker{}
 			p := newTestPipeline(t, runner, tr)
 			p.Git = filesGit{files: uiFiles}
