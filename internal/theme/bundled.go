@@ -61,25 +61,60 @@ func Bundled() []Theme {
 	return out
 }
 
-// Slugs lists the bundled theme names in Bundled order.
+// Slugs lists the theme names a THEME value may take on this machine: the
+// bundled set in Bundled order, then the saved ones by slug.
 func Slugs() []string {
 	src := bundled()
-	out := make([]string, 0, len(src))
+	local, _ := Local()
+	out := make([]string, 0, len(src)+len(local))
 	for _, t := range src {
+		out = append(out, t.Slug)
+	}
+	for _, t := range local {
 		out = append(out, t.Slug)
 	}
 	return out
 }
 
-// Lookup resolves a configured THEME value. The name is normalized the way
-// config values are read everywhere else — trimmed and lowercased — and an empty
-// name means the default theme.
-func Lookup(name string) (Theme, bool) {
+// Normalize reads a THEME value the way config values are read everywhere else —
+// trimmed and lowercased — and resolves an empty name to the default theme.
+func Normalize(name string) string {
 	slug := strings.ToLower(strings.TrimSpace(name))
 	if slug == "" {
-		slug = DefaultSlug
+		return DefaultSlug
 	}
-	for _, t := range bundled() {
+	return slug
+}
+
+// Lookup resolves a configured THEME value against the bundled themes first and
+// the ones saved on this machine second, so a predefined name always means the
+// theme trau ships whatever sits in the themes directory.
+func Lookup(name string) (Theme, bool) {
+	if t, ok := LookupBundled(name); ok {
+		return t, true
+	}
+	local, _ := Local()
+	return findSlug(local, Normalize(name))
+}
+
+// LookupIn is Lookup against a named themes directory, for a caller — the hub —
+// that keeps its own trau home rather than the machine's.
+func LookupIn(dir, name string) (Theme, bool) {
+	if t, ok := LookupBundled(name); ok {
+		return t, true
+	}
+	local, _ := LoadLocal(dir)
+	return findSlug(local, Normalize(name))
+}
+
+// LookupBundled resolves a name against the themes compiled into the binary
+// only, which is what makes predefined slugs reserved.
+func LookupBundled(name string) (Theme, bool) {
+	return findSlug(bundled(), Normalize(name))
+}
+
+func findSlug(themes []Theme, slug string) (Theme, bool) {
+	for _, t := range themes {
 		if t.Slug == slug {
 			return t, true
 		}

@@ -116,6 +116,9 @@ func TestBundledThemesAreValid(t *testing.T) {
 }
 
 func TestSlugsAreDefaultFirstThenSorted(t *testing.T) {
+	// Slugs reads the machine's saved themes too, so the bundled order is only
+	// observable from a home that has none.
+	t.Setenv("TRAU_HOME", t.TempDir())
 	want := []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}
 	got := Slugs()
 	if len(got) != len(want) {

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"image/color"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	colorful "github.com/lucasb-eyer/go-colorful"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	themedef "github.com/RomkaLTU/trau/internal/theme"
 )
 
 func roleHexes(th Theme) map[string]string {
@@ -28,6 +31,9 @@ func roleHexes(th Theme) map[string]string {
 // palette every preset rendered with before: a terminal that looked one way must
 // keep looking that way, whatever the web side of the same theme does.
 func TestPresetPalettesAreUnchanged(t *testing.T) {
+	// themeNames also offers whatever is saved under the trau home, and a theme
+	// the developer saved is not a preset to pin: run against a home with none.
+	t.Setenv("TRAU_HOME", t.TempDir())
 	want := map[string]map[string]map[string]string{
 		"default": {
 			"light": {"brand": "#00997a", "accent": "#6c3ee8", "success": "#03875d", "error": "#d61f52", "warning": "#9a6b00", "info": "#0077c2", "text": "#16181d", "subtle": "#5f6169", "faint": "#71747e", "surface": "#e4e5e9", "border": "#c6c8cf", "ink": "#fafafa"},
@@ -204,5 +210,42 @@ func TestSetThemeTracksBackground(t *testing.T) {
 	setThemeBackground(true)
 	if isDarkColor(theme.Text) {
 		t.Error("dark background should resolve the dark variant")
+	}
+}
+
+// A theme saved from the web editor is a THEME value the terminal resolves too:
+// a fresh launch reads the same themes directory the hub writes to, and with no
+// tui block it draws straight from the twelve core roles.
+func TestResolveThemeReadsASavedTheme(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+	dir := themedef.LocalDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	body := `{"name":"My Theme","slug":"my-theme","modes":{"dark":{"roles":{` +
+		`"brand":"#00b34a","accent":"#8b5cf6","success":"#04b575","error":"#ff4672",` +
+		`"warning":"#f9d423","info":"#00aaff","text":"#ffffff","subtle":"#888888",` +
+		`"faint":"#555555","surface":"#2a2a2e","border":"#555555","ink":"#0b0b0e"}}}}`
+	if err := os.WriteFile(filepath.Join(dir, "my-theme.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write theme: %v", err)
+	}
+
+	th, note := resolveTheme("my-theme", nil, true)
+	if note != "" {
+		t.Fatalf("note = %q, want none", note)
+	}
+	got := roleHexes(th)
+	if got["brand"] != "#00b34a" || got["accent"] != "#8b5cf6" {
+		t.Errorf("roles = %v, want the saved brand and accent", got)
+	}
+
+	// The same value stops resolving once the file is gone, and the caller falls
+	// back to the default with a note rather than failing a launch.
+	if err := os.Remove(filepath.Join(dir, "my-theme.json")); err != nil {
+		t.Fatalf("remove theme: %v", err)
+	}
+	if _, note = resolveTheme("my-theme", nil, true); !strings.Contains(note, "my-theme") {
+		t.Errorf("note = %q, want it to name the missing theme", note)
 	}
 }

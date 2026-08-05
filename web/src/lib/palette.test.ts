@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   paletteBackground,
   paletteCSS,
+  previewCSS,
   sanitizePalettes,
   sanitizeVars,
 } from '@/lib/palette'
@@ -58,6 +59,21 @@ describe('paletteCSS', () => {
       ':root.dark{--brand:#ff0000;}',
     )
     expect(paletteCSS({})).toBe('')
+  })
+})
+
+describe('previewCSS', () => {
+  // The editor's draft has to win over the active theme's palette however the
+  // two style elements end up ordered, so its selectors carry one more :root.
+  it('outranks the active palette on specificity', () => {
+    const palettes = {
+      light: { '--background': '#ffffff' },
+      dark: { '--background': '#000000' },
+    }
+    expect(previewCSS(palettes)).toBe(
+      ':root:root:not(.dark){--background:#ffffff;}:root:root.dark{--background:#000000;}',
+    )
+    expect(previewCSS({})).toBe('')
   })
 })
 
