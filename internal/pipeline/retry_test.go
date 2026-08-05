@@ -139,3 +139,4 @@ func (f *fakeGitHub) ClosePR(context.Context, string) error             { return
 func (f *fakeGitHub) Checks(context.Context, string) ([]Check, error)   { return nil, nil }
 func (f *fakeGitHub) PRSize(context.Context, string) (int, int, error)  { return 0, 0, nil }
 func (f *fakeGitHub) Merge(context.Context, string, string, bool) error { return nil }
+func (f *fakeGitHub) InStack(context.Context, string) (bool, error)     { return false, nil }

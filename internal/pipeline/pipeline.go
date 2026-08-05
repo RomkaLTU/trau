@@ -266,6 +266,13 @@ type GitHub interface {
 	ClosePR(ctx context.Context, pr string) error
 
 	Merge(ctx context.Context, pr, method string, deleteBranch bool) error
+
+	// InStack reports whether the PR is a layer of a GitHub stack. The legacy merge
+	// endpoint Merge shells to refuses a stacked PR at every position, so the
+	// auto-merge path asks first and parks the ticket rather than merging into that
+	// refusal. The caller treats an error as "not stacked", so a gh that cannot
+	// answer never blocks a merge that would have worked.
+	InStack(ctx context.Context, pr string) (bool, error)
 }
 
 // ErrCIFailed and ErrCITimeout are the two non-green outcomes of pollCI; both map
@@ -2910,6 +2917,10 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return p.awaitManualMerge(ctx, id, pr)
 	}
 	if reason := p.foreignWorkInPR(ctx, id, pr); reason != "" {
+		p.logf("  ✗ merge gate: %s", reason)
+		return p.giveUp(ctx, id, reason)
+	}
+	if reason := p.stackedPRRefusal(ctx, id, pr); reason != "" {
 		p.logf("  ✗ merge gate: %s", reason)
 		return p.giveUp(ctx, id, reason)
 	}
@@ -6177,6 +6188,36 @@ func (g ExecGitHub) ClosePR(ctx context.Context, pr string) error {
 		return fmt.Errorf("gh pr close: %w", err)
 	}
 	return nil
+}
+
+// InStack reports whether pr belongs to a GitHub stack. It reads the REST payload
+// rather than `gh pr view --json stack`, because a gh that does not know the field
+// fails the command on every PR, stacked or not.
+func (g ExecGitHub) InStack(ctx context.Context, pr string) (bool, error) {
+	out, err := g.output(ctx, "api", "repos/{owner}/{repo}/pulls/"+pr)
+	if err != nil {
+		return false, fmt.Errorf("gh api pulls/%s: %w", pr, err)
+	}
+	stacked, err := parseStackMembership(out)
+	if err != nil {
+		return false, fmt.Errorf("gh api pulls/%s: %w", pr, err)
+	}
+	return stacked, nil
+}
+
+// parseStackMembership reads stack membership off a `gh api .../pulls/{n}` payload.
+// The top-level "stack" object is present only for a layer of a stack; a missing key
+// — which is also what a repo the preview has not reached returns — and a null one
+// both read as unstacked, since the safe answer to every ambiguity is "merge as
+// before".
+func parseStackMembership(out string) (bool, error) {
+	var payload struct {
+		Stack json.RawMessage `json:"stack"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return false, fmt.Errorf("parse pull request payload: %w", err)
+	}
+	return len(payload.Stack) > 0 && string(payload.Stack) != "null", nil
 }
 
 // Merge merges the PR with the given method; deleteBranch adds --delete-branch.
