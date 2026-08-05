@@ -15,12 +15,10 @@ import {
   PromptsSection,
   RepoPromptsSection,
 } from '@/components/trau/prompts-panel'
-import { MCPConnectSection } from '@/components/trau/mcp-connect'
 import {
   ProjectDefaultsSection,
   useProjectDefaultsNav,
 } from '@/components/trau/project-defaults-panel'
-import { PushNotificationsSection } from '@/components/trau/push-notifications-section'
 import { TeamSyncSection } from '@/components/trau/team-sync-panel'
 import {
   InlineEditor,
@@ -30,7 +28,6 @@ import {
 } from '@/components/trau/settings-editor'
 import { PhaseMatrix } from '@/components/trau/settings-matrix'
 import { ThemeGrid } from '@/components/trau/settings-theme-grid'
-import { UpdatesSection } from '@/components/trau/updates-section'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
 import { configQueryOptions, type ConfigKey } from '@/lib/config'
@@ -86,12 +83,6 @@ function Settings() {
           and choose which layer the change writes to.
         </p>
       </header>
-
-      <UpdatesSection />
-
-      <PushNotificationsSection />
-
-      <MCPConnectSection />
 
       {repos.length === 0 && (
         <EmptyState

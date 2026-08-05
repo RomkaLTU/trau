@@ -59,8 +59,9 @@ interface ConfirmAction {
   run: () => void
 }
 
-// The Hub & web server settings section, where HUB_SELF_RELOAD lives.
-const HUB_SECTION_HASH = 'hub-web-server'
+// Settings renders its config rows only once the config query lands, so a plain
+// hash cannot aim from here — the ?q= landing search + highlight can.
+const SELF_RELOAD_KEY = 'HUB_SELF_RELOAD'
 
 export function UpdatesSection() {
   const queryClient = useQueryClient()
@@ -573,10 +574,10 @@ function ChannelAction({
           No registered repo allows it — set{' '}
           <Link
             to="/settings"
-            hash={HUB_SECTION_HASH}
+            search={{ q: SELF_RELOAD_KEY }}
             className="font-mono text-primary underline-offset-2 hover:underline"
           >
-            HUB_SELF_RELOAD
+            {SELF_RELOAD_KEY}
           </Link>{' '}
           to 1 for your trau checkout.
         </span>

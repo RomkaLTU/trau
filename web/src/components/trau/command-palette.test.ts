@@ -22,6 +22,7 @@ import { CommandPalette } from './command-palette'
 type Navigation = {
   to: string
   search?: { q?: string }
+  hash?: string
   params?: { repo: string; ticket: string }
 }
 
@@ -279,6 +280,14 @@ function payloadFor(url: string) {
   if (url.includes('/archive')) {
     return { id: 'COD-1343', archived: true, queue_removed: 1 }
   }
+  if (url.includes('/update/check')) {
+    return {
+      running: 'v0.9.0',
+      onDisk: 'v0.9.0',
+      latest: 'v0.9.1',
+      updateAvailable: true,
+    }
+  }
   if (url.includes('/config')) {
     return { repo: 'loop', layers: ['user'], providers: [], keys: configKeys }
   }
@@ -523,6 +532,19 @@ it('hands a repo-scoped action to the switcher under All projects', async () => 
 
   expect(active.switcher).toBe(1)
   expect(requestedUrls()).not.toContain('/api/v1/repos/loop/sync')
+  expect(opens).toEqual([false])
+})
+
+it('lands the update check on the hub page', async () => {
+  const opens = renderPalette()
+  typeQuery('check for updates')
+  await settleSearch()
+
+  act(() => paletteRow('action:check-updates')?.click())
+  await act(async () => {})
+
+  expect(sentWith('POST')).toEqual(['/api/v1/update/check'])
+  expect(navigations).toEqual([{ to: '/hub', hash: 'updates' }])
   expect(opens).toEqual([false])
 })
 
