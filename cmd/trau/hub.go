@@ -37,9 +37,11 @@ const hubStopGrace = 5 * time.Second
 
 func runHub(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return usageError{errors.New("hub: missing subcommand (try `trau hub restart`)")}
+		return usageError{errors.New("hub: missing subcommand (try `trau hub start`)")}
 	}
 	switch args[0] {
+	case "start":
+		return runHubStart(ctx, args[1:], stdout)
 	case "restart":
 		return runHubRestart(ctx, args[1:], stdout)
 	case "supervise":
@@ -70,9 +72,9 @@ func runHubSupervise(ctx context.Context, args []string, stdout io.Writer) error
 		return console.Actionable(launchd.ErrUnsupported, "supervise the hub",
 			"keep `trau serve` up with this machine's init system (a systemd user unit, say), or rely on SERVE_AUTOSTART")
 	}
-	cfg, err := loadServeConfig("")
+	cfg, err := hubConfig()
 	if err != nil {
-		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
+		return err
 	}
 	if err := webserver.CheckExposure(cfg.ServeBind, cfg.ServeToken); err != nil {
 		return console.Actionable(err, "supervise the hub", "set SERVE_TOKEN to a secret, or keep SERVE_BIND on loopback (127.0.0.1)")
@@ -198,6 +200,39 @@ func superviseEnv() map[string]string {
 	return env
 }
 
+// runHubStart brings the configured hub up and hands the prompt back. The hub it
+// starts is detached (ADR 0004), so it keeps serving once the terminal that ran
+// the command is gone. A machine that already has one is simply told so: starting
+// a hub that runs is the state the caller asked for, not a mistake.
+func runHubStart(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) > 0 {
+		return usageError{fmt.Errorf("hub start: unknown arg: %s", args[0])}
+	}
+	cfg, err := hubConfig()
+	if err != nil {
+		return err
+	}
+	found := probeHubPort(ctx, cfg)
+	switch {
+	case found.isHub:
+		_, _ = fmt.Fprintf(stdout, "hub already running (%s)\n", found.version)
+		return nil
+	case found.portBusy:
+		return hubPortBusy(cfg.ServePort, "start")
+	}
+
+	if err := startHub(cfg); err != nil {
+		return err
+	}
+	started, ok := awaitHub(ctx, found.healthURL, cfg.ServeToken, hubRestartDeadline, anyHub)
+	if !ok {
+		return console.Actionable(fmt.Errorf("the hub did not come up within %s", hubRestartDeadline),
+			"start the hub", "see "+hubLogPath())
+	}
+	_, _ = fmt.Fprintf(stdout, "hub started (%s)\n", started.version)
+	return nil
+}
+
 // runHubRestart makes the configured hub current: a running one is asked to
 // respawn itself from the on-disk binary, and a missing one is simply started,
 // since a fresh hub already runs that binary. --force is the escape hatch for a
@@ -211,28 +246,25 @@ func runHubRestart(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		force = true
 	}
-	cfg, err := loadServeConfig("")
+	cfg, err := hubConfig()
 	if err != nil {
-		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
+		return err
 	}
 	if force {
 		if err := checkForcedRestart(); err != nil {
 			return err
 		}
 	}
-	api := hubAPI{base: hubBaseURL(cfg), token: cfg.ServeToken}
-	healthURL := api.base + webserver.APIPrefix + "/health"
-
-	before := probeHub(ctx, healthURL, cfg.ServeToken)
+	before := probeHubPort(ctx, cfg)
 	switch {
 	case before.isHub:
+		api := hubAPI{base: hubBaseURL(cfg), token: cfg.ServeToken}
 		if err := api.post(ctx, "/hub/restart"); err != nil {
 			return console.Actionable(err, "ask the hub to restart", "see "+hubLogPath())
 		}
-	case before.reachable || portOccupied(cfg):
+	case before.portBusy:
 		if !force {
-			return console.Actionable(portBusyError(cfg.ServePort), "restart the hub",
-				"if that is a hub whose API has wedged, `trau hub restart --force` stops it and starts a fresh one")
+			return hubPortBusy(cfg.ServePort, "restart")
 		}
 		if err := stopWedgedHub(ctx, cfg, stdout); err != nil {
 			return console.Actionable(err, "stop the wedged hub",
@@ -253,7 +285,7 @@ func runHubRestart(ctx context.Context, args []string, stdout io.Writer) error {
 	if !before.isHub {
 		fresh = anyHub
 	}
-	after, ok := awaitHub(ctx, healthURL, cfg.ServeToken, hubRestartDeadline, fresh)
+	after, ok := awaitHub(ctx, before.healthURL, cfg.ServeToken, hubRestartDeadline, fresh)
 	if !ok {
 		return console.Actionable(fmt.Errorf("the hub did not come back within %s", hubRestartDeadline),
 			"restart the hub", "see "+hubLogPath())
@@ -268,6 +300,39 @@ func runHubRestart(ctx context.Context, args []string, stdout io.Writer) error {
 		_, _ = fmt.Fprintf(stdout, "hub restarted: %s -> %s\n", before.version, after.version)
 	}
 	return nil
+}
+
+func hubConfig() (config.Config, error) {
+	cfg, err := loadServeConfig("")
+	if err != nil {
+		return config.Config{}, console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
+	}
+	return cfg, nil
+}
+
+// hubPortStatus is what the configured port answered: the hub's own health, and,
+// when the holder is not a hub, whether the port is taken all the same.
+type hubPortStatus struct {
+	hubStatus
+	healthURL string
+	portBusy  bool
+}
+
+// probeHubPort asks the port who holds it — the question every hub command that
+// starts or replaces one opens with.
+func probeHubPort(ctx context.Context, cfg config.Config) hubPortStatus {
+	healthURL := hubBaseURL(cfg) + webserver.APIPrefix + "/health"
+	p := probeHub(ctx, healthURL, cfg.ServeToken)
+	return hubPortStatus{
+		hubStatus: p,
+		healthURL: healthURL,
+		portBusy:  !p.isHub && (p.reachable || portOccupied(cfg)),
+	}
+}
+
+func hubPortBusy(port int, verb string) error {
+	return console.Actionable(portBusyError(port), verb+" the hub",
+		"if that is a hub whose API has wedged, `trau hub restart --force` stops it and starts a fresh one")
 }
 
 // startHub brings a stopped hub up: through launchd on a supervised machine, so

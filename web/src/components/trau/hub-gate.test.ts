@@ -34,6 +34,19 @@ function retryButton(): HTMLButtonElement | undefined {
   )
 }
 
+function copyButton(): HTMLButtonElement | null {
+  return container.querySelector(
+    'button[aria-label="Copy the hub start command"]',
+  )
+}
+
+function setClipboard(clipboard: { writeText: Mock } | undefined) {
+  Object.defineProperty(navigator, 'clipboard', {
+    value: clipboard,
+    configurable: true,
+  })
+}
+
 beforeEach(() => {
   vi.useFakeTimers()
   container = document.createElement('div')
@@ -47,6 +60,7 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
   resetHubWatch()
+  setClipboard(undefined)
   vi.useRealTimers()
   vi.unstubAllGlobals()
 })
@@ -65,9 +79,45 @@ it('names the hub, the command that starts it, and the retry countdown', () => {
 
   const text = container.textContent ?? ''
   expect(text).toContain('Hub unreachable')
-  expect(text).toContain('trau serve')
+  expect(text).toContain('trau hub start')
+  expect(text).not.toContain('trau serve')
   expect(text).toMatch(/retrying in \ds/)
+  expect(container.querySelector('code')?.textContent).toBe('trau hub start')
+  expect(copyButton()).not.toBeNull()
   expect(container.querySelector('[role="alert"]')).not.toBeNull()
+})
+
+it('copies the start command and says so', async () => {
+  const writeText = vi.fn(async () => {})
+  setClipboard({ writeText })
+  stubHub(() => false)
+  mount()
+  act(killHub)
+
+  await act(async () => {
+    copyButton()?.click()
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  expect(writeText).toHaveBeenCalledWith('trau hub start')
+  expect(container.querySelector('[role="status"]')?.textContent).toBe('copied')
+})
+
+it('says so when the copy fails', async () => {
+  setClipboard(undefined)
+  document.execCommand = vi.fn(() => false)
+  stubHub(() => false)
+  mount()
+  act(killHub)
+
+  await act(async () => {
+    copyButton()?.click()
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  expect(container.querySelector('[role="status"]')?.textContent).toBe(
+    'copy failed',
+  )
 })
 
 it('takes the whole viewport, above every dialog and dock, and stays clickable under one', () => {

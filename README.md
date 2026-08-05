@@ -117,9 +117,19 @@ effort (a deterministic diffstat heuristic, or a cheap agent call), never the ag
 UI at `/` — for watching every trau run on the machine:
 
 ```bash
-trau serve                       # http://127.0.0.1:8728
+trau serve                       # http://127.0.0.1:8728, in the foreground
+trau hub start                   # …or in the background, and give the prompt back
 trau stop                        # …and stop it again, leaving it stopped
 ```
+
+`trau hub start` is the background counterpart to `trau serve`. It starts the hub detached —
+through launchd on a supervised machine, as a detached child otherwise
+([ADR 0004](docs/adr/0004-hub-autostart.md)) — so the hub keeps serving after the terminal that
+launched it closes, and it returns only once the hub answers `/api/v1/health`. Running it twice is
+safe: a machine that already serves prints `hub already running` and nothing is spawned onto its
+port. A port held by something that is not a hub gives the actionable port-busy error, which points
+at `trau hub restart --force`. It is the command the web UI's *hub unreachable* card offers for
+copying.
 
 `trau stop` is the counterpart `trau hub restart` never was: it ends the hub on the configured
 bind/port and blocks until the port is actually free, so the next `trau serve` binds it. It

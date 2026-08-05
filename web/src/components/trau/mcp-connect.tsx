@@ -1,17 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import {
-  Check,
-  Copy,
-  ExternalLink,
-  ShieldCheck,
-  TriangleAlert,
-} from 'lucide-react'
+import { ExternalLink, ShieldCheck } from 'lucide-react'
 
+import { CopyButton } from '@/components/trau/copy-button'
 import { SegmentedControl } from '@/components/trau/segmented-control'
 import { TerminalCard } from '@/components/trau/terminal-card'
-import { Button } from '@/components/ui/button'
-import { copyText } from '@/lib/clipboard'
 import { healthQueryOptions } from '@/lib/health'
 import {
   MCP_DOCS_URL,
@@ -20,7 +13,6 @@ import {
   mcpSetups,
   type MCPClientID,
 } from '@/lib/mcp'
-import { cn } from '@/lib/utils'
 
 export function MCPConnectSection() {
   const health = useQuery(healthQueryOptions)
@@ -99,52 +91,5 @@ export function MCPConnectSection() {
         </a>
       </TerminalCard>
     </section>
-  )
-}
-
-const COPY_FEEDBACK = {
-  idle: { icon: Copy, tone: '', status: '' },
-  copied: { icon: Check, tone: 'text-done', status: 'copied' },
-  failed: {
-    icon: TriangleAlert,
-    tone: 'text-destructive',
-    status: 'copy failed',
-  },
-} as const
-
-function CopyButton({
-  value,
-  label,
-  className,
-}: {
-  value: string
-  label: string
-  className?: string
-}) {
-  const [state, setState] = useState<keyof typeof COPY_FEEDBACK>('idle')
-  const { icon: Icon, tone, status } = COPY_FEEDBACK[state]
-
-  useEffect(() => {
-    if (state === 'idle') return
-    const timer = setTimeout(() => setState('idle'), 1600)
-    return () => clearTimeout(timer)
-  }, [state])
-
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="icon-sm"
-      aria-label={label}
-      className={cn('shrink-0', className)}
-      onClick={() => {
-        void copyText(value).then((ok) => setState(ok ? 'copied' : 'failed'))
-      }}
-    >
-      <Icon className={cn('size-3.5', tone)} aria-hidden="true" />
-      <span className="sr-only" role="status">
-        {status}
-      </span>
-    </Button>
   )
 }
