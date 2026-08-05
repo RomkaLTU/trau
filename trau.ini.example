@@ -217,13 +217,16 @@ MAX_DAILY_TOKENS=            # e.g. 50000000 → stop the run once today reaches
 # Pipes, cron, TRAU_LOG_JSON=1, and --status always use plain output.
 TRAU_TUI=1
 
-# Color theme. The palette adapts to the terminal's light/dark background
-# automatically; a preset swaps the whole palette. Unknown names fall back to
-# default with a note. Presets: default | catppuccin | dracula | gruvbox | nord.
+# Color theme. One theme paints both surfaces: the terminal palette and the web
+# UI's CSS variables (docs/themes.md). Each theme defines a light and a dark
+# mode; the terminal picks by its background, the web UI by its light/dark
+# toggle. Unknown names fall back to default with a note.
+# Themes: default | catppuccin | dracula | gruvbox | nord.
 #THEME=default
-# Individual semantic colors can be overridden with hex values via
-# THEME_<ROLE>, where ROLE is one of BRAND, ACCENT, SUCCESS, ERROR, WARNING,
-# INFO, TEXT, SUBTLE, FAINT, SURFACE, BORDER, INK.
+# Individual semantic roles can be overridden with hex values via THEME_<ROLE>,
+# where ROLE is one of BRAND, ACCENT, SUCCESS, ERROR, WARNING, INFO, TEXT,
+# SUBTLE, FAINT, SURFACE, BORDER, INK. An override replaces the role on both
+# surfaces, before the web variables derive from it.
 #THEME_BRAND=#00D4AA
 
 # Usage HUD provider window. When 1, the HUD bar tracks the active provider's real

@@ -18,9 +18,47 @@
             (mode !== 'light' &&
               matchMedia('(prefers-color-scheme: dark)').matches)
           document.documentElement.classList.toggle('dark', dark)
+          // Replay the last resolved palette before first paint so a themed UI
+          // does not flash the built-in colors. Only variables of a known shape
+          // holding a color literal are replayed — this reaches a stylesheet.
+          var palettes = JSON.parse(
+            localStorage.getItem('trau.palette') || '{}',
+          )
+          var css = ''
+          var background = null
+          ;['light', 'dark'].forEach(function (name) {
+            var vars = palettes[name]
+            if (!vars || typeof vars !== 'object') return
+            var body = ''
+            Object.keys(vars).forEach(function (key) {
+              if (!/^--[a-z-]+$/.test(key)) return
+              if (!/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(vars[key]))
+                return
+              body += key + ':' + vars[key] + ';'
+              if (key === '--background' && (name === 'dark') === dark) {
+                background = vars[key]
+              }
+            })
+            if (body) {
+              css +=
+                (name === 'dark' ? ':root.dark' : ':root:not(.dark)') +
+                '{' +
+                body +
+                '}'
+            }
+          })
+          if (css) {
+            var style = document.createElement('style')
+            style.id = 'trau-palette'
+            style.textContent = css
+            document.head.appendChild(style)
+          }
           document
             .querySelector('meta[name="theme-color"]')
-            .setAttribute('content', dark ? '#0c0a09' : '#faf8f5')
+            .setAttribute(
+              'content',
+              background || (dark ? '#0c0a09' : '#faf8f5'),
+            )
         } catch (e) {}
       })()
     </script>

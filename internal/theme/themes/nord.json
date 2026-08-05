@@ -1,0 +1,68 @@
+{
+  "name": "Nord",
+  "slug": "nord",
+  "author": "Arctic Ice Studio",
+  "version": "1",
+  "modes": {
+    "light": {
+      "roles": {
+        "brand": "#5e81ac",
+        "accent": "#96688f",
+        "success": "#6f9153",
+        "error": "#b0464f",
+        "warning": "#a5763b",
+        "info": "#4c6f9e",
+        "text": "#2e3440",
+        "subtle": "#4c566a",
+        "faint": "#8d99ae",
+        "surface": "#e5e9f0",
+        "border": "#d8dee9",
+        "ink": "#eceff4"
+      },
+      "tui": {
+        "brand": "#648896",
+        "accent": "#7e6a81",
+        "success": "#74876e",
+        "error": "#854f59",
+        "warning": "#9f8f6d",
+        "info": "#60758d",
+        "text": "#2e3440",
+        "subtle": "#6a707b",
+        "faint": "#8c929d",
+        "surface": "#c7cdd8",
+        "border": "#a5abb6",
+        "ink": "#d8dee9"
+      }
+    },
+    "dark": {
+      "roles": {
+        "brand": "#88c0d0",
+        "accent": "#b48ead",
+        "success": "#a3be8c",
+        "error": "#bf616a",
+        "warning": "#ebcb8b",
+        "info": "#81a1c1",
+        "text": "#d8dee9",
+        "subtle": "#9da3ae",
+        "faint": "#6c7686",
+        "surface": "#3b4252",
+        "border": "#4c566a",
+        "ink": "#2e3440"
+      },
+      "tui": {
+        "brand": "#88c0d0",
+        "accent": "#b48ead",
+        "success": "#a3be8c",
+        "error": "#bf616a",
+        "warning": "#ebcb8b",
+        "info": "#81a1c1",
+        "text": "#d8dee9",
+        "subtle": "#9da3ae",
+        "faint": "#7a818c",
+        "surface": "#3f4551",
+        "border": "#616773",
+        "ink": "#2e3440"
+      }
+    }
+  }
+}

@@ -41,7 +41,8 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
     'Timeouts, retries, and terminal geometry for agent processes.',
   'Hub & web server': 'Bind address, auth, and sync cadence for the web hub.',
   Retention: 'How long transcripts, events, and token records are kept.',
-  'TUI & notifications': 'Terminal UI, theme, and desktop notifications.',
+  'TUI & notifications':
+    'Terminal UI, desktop notifications, and the theme both surfaces draw from.',
   'Time logging': 'Billable time capture and export.',
   'Paths & misc': 'Filesystem locations trau reads and writes.',
   [OTHER_SECTION]: 'Keys the catalog did not place in a known section.',

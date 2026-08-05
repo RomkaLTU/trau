@@ -6,6 +6,7 @@ import { RouterProvider, createRouter } from '@tanstack/react-router'
 import { HubGate } from './components/trau/hub-gate'
 import { AuthGate } from './components/trau/token-gate'
 import { registerServiceWorker } from './lib/service-worker'
+import { initPalettes } from './lib/theme'
 import { routeTree } from './routeTree.gen'
 import './styles.css'
 
@@ -25,6 +26,7 @@ declare module '@tanstack/react-router' {
 }
 
 registerServiceWorker()
+void initPalettes()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
