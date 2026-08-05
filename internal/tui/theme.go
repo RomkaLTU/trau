@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-	tint "github.com/lrstanley/bubbletint"
 	colorful "github.com/lucasb-eyer/go-colorful"
+
+	themedef "github.com/RomkaLTU/trau/internal/theme"
 )
 
 // Theme is the semantic palette every screen draws from. Styles reference
@@ -30,63 +30,26 @@ type Theme struct {
 	Ink color.Color
 }
 
+// defaultTheme is the built-in palette for a background polarity, resolved from
+// the same theme document the web UI derives its variables from.
 func defaultTheme(isDark bool) Theme {
-	ld := lipgloss.LightDark(isDark)
-	return Theme{
-		Brand:   ld(lipgloss.Color("#00997A"), lipgloss.Color("#00D4AA")),
-		Accent:  ld(lipgloss.Color("#6C3EE8"), lipgloss.Color("#7D56F4")),
-		Success: ld(lipgloss.Color("#03875D"), lipgloss.Color("#04B575")),
-		Error:   ld(lipgloss.Color("#D61F52"), lipgloss.Color("#FF4672")),
-		Warning: ld(lipgloss.Color("#9A6B00"), lipgloss.Color("#F9D423")),
-		Info:    ld(lipgloss.Color("#0077C2"), lipgloss.Color("#00AAFF")),
-		Text:    ld(lipgloss.Color("#16181D"), lipgloss.Color("#FFFFFF")),
-		Subtle:  ld(lipgloss.Color("#5F6169"), lipgloss.Color("#888888")),
-		Faint:   ld(lipgloss.Color("#71747E"), lipgloss.Color("#555555")),
-		Surface: ld(lipgloss.Color("#E4E5E9"), lipgloss.Color("#2A2A2E")),
-		Border:  ld(lipgloss.Color("#C6C8CF"), lipgloss.Color("#555555")),
-		Ink:     ld(lipgloss.Color("#FAFAFA"), lipgloss.Color("#0B0B0E")),
-	}
+	return themeFromDefinition(themedef.Default(), isDark)
 }
 
-// themePresets pairs each selectable preset with the bubbletint variant used
-// per background polarity. Presets without a light variant reuse the dark tint;
-// themeFromTint keeps them legible by swapping fg/bg and dimming chromatics.
-var themePresets = map[string]struct{ dark, light tint.Tint }{
-	"catppuccin": {tint.TintCatppuccinMocha, tint.TintCatppuccinLatte},
-	"dracula":    {tint.TintDracula, tint.TintDracula},
-	"gruvbox":    {tint.TintGruvboxDark, tint.TintGruvboxLight},
-	"nord":       {tint.TintNord, tint.TintNord},
-}
-
-func themeNames() []string {
-	presets := make([]string, 0, len(themePresets))
-	for name := range themePresets {
-		presets = append(presets, name)
-	}
-	sort.Strings(presets)
-	return append([]string{"default"}, presets...)
-}
+func themeNames() []string { return themedef.Slugs() }
 
 // resolveTheme maps a preset name plus per-role hex overrides onto the palette
 // for the given background polarity. Invalid names or overrides fall back and
 // are reported in the returned note.
 func resolveTheme(name string, overrides map[string]string, isDark bool) (Theme, string) {
 	var notes []string
-	th := defaultTheme(isDark)
-	switch key := strings.ToLower(strings.TrimSpace(name)); key {
-	case "", "default":
-	default:
-		if p, ok := themePresets[key]; ok {
-			t := p.dark
-			if !isDark {
-				t = p.light
-			}
-			th = themeFromTint(t, isDark)
-		} else {
-			notes = append(notes, fmt.Sprintf("unknown THEME %q — using default (themes: %s)",
-				name, strings.Join(themeNames(), ", ")))
-		}
+	def, ok := themedef.Lookup(name)
+	if !ok {
+		notes = append(notes, fmt.Sprintf("unknown THEME %q — using default (themes: %s)",
+			name, strings.Join(themeNames(), ", ")))
+		def = themedef.Default()
 	}
+	th := themeFromDefinition(def, isDark)
 	for _, role := range sortedKeys(overrides) {
 		c, ok := parseHexColor(overrides[role])
 		if !ok {
@@ -99,29 +62,20 @@ func resolveTheme(name string, overrides map[string]string, isDark bool) (Theme,
 	return th, strings.Join(notes, "; ")
 }
 
-func themeFromTint(t tint.Tint, isDark bool) Theme {
-	fg, bg := tintColor(t.Fg()), tintColor(t.Bg())
-	mismatch := isDarkColor(bg) != isDark
-	if mismatch {
-		fg, bg = bg, fg
+// themeFromDefinition resolves one polarity of a theme document into the
+// palette. A theme that does not define this mode leaves the built-in palette in
+// place rather than borrowing its other mode, which would paint a light terminal
+// with dark-mode colors.
+func themeFromDefinition(def themedef.Theme, isDark bool) Theme {
+	mode := themedef.ModeName(isDark)
+	roles, ok := def.ResolveTUI(mode, nil)
+	if !ok {
+		roles, _ = themedef.Default().ResolveTUI(mode, nil)
 	}
-	th := Theme{
-		Brand:   tintColor(t.Cyan()),
-		Accent:  tintColor(t.Purple()),
-		Success: tintColor(t.Green()),
-		Error:   tintColor(t.Red()),
-		Warning: tintColor(t.Yellow()),
-		Info:    tintColor(t.Blue()),
-		Text:    fg,
-		Subtle:  blendColor(fg, bg, 0.35),
-		Faint:   blendColor(fg, bg, 0.55),
-		Surface: blendColor(bg, fg, 0.10),
-		Border:  blendColor(bg, fg, 0.30),
-		Ink:     bg,
-	}
-	if mismatch {
-		for _, c := range []*color.Color{&th.Brand, &th.Accent, &th.Success, &th.Error, &th.Warning, &th.Info} {
-			*c = blendColor(*c, fg, 0.4)
+	var th Theme
+	for role, hex := range roles {
+		if c, ok := parseHexColor(hex); ok {
+			th.setRole(role, c)
 		}
 	}
 	return th
@@ -156,14 +110,6 @@ func (t *Theme) setRole(role string, c color.Color) {
 	}
 }
 
-// tintColor converts a bubbletint color to a plain color.Color by its hex
-// string; bubbletint's own RGBA() goes through a terminal color profile and
-// collapses to black on non-tty outputs.
-func tintColor(c any) color.Color {
-	col, _ := colorful.Hex(strings.ToLower(fmt.Sprintf("%v", c)))
-	return col
-}
-
 func parseHexColor(s string) (color.Color, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -177,12 +123,6 @@ func parseHexColor(s string) (color.Color, bool) {
 		return nil, false
 	}
 	return c, true
-}
-
-func blendColor(from, to color.Color, frac float64) color.Color {
-	f, _ := colorful.MakeColor(from)
-	g, _ := colorful.MakeColor(to)
-	return f.BlendRgb(g, frac).Clamped()
 }
 
 func isDarkColor(c color.Color) bool {

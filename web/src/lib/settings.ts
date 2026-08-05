@@ -17,6 +17,7 @@ export const SECTION_ORDER = [
   'Agent runtime',
   'Hub & web server',
   'Retention',
+  'Appearance',
   'TUI & notifications',
   'Time logging',
   'Paths & misc',
@@ -41,7 +42,9 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
     'Timeouts, retries, and terminal geometry for agent processes.',
   'Hub & web server': 'Bind address, auth, and sync cadence for the web hub.',
   Retention: 'How long transcripts, events, and token records are kept.',
-  'TUI & notifications': 'Terminal UI, theme, and desktop notifications.',
+  Appearance:
+    'The theme both surfaces draw from. This UI restyles as soon as you pick one; the terminal UI picks it up on its next launch.',
+  'TUI & notifications': 'Terminal UI and desktop notifications.',
   'Time logging': 'Billable time capture and export.',
   'Paths & misc': 'Filesystem locations trau reads and writes.',
   [OTHER_SECTION]: 'Keys the catalog did not place in a known section.',
@@ -149,7 +152,8 @@ export function parseSettingsSearch(
 }
 
 export const ROUTING_SECTION = 'Per-phase routing'
-export const THEME_SECTION = 'TUI & notifications'
+export const APPEARANCE_SECTION = 'Appearance'
+export const THEME_KEY = 'THEME'
 
 export const ROUTING_COLUMNS = ['MODEL', 'EFFORT', 'DISALLOWED_TOOLS'] as const
 export type RoutingColumn = (typeof ROUTING_COLUMNS)[number]

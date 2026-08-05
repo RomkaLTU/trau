@@ -1,0 +1,74 @@
+{
+  "name": "Dracula",
+  "slug": "dracula",
+  "author": "Dracula Theme",
+  "version": "1",
+  "modes": {
+    "light": {
+      "roles": {
+        "brand": "#036a96",
+        "accent": "#a3144d",
+        "success": "#14710a",
+        "error": "#cb3a2a",
+        "warning": "#846e15",
+        "info": "#644ac9",
+        "text": "#1f1f1f",
+        "subtle": "#5a5a52",
+        "faint": "#8f8f86",
+        "surface": "#e8e8e0",
+        "border": "#d0d0c6",
+        "ink": "#f8f8f2"
+      },
+      "vars": {
+        "--cli": "#644ac9"
+      },
+      "tui": {
+        "brand": "#5f98a8",
+        "accent": "#a55587",
+        "success": "#3ca25a",
+        "error": "#a53f43",
+        "warning": "#9da264",
+        "info": "#7d65a6",
+        "text": "#1e1f29",
+        "subtle": "#6a6b6f",
+        "faint": "#969698",
+        "surface": "#e2e2de",
+        "border": "#b7b7b6",
+        "ink": "#f8f8f2"
+      }
+    },
+    "dark": {
+      "roles": {
+        "brand": "#8be9fd",
+        "accent": "#ff79c6",
+        "success": "#50fa7b",
+        "error": "#ff5555",
+        "warning": "#f1fa8c",
+        "info": "#bd93f9",
+        "text": "#f8f8f2",
+        "subtle": "#b8bcd4",
+        "faint": "#6272a4",
+        "surface": "#343746",
+        "border": "#44475a",
+        "ink": "#282a36"
+      },
+      "vars": {
+        "--cli": "#bd93f9"
+      },
+      "tui": {
+        "brand": "#8be9fd",
+        "accent": "#ff79c6",
+        "success": "#50fa7b",
+        "error": "#ff5555",
+        "warning": "#f1fa8c",
+        "info": "#bd93f9",
+        "text": "#f8f8f2",
+        "subtle": "#acacac",
+        "faint": "#808183",
+        "surface": "#34353d",
+        "border": "#5f6065",
+        "ink": "#1e1f29"
+      }
+    }
+  }
+}

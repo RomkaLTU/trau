@@ -1,0 +1,81 @@
+{
+  "name": "trau",
+  "slug": "default",
+  "author": "trau",
+  "version": "1",
+  "modes": {
+    "light": {
+      "roles": {
+        "brand": "#d95e0a",
+        "accent": "#0a9d86",
+        "success": "#0f9d63",
+        "error": "#d92650",
+        "warning": "#b7791f",
+        "info": "#0284c7",
+        "text": "#1c1714",
+        "subtle": "#6f655b",
+        "faint": "#b3a99d",
+        "surface": "#f1ece6",
+        "border": "#e6ded4",
+        "ink": "#ffffff"
+      },
+      "vars": {
+        "--background": "#faf8f5",
+        "--input": "#ece6df",
+        "--cli": "#7c3aed"
+      },
+      "tui": {
+        "brand": "#00997a",
+        "accent": "#6c3ee8",
+        "success": "#03875d",
+        "error": "#d61f52",
+        "warning": "#9a6b00",
+        "info": "#0077c2",
+        "text": "#16181d",
+        "subtle": "#5f6169",
+        "faint": "#71747e",
+        "surface": "#e4e5e9",
+        "border": "#c6c8cf",
+        "ink": "#fafafa"
+      }
+    },
+    "dark": {
+      "roles": {
+        "brand": "#ff7a18",
+        "accent": "#00d4aa",
+        "success": "#04b575",
+        "error": "#ff4672",
+        "warning": "#f9d423",
+        "info": "#00aaff",
+        "text": "#efe9e3",
+        "subtle": "#9b9085",
+        "faint": "#555555",
+        "surface": "#1f1a15",
+        "border": "#322a22",
+        "ink": "#1a1004"
+      },
+      "vars": {
+        "--background": "#0c0a09",
+        "--card": "#14110e",
+        "--popover": "#181410",
+        "--muted": "#1a1611",
+        "--input": "#1f1a15",
+        "--cli": "#b48cff"
+      },
+      "tui": {
+        "brand": "#00d4aa",
+        "accent": "#7d56f4",
+        "success": "#04b575",
+        "error": "#ff4672",
+        "warning": "#f9d423",
+        "info": "#00aaff",
+        "text": "#ffffff",
+        "subtle": "#888888",
+        "faint": "#555555",
+        "surface": "#2a2a2e",
+        "border": "#555555",
+        "ink": "#0b0b0e"
+      }
+    }
+  }
+}

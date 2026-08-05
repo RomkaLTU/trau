@@ -36,7 +36,9 @@ export function ThemeGrid({
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs leading-relaxed text-muted-foreground">
-        Per-role hex overrides applied on top of the active theme preset.
+        Per-role hex overrides applied on top of the active theme, on both
+        surfaces: the terminal UI draws the role directly, and this web UI
+        derives its variables from it. Reload to see a change here.
       </p>
 
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
