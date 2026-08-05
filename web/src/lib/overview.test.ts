@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeLoopCount,
+  activityBreakdown,
   attentionPill,
   boardPill,
   isActiveState,
@@ -11,6 +12,7 @@ import {
   repoBadgeState,
   reposBadgeState,
   sessionStatePill,
+  sumActivity,
   type LiveLoop,
   type SessionState,
 } from "@/lib/overview";
@@ -302,5 +304,42 @@ describe("reposBadgeState", () => {
     expect(reposBadgeState(["none", "idle", "parked", "active"])).toBe("active");
     expect(reposBadgeState(["none", "idle", "parked"])).toBe("parked");
     expect(reposBadgeState(["none", "idle"])).toBe("idle");
+  });
+});
+
+describe("activityBreakdown", () => {
+  it("says nothing when nothing is running", () => {
+    expect(activityBreakdown({ loops: 0, interviews: 0, research: 0 })).toBe("");
+  });
+
+  it("names only the parts that are running", () => {
+    expect(activityBreakdown({ loops: 0, interviews: 0, research: 1 })).toBe(
+      "1 research",
+    );
+    expect(activityBreakdown({ loops: 1, interviews: 0, research: 1 })).toBe(
+      "1 loop · 1 research",
+    );
+  });
+
+  it("pluralises what counts and keeps the order stable", () => {
+    expect(activityBreakdown({ loops: 2, interviews: 1, research: 3 })).toBe(
+      "2 loops · 1 interview · 3 research",
+    );
+  });
+});
+
+describe("sumActivity", () => {
+  it("totals nothing to zero", () => {
+    expect(sumActivity([])).toEqual({ loops: 0, interviews: 0, research: 0 });
+  });
+
+  it("adds up what a group of repos is running", () => {
+    expect(
+      sumActivity([
+        { loops: 1, interviews: 0, research: 0 },
+        { loops: 2, interviews: 1, research: 0 },
+        { loops: 0, interviews: 0, research: 1 },
+      ]),
+    ).toEqual({ loops: 3, interviews: 1, research: 1 });
   });
 });

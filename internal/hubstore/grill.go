@@ -267,6 +267,17 @@ func (g *Grill) ListAwaiting() ([]GrillSession, error) {
 	)
 }
 
+// ListRunning returns every session mid-turn — interview and research alike —
+// across all repos, most recently touched first, minus the ones whose issue has
+// closed.
+func (g *Grill) ListRunning() ([]GrillSession, error) {
+	return g.scanSessions(
+		grillSessionSelect+` WHERE g.state = ?`+grillIssueOpen+
+			` ORDER BY g.updated_at DESC, g.id DESC`,
+		GrillRunning,
+	)
+}
+
 // Messages returns a session's messages with id greater than after, in order —
 // the detail read (after 0) and the SSE reconnect backfill from a client's
 // last-seen id.

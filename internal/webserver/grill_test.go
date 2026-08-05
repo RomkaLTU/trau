@@ -150,6 +150,46 @@ func TestGrillAwaitingAcrossRepos(t *testing.T) {
 	}
 }
 
+func TestGrillRunningAcrossRepos(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	thinking := createGrill(t, ts, repo, "COD-1")
+	asked := createGrill(t, ts, repo, "COD-2")
+	sid, _ := strconv.ParseInt(asked.ID, 10, 64)
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillWaiting, ""); err != nil {
+		t.Fatalf("pose question: %v", err)
+	}
+	elsewhere, err := stores.Grill().Create(hubstore.NewGrillSession{
+		Repo: "/tmp/other", IssueID: "OTH-9", Mode: hubstore.GrillModeResearch,
+	})
+	if err != nil {
+		t.Fatalf("create other repo session: %v", err)
+	}
+
+	_, body := get(t, ts, APIPrefix+"/grill?state=running")
+	var list GrillAwaitingResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode running: %v", err)
+	}
+	if len(list.Sessions) != 2 {
+		t.Fatalf("running = %+v, want the two sessions mid-turn", list.Sessions)
+	}
+	byID := map[string]GrillAwaitingView{}
+	for _, sess := range list.Sessions {
+		byID[sess.ID] = sess
+	}
+	if got := byID[thinking.ID]; got.Repo != repo || got.Mode != hubstore.GrillModeInterview {
+		t.Fatalf("interview view = %+v, want repo %s in interview mode", got, repo)
+	}
+	research := byID[strconv.FormatInt(elsewhere.ID, 10)]
+	if research.Repo != "other" || research.Mode != hubstore.GrillModeResearch {
+		t.Fatalf("research view = %+v, want repo other in research mode", research)
+	}
+
+	if ids := awaitingGrillIDs(t, ts); len(ids) != 1 || !ids[asked.ID] {
+		t.Fatalf("awaiting = %v, want the dock's feed untouched by the running read", ids)
+	}
+}
+
 func awaitingGrillIDs(t *testing.T, ts *httptest.Server) map[string]bool {
 	t.Helper()
 	_, body := get(t, ts, APIPrefix+"/grill")

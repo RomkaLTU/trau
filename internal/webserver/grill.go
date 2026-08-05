@@ -324,14 +324,15 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 // handleGrillAwaiting lists every session awaiting the user across all repos (GET
 // /grill), most recently touched first, plus the ones whose apply the hub is still
 // writing — the dock stands for the interviews the user has yet to be free of, and an
-// apply it has to wait out is one of them.
+// apply it has to wait out is one of them. ?state=running serves the sessions mid-turn
+// instead, which is how the repo switcher knows where an agent is at work.
 func (s *Server) handleGrillAwaiting(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	sessions, err := s.stores.Grill().ListAwaiting()
+	sessions, err := s.grillFeedSessions(r.URL.Query().Get("state"))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -345,6 +346,20 @@ func (s *Server) handleGrillAwaiting(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, GrillAwaitingResponse{Sessions: views})
+}
+
+// grillFeedSessions picks the feed the machine-wide read asked for: only the running
+// state has a reader of its own, anything else is the dock's awaiting feed with the
+// applies appended.
+func (s *Server) grillFeedSessions(state string) ([]hubstore.GrillSession, error) {
+	if state == hubstore.GrillRunning {
+		return s.stores.Grill().ListRunning()
+	}
+	sessions, err := s.stores.Grill().ListAwaiting()
+	if err != nil {
+		return nil, err
+	}
+	return append(sessions, s.grillApplyingSessions()...), nil
 }
 
 // grillRepoName resolves a stored repo root to the registry name the web scopes its
