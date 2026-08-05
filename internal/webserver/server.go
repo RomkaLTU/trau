@@ -52,6 +52,8 @@ type Server struct {
 	pregrill         map[int64]bool
 	grillStopMu      sync.Mutex
 	grillStopping    map[int64]bool
+	grillApplyMu     sync.Mutex
+	grillApplying    map[int64]bool
 	stopMu           sync.Mutex
 	stopping         map[string]bool
 	removeMu         sync.Mutex
@@ -123,6 +125,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		grillEvents:      newGrillBroadcaster(),
 		pregrill:         map[int64]bool{},
 		grillStopping:    map[int64]bool{},
+		grillApplying:    map[int64]bool{},
 		stopping:         map[string]bool{},
 		removing:         map[queueItemKey]bool{},
 		overlapWarned:    map[overlapKey]bool{},

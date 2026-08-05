@@ -11,7 +11,6 @@ import {
   isAwaitingAnswer,
   isSettled,
   type GrillSession,
-  type GrillState,
   type PregrillResponse,
 } from "./grill";
 
@@ -367,9 +366,11 @@ export function rowSession(
 
 // inboxPill reads a session from the triager's seat: waiting and parked both mean
 // "your turn", and a finished proposal means "review". statePill says what the
-// session is doing; this says what the person has to do about it.
-export function inboxPill(state: GrillState): InboxPill {
-  switch (state) {
+// session is doing; this says what the person has to do about it — and an apply the
+// hub is still writing is the one thing nobody has to do anything about.
+export function inboxPill(session: GrillSession): InboxPill {
+  if (session.applying) return { tone: "active", label: "applying" };
+  switch (session.state) {
     case "running":
       return { tone: "active", label: "thinking" };
     case "waiting":
