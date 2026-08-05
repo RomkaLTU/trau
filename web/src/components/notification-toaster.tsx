@@ -6,7 +6,6 @@ import { fireNotification, useNotifications } from "@/lib/notifications";
 import {
   notificationTag,
   notificationTarget,
-  showsInAppToast,
   useNotificationEvents,
   useNotificationNavigate,
 } from "@/lib/notification-center";
@@ -14,10 +13,10 @@ import { isConversationOpen } from "@/lib/open-conversation";
 import { pushSubscribed } from "@/lib/push";
 
 // NotificationToaster is the headless bridge from the hub's live needs-attention
-// frames to a toast — and, when the tab is hidden, an OS notification. Interview
-// questions skip the toast and are left to the dock, but keep the OS fallback.
-// A browser subscribed to Web Push already gets the event from the service
-// worker, so the in-tab notification stands down.
+// frames to a toast — and, when the tab is hidden, an OS notification. An interview
+// question whose conversation is already on screen raises neither: the user is
+// looking at it. A browser subscribed to Web Push already gets the event from the
+// service worker, so the in-tab notification stands down.
 // It renders nothing; the toasts land in the root <Toaster />.
 export function NotificationToaster() {
   const navigateToNotification = useNotificationNavigate();
@@ -33,20 +32,18 @@ export function NotificationToaster() {
       return;
     }
 
-    if (showsInAppToast(notification.kind)) {
-      const target = notificationTarget(notification, repo);
-      toast.custom((id) => (
-        <NotificationCard
-          title={notification.title}
-          repo={repo}
-          body={notification.body}
-          onOpen={() => {
-            toast.dismiss(id);
-            navigateToNotification(target);
-          }}
-        />
-      ));
-    }
+    const target = notificationTarget(notification, repo);
+    toast.custom((id) => (
+      <NotificationCard
+        title={notification.title}
+        repo={repo}
+        body={notification.body}
+        onOpen={() => {
+          toast.dismiss(id);
+          navigateToNotification(target);
+        }}
+      />
+    ));
 
     if (document.hidden && enabledRef.current) {
       void pushSubscribed().then((pushed) => {

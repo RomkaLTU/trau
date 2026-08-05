@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { GrillSession } from "./grill";
 import type { RepoView } from "./instances";
 import {
-  grillSessionTarget,
   markAllReadInResponse,
   markReadInResponse,
   notificationRepoName,
@@ -11,7 +9,6 @@ import {
   notificationTag,
   notificationTarget,
   repoScopeSwitch,
-  showsInAppToast,
   sortByNewest,
   unreadBadgeLabel,
   type HubNotification,
@@ -80,41 +77,6 @@ describe("notificationTarget", () => {
   );
 });
 
-describe("grillSessionTarget", () => {
-  function session(overrides: Partial<GrillSession>): GrillSession {
-    return {
-      id: "42",
-      repo: "app",
-      state: "waiting",
-      created_at: "",
-      updated_at: "",
-      ...overrides,
-    };
-  }
-
-  it("sends a research session to its report on the Research page", () => {
-    expect(grillSessionTarget(session({ mode: "research" }))).toEqual({
-      kind: "research",
-      repo: "app",
-      session: "42",
-    });
-  });
-
-  it("sends an interview to its inbox issue", () => {
-    expect(
-      grillSessionTarget(session({ mode: "interview", issue_id: "COD-1" })),
-    ).toEqual({ kind: "inbox", repo: "app", issue: "COD-1" });
-  });
-
-  it("addresses an issue-less interview by its draft row", () => {
-    expect(grillSessionTarget(session({}))).toEqual({
-      kind: "inbox",
-      repo: "app",
-      issue: "draft:42",
-    });
-  });
-});
-
 describe("notificationTag", () => {
   it("keys on the event, matching the tag the hub pushes", () => {
     expect(notificationTag(notif({ kind: "run_paused", ref: "COD-9" }))).toBe(
@@ -126,22 +88,6 @@ describe("notificationTag", () => {
     expect(notificationTag(notif({ kind: "grill_question", ref: "42" }))).not.toBe(
       notificationTag(notif({ kind: "grill_question", ref: "43" })),
     );
-  });
-});
-
-describe("showsInAppToast", () => {
-  it("leaves interview questions to the dock", () => {
-    expect(showsInAppToast("grill_question")).toBe(false);
-  });
-
-  it.each([
-    "run_paused",
-    "run_faulted",
-    "run_quarantined",
-    "run_awaiting_merge",
-    "epic_delivered",
-  ] as const)("still toasts %s", (kind) => {
-    expect(showsInAppToast(kind)).toBe(true);
   });
 });
 

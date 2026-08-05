@@ -387,46 +387,22 @@ export const appliedGrillSessionsQueryOptions = (repo: string) =>
     staleTime: 10_000,
   })
 
-// GrillAwaitingSession is one session from the machine-wide awaiting feed: repo is
-// the registry name of whichever project it belongs to, and question is the first
-// line of what it is blocked on — enough to preview without loading its conversation.
-export interface GrillAwaitingSession extends GrillSession {
-  question?: string
+// GrillMachineResponse is a machine-wide session feed: every project's sessions in
+// one list, each carrying the registry name of whichever repo it belongs to.
+export interface GrillMachineResponse {
+  sessions: GrillSession[]
 }
-
-export interface GrillAwaitingResponse {
-  sessions: GrillAwaitingSession[]
-}
-
-export const awaitingGrillsQueryKey = ['grill-awaiting'] as const
-
-async function fetchAwaitingGrills(): Promise<GrillAwaitingResponse> {
-  const res = await apiFetch('/api/v1/grill')
-  if (!res.ok) throw new Error(await errorMessage(res, 'list awaiting interviews failed'))
-  return res.json()
-}
-
-// The awaiting feed backs the interview dock on every route, so it polls at the same
-// cadence as the per-repo list; the live notification frames invalidate it on top of
-// that, so a question the user is waiting on lands without the poll's delay.
-export const awaitingGrillsQueryOptions = () =>
-  queryOptions({
-    queryKey: awaitingGrillsQueryKey,
-    queryFn: fetchAwaitingGrills,
-    staleTime: 10_000,
-    refetchInterval: 5_000,
-  })
 
 const runningGrillsQueryKey = ['grill-running'] as const
 
-async function fetchRunningGrills(): Promise<GrillAwaitingResponse> {
+async function fetchRunningGrills(): Promise<GrillMachineResponse> {
   const res = await apiFetch('/api/v1/grill?state=running')
   if (!res.ok) throw new Error(await errorMessage(res, 'list running interviews failed'))
   return res.json()
 }
 
 // The running feed is what turns a repo's switcher icon teal, so it polls at the
-// awaiting feed's cadence: a session that starts or settles shows within one poll.
+// per-repo list's cadence: a session that starts or settles shows within one poll.
 export const runningGrillsQueryOptions = () =>
   queryOptions({
     queryKey: runningGrillsQueryKey,
@@ -434,81 +410,6 @@ export const runningGrillsQueryOptions = () =>
     staleTime: 10_000,
     refetchInterval: 5_000,
   })
-
-// sortAwaiting ranks the awaiting feed the way the inbox ranks attention: a session
-// blocked on a live question leads a parked or stalled one, then latest activity
-// first. A session with no readable timestamp sorts after everything dated.
-export function sortAwaiting(
-  sessions: readonly GrillAwaitingSession[],
-): GrillAwaitingSession[] {
-  return [...sessions].sort(
-    (a, b) =>
-      awaitingRank(a.state) - awaitingRank(b.state) ||
-      awaitingActivity(b) - awaitingActivity(a),
-  )
-}
-
-// awaitingWithOpen is what the dock's switcher offers: the awaiting feed, carrying the
-// session the panel already has open even once answering has dropped it off that feed.
-export function awaitingWithOpen(
-  sessions: readonly GrillAwaitingSession[],
-  open: GrillAwaitingSession,
-): GrillAwaitingSession[] {
-  return sessions.some((s) => s.id === open.id) ? [...sessions] : [open, ...sessions]
-}
-
-// awaitingWithout drops a session the hub has moved past from the feed — abandoned, or
-// answered and running again.
-export function awaitingWithout(
-  sessions: readonly GrillAwaitingSession[],
-  sid: string,
-): GrillAwaitingSession[] {
-  return sessions.filter((s) => s.id !== sid)
-}
-
-// dropAwaiting makes that drop in the cache. The hub flips an answered session to
-// running the moment the POST returns, so the dock reads the session it holds as an
-// interviewer working instead of re-offering the answered question until the next poll.
-export function dropAwaiting(client: QueryClient, sid: string): void {
-  client.setQueryData<GrillAwaitingResponse>(
-    awaitingGrillsQueryKey,
-    (feed) => feed && { sessions: awaitingWithout(feed.sessions, sid) },
-  )
-}
-
-// What a collapsed dock stands for, named as its badge names them: the session whose
-// apply the hub is still writing, the one it holds while the interviewer works, then
-// the states the hub blocks on the user with, in the order the feed ranks them.
-// Applying is what the hub is doing to a finished session rather than a state of its
-// own, so it takes a predicate the others answer by state alone.
-const DOCK_STATES: { label: string; holds: (session: GrillSession) => boolean }[] = [
-  { label: 'applying', holds: (s) => s.applying === true },
-  { label: 'thinking', holds: (s) => s.state === 'running' },
-  { label: 'waiting', holds: (s) => s.state === 'waiting' },
-  { label: 'parked', holds: (s) => s.state === 'parked' },
-  { label: 'stalled', holds: (s) => s.state === 'stalled' },
-]
-
-// awaitingBreakdown explains a collapsed dock's count — "1 waiting · 2 stalled" — so
-// the badge reconciles with the sessions the interview page lists.
-export function awaitingBreakdown(sessions: readonly GrillAwaitingSession[]): string {
-  return DOCK_STATES.map(({ label, holds }) => ({
-    label,
-    count: sessions.filter(holds).length,
-  }))
-    .filter(({ count }) => count > 0)
-    .map(({ count, label }) => `${count} ${label}`)
-    .join(' · ')
-}
-
-function awaitingRank(state: GrillState): number {
-  return state === 'waiting' ? 0 : 1
-}
-
-function awaitingActivity(session: GrillAwaitingSession): number {
-  const at = Date.parse(session.updated_at)
-  return Number.isNaN(at) ? 0 : at
-}
 
 async function fetchGrillDetail(sid: string): Promise<GrillDetail> {
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}`)

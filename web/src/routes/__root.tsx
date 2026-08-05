@@ -14,7 +14,6 @@ import {
 } from '@/components/trau/created-banner'
 import { UpdateNotifier } from '@/components/trau/update-notifier'
 import { AwayRecap } from '@/components/away-recap'
-import { InterviewDock } from '@/components/grill/dock'
 import { NotificationToaster } from '@/components/notification-toaster'
 import { Toaster } from '@/components/ui/sonner'
 
@@ -51,8 +50,7 @@ function RootLayout() {
             <NotificationToaster />
           </AppShell>
           {/* Outside the shell: its main column is a z-[1] stacking context that
-              would paint every toast — and the dock — under an open sheet or dialog. */}
-          <InterviewDock />
+              would paint every toast under an open sheet or dialog. */}
           <UpdateNotifier />
           <Toaster />
         </CreatedBannerProvider>

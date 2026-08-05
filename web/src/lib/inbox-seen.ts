@@ -72,9 +72,9 @@ function subscribe(notify: () => void): () => void {
   }
 }
 
-// recordSeen advances one session's mark against the marks storage holds now. The
-// dock and the rail both write this key, in the same tab and in others, so writing
-// back the whole map a surface loaded would drop every mark the other one made since.
+// recordSeen advances one session's mark against the marks storage holds now. Every
+// surface writes this key, in the same tab and in others, so writing back the whole
+// map a surface loaded would drop every mark another one made since.
 export function recordSeen(session: GrillSession): void {
   const stored = loadSeen()
   const marks = markSeen(stored, session.id, session.updated_at)
