@@ -265,7 +265,7 @@ function SessionColumn({
   onDiscarded: () => void;
 }) {
   const live = status?.session ?? session;
-  const pill = inboxPill(live.state);
+  const pill = inboxPill(live);
 
   return (
     <>
@@ -451,7 +451,7 @@ function SessionRow({
   selected: boolean;
   onSelect: () => void;
 }) {
-  const pill = inboxPill(session.state);
+  const pill = inboxPill(session);
   return (
     <li className="relative">
       <button

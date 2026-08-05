@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -46,6 +46,7 @@ import {
   diffLines,
   grillAppliedOutcome,
   grillSessionsQueryOptions,
+  isApplyInProgress,
   type DiffLine,
   type GrillApplyResponse,
   type GrillApplyStep,
@@ -215,6 +216,21 @@ export function OutcomeReview({
       ),
   });
 
+  // Losing the hub's guard to another tab is not a failure to report: the card joins
+  // that apply in applying mode until the hub's own indicator takes over. The bridge
+  // expires on its own, so an apply that settles before the card ever hears it
+  // announced leaves a reviewable session rather than a stuck one.
+  const [guarded, setGuarded] = useState(false);
+  useEffect(() => {
+    if (!guarded) return;
+    if (session.applying) {
+      setGuarded(false);
+      return;
+    }
+    const timer = setTimeout(() => setGuarded(false), guardBridgeMs);
+    return () => clearTimeout(timer);
+  }, [guarded, session.applying]);
+
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
   // panel's now-settled active session back to a preview. Only the issue and board
@@ -268,6 +284,7 @@ export function OutcomeReview({
         );
       }
     },
+    onError: (err) => setGuarded(isApplyInProgress(err)),
   });
 
   const discard = useMutation({
@@ -277,6 +294,19 @@ export function OutcomeReview({
       onDiscarded?.();
     },
   });
+
+  // A reload and a second tab have the hub's indicator instead of a mutation of their
+  // own.
+  const applying = apply.isPending || guarded || session.applying === true;
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!applying) {
+      setSlow(false);
+      return;
+    }
+    const timer = setTimeout(() => setSlow(true), slowApplyMs);
+    return () => clearTimeout(timer);
+  }, [applying]);
 
   // A settled session is the only source the card can trust: the mutation that
   // applied it is gone on a remount, and the host retires the review the moment it
@@ -298,7 +328,9 @@ export function OutcomeReview({
 
   const failedSteps = apply.data && !apply.data.applied ? apply.data.steps : [];
   const warnings = apply.data?.warnings ?? [];
-  const busy = apply.isPending || discard.isPending;
+  const applyError =
+    apply.error && !isApplyInProgress(apply.error) ? apply.error : null;
+  const busy = applying || discard.isPending;
   const splitReady = subsAreComplete(subs);
   const createReady =
     title.trim() !== "" &&
@@ -322,6 +354,7 @@ export function OutcomeReview({
           draft={draft}
           editing={editing}
           loading={issue.isLoading}
+          disabled={busy}
           onChange={setDraft}
           onEdit={() => setEditing(true)}
           onPreview={() => setEditing(false)}
@@ -332,6 +365,7 @@ export function OutcomeReview({
           draft={draft}
           editing={editing}
           loading={issue.isLoading}
+          disabled={busy}
           onDraftChange={setDraft}
           onEdit={() => setEditing(true)}
           onPreview={() => setEditing(false)}
@@ -346,6 +380,7 @@ export function OutcomeReview({
           isEpic={isCreateEpic}
           labels={outcome.labels ?? []}
           subs={subs}
+          disabled={busy}
           onTitleChange={setTitle}
           onDraftChange={setDraft}
           onEdit={() => setEditing(true)}
@@ -410,15 +445,35 @@ export function OutcomeReview({
 
       {warnings.length > 0 && <WarningList warnings={warnings} />}
 
-      {apply.error && (
-        <p className="text-xs text-destructive">
-          {(apply.error as Error).message}
-        </p>
+      {applyError && (
+        <p className="text-xs text-destructive">{applyError.message}</p>
       )}
       {discard.error && (
         <p className="text-xs text-destructive">
           {(discard.error as Error).message}
         </p>
+      )}
+
+      {applying && (
+        <div
+          role="status"
+          className="flex items-center gap-2 rounded-md border border-info/50 bg-info/10 px-3 py-2 text-xs font-medium text-info"
+        >
+          <Loader2
+            className="size-3.5 shrink-0 animate-spin"
+            aria-hidden="true"
+          />
+          <span>
+            {applyStatusLine({
+              disposition: outcome.disposition,
+              tracker,
+              destination,
+              anchor: issueId,
+              subCount: isCreateEpic ? subs.length : 0,
+              slow,
+            })}
+          </span>
+        </div>
       )}
 
       <div className="flex flex-wrap items-center gap-2">
@@ -429,8 +484,8 @@ export function OutcomeReview({
             disabled={blockApply}
             className={cn(isCreate && "rounded-r-none")}
           >
-            {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
-            {applyLabel(outcome.disposition, apply.data)}
+            {applying ? <Loader2 className="animate-spin" /> : <Check />}
+            {applyLabel(outcome.disposition, applying, apply.data)}
           </Button>
           {isCreate && (
             <DropdownMenu>
@@ -577,6 +632,7 @@ function SplitBody({
   draft,
   editing,
   loading,
+  disabled,
   onDraftChange,
   onEdit,
   onPreview,
@@ -587,6 +643,7 @@ function SplitBody({
   draft: string;
   editing: boolean;
   loading: boolean;
+  disabled: boolean;
   onDraftChange: (text: string) => void;
   onEdit: () => void;
   onPreview: () => void;
@@ -600,11 +657,16 @@ function SplitBody({
         draft={draft}
         editing={editing}
         loading={loading}
+        disabled={disabled}
         onChange={onDraftChange}
         onEdit={onEdit}
         onPreview={onPreview}
       />
-      <SubIssueList subs={subs} onSubsChange={onSubsChange} />
+      <SubIssueList
+        subs={subs}
+        disabled={disabled}
+        onSubsChange={onSubsChange}
+      />
     </div>
   );
 }
@@ -620,6 +682,7 @@ function CreateBody({
   isEpic,
   labels,
   subs,
+  disabled,
   onTitleChange,
   onDraftChange,
   onEdit,
@@ -632,6 +695,7 @@ function CreateBody({
   isEpic: boolean;
   labels: string[];
   subs: SubIssueDraft[];
+  disabled: boolean;
   onTitleChange: (text: string) => void;
   onDraftChange: (text: string) => void;
   onEdit: () => void;
@@ -646,18 +710,24 @@ function CreateBody({
           value={title}
           onChange={(e) => onTitleChange(e.target.value)}
           placeholder="Issue title"
+          disabled={disabled}
           className={subFieldClass}
         />
       </div>
       <NewBody
         draft={draft}
         editing={editing}
+        disabled={disabled}
         onChange={onDraftChange}
         onEdit={onEdit}
         onPreview={onPreview}
       />
       {isEpic ? (
-        <SubIssueList subs={subs} onSubsChange={onSubsChange} />
+        <SubIssueList
+          subs={subs}
+          disabled={disabled}
+          onSubsChange={onSubsChange}
+        />
       ) : (
         labels.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -679,9 +749,11 @@ function CreateBody({
 // re-wire the sibling blocking relations before Apply files them.
 function SubIssueList({
   subs,
+  disabled,
   onSubsChange,
 }: {
   subs: SubIssueDraft[];
+  disabled: boolean;
   onSubsChange: (subs: SubIssueDraft[]) => void;
 }) {
   const update = (key: string, patch: Partial<SubIssueDraft>) =>
@@ -726,6 +798,7 @@ function SubIssueList({
           size="sm"
           className="h-6 px-2 text-xs"
           onClick={add}
+          disabled={disabled}
         >
           <Plus />
           Add
@@ -742,6 +815,7 @@ function SubIssueList({
             index={i}
             sub={sub}
             siblings={subs}
+            disabled={disabled}
             onChange={update}
             onRemove={remove}
             onToggleDep={toggleDep}
@@ -756,6 +830,7 @@ function SubIssueCard({
   index,
   sub,
   siblings,
+  disabled,
   onChange,
   onRemove,
   onToggleDep,
@@ -763,6 +838,7 @@ function SubIssueCard({
   index: number;
   sub: SubIssueDraft;
   siblings: SubIssueDraft[];
+  disabled: boolean;
   onChange: (key: string, patch: Partial<SubIssueDraft>) => void;
   onRemove: (key: string) => void;
   onToggleDep: (key: string, depKey: string) => void;
@@ -778,6 +854,7 @@ function SubIssueCard({
           size="sm"
           className="h-6 px-2 text-xs text-muted-foreground"
           onClick={() => onRemove(sub.key)}
+          disabled={disabled}
         >
           <X />
           Remove
@@ -787,6 +864,7 @@ function SubIssueCard({
         value={sub.title}
         onChange={(e) => onChange(sub.key, { title: e.target.value })}
         placeholder="Title"
+        disabled={disabled}
         className={subFieldClass}
       />
       <Textarea
@@ -794,6 +872,7 @@ function SubIssueCard({
         onChange={(e) => onChange(sub.key, { description: e.target.value })}
         rows={3}
         placeholder="Description an agent can implement without guessing"
+        disabled={disabled}
         className={cn(subFieldClass, "min-h-20 resize-y font-mono text-xs")}
       />
       {siblings.length > 1 && (
@@ -808,6 +887,7 @@ function SubIssueCard({
                   key={other.key}
                   type="button"
                   onClick={() => onToggleDep(sub.key, other.key)}
+                  disabled={disabled}
                   className={cn(
                     "rounded border px-2 py-0.5 text-[11px]",
                     on
@@ -831,6 +911,7 @@ function RewriteBody({
   draft,
   editing,
   loading,
+  disabled,
   onChange,
   onEdit,
   onPreview,
@@ -839,6 +920,7 @@ function RewriteBody({
   draft: string;
   editing: boolean;
   loading: boolean;
+  disabled: boolean;
   onChange: (text: string) => void;
   onEdit: () => void;
   onPreview: () => void;
@@ -855,6 +937,7 @@ function RewriteBody({
             size="sm"
             className="h-6 px-2 text-xs"
             onClick={onPreview}
+            disabled={disabled}
           >
             <Eye />
             Preview diff
@@ -865,6 +948,7 @@ function RewriteBody({
             size="sm"
             className="h-6 px-2 text-xs"
             onClick={onEdit}
+            disabled={disabled}
           >
             <Pencil />
             Edit
@@ -876,6 +960,7 @@ function RewriteBody({
           value={draft}
           onChange={(e) => onChange(e.target.value)}
           rows={10}
+          disabled={disabled}
           className="min-h-40 resize-y font-mono text-xs"
         />
       ) : loading ? (
@@ -895,12 +980,14 @@ function RewriteBody({
 function NewBody({
   draft,
   editing,
+  disabled,
   onChange,
   onEdit,
   onPreview,
 }: {
   draft: string;
   editing: boolean;
+  disabled: boolean;
   onChange: (text: string) => void;
   onEdit: () => void;
   onPreview: () => void;
@@ -917,6 +1004,7 @@ function NewBody({
             size="sm"
             className="h-6 px-2 text-xs"
             onClick={onPreview}
+            disabled={disabled}
           >
             <Eye />
             Preview
@@ -927,6 +1015,7 @@ function NewBody({
             size="sm"
             className="h-6 px-2 text-xs"
             onClick={onEdit}
+            disabled={disabled}
           >
             <Pencil />
             Edit
@@ -938,6 +1027,7 @@ function NewBody({
           value={draft}
           onChange={(e) => onChange(e.target.value)}
           rows={10}
+          disabled={disabled}
           className="min-h-40 resize-y font-mono text-xs"
         />
       ) : draft.trim() === "" ? (
@@ -1498,12 +1588,65 @@ function RequeueAction({ repo, ticket }: { repo: string; ticket: string }) {
   );
 }
 
-function applyLabel(disposition: string, result?: GrillApplyResponse): string {
+const slowApplyMs = 8_000;
+
+const guardBridgeMs = 2_000;
+
+const PENDING_LABELS: Record<string, string> = {
+  create: "Creating…",
+  no_change: "Closing out…",
+  research: "Approving…",
+};
+
+export function applyLabel(
+  disposition: string,
+  pending: boolean,
+  result?: GrillApplyResponse,
+): string {
+  if (pending) return PENDING_LABELS[disposition] ?? "Applying…";
   if (result && !result.applied) return "Retry";
   if (disposition === "no_change") return "Close out";
   if (disposition === "create") return "Create";
   if (disposition === "research") return "Approve";
   return "Apply";
+}
+
+// subCount is the epic's slice count, and 0 for anything filing a single issue.
+export function applyStatusLine({
+  disposition,
+  tracker,
+  destination,
+  anchor,
+  subCount,
+  slow,
+}: {
+  disposition: string;
+  tracker: string;
+  destination: GrillDestination;
+  anchor: string;
+  subCount: number;
+  slow: boolean;
+}): string {
+  const internal = destination === "internal" || tracker === "internal";
+  const name = TRACKER_NAMES[tracker] ?? tracker;
+  const place = internal ? "the internal backlog" : name;
+
+  let line =
+    anchor === ""
+      ? "Applying…"
+      : `Applying to ${anchor} ${internal ? "in" : "on"} ${place}…`;
+  if (disposition === "create") {
+    const noun = subCount === 1 ? "sub-issue" : "sub-issues";
+    const epic = subCount === 0 ? "" : ` epic + ${subCount} ${noun}`;
+    line = `Filing${epic} to ${place}…`;
+  } else if (disposition === "no_change") {
+    line = "Closing out…";
+  }
+
+  if (!slow) return line;
+  return internal
+    ? `${line} Still working — this can take a moment.`
+    : `${line} Still working — ${name} can be slow.`;
 }
 
 function dispositionLabel(disposition: string): string {

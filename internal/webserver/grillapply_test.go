@@ -1,7 +1,10 @@
 package webserver
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +12,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -1203,5 +1208,216 @@ func TestFindRepoByRoot(t *testing.T) {
 		if repo, ok := s.findRepoByRoot(root); ok {
 			t.Errorf("findRepoByRoot(%q) = %+v, want not found", root, repo)
 		}
+	}
+}
+
+// gatedWriter holds the first create inside the writer, so a second apply arrives
+// while the first still owns the session.
+type gatedWriter struct {
+	*fakeWriter
+	calls   atomic.Int32
+	once    sync.Once
+	entered chan struct{}
+	gate    chan struct{}
+}
+
+func newGatedWriter() *gatedWriter {
+	return &gatedWriter{
+		fakeWriter: newFakeWriter(),
+		entered:    make(chan struct{}),
+		gate:       make(chan struct{}),
+	}
+}
+
+// open lets the held create through. A test defers it so a failed assertion cannot
+// strand the request the server is waiting on when it closes.
+func (g *gatedWriter) open() {
+	g.once.Do(func() { close(g.gate) })
+}
+
+func (g *gatedWriter) CreateIssue(ctx context.Context, d tracker.IssueDraft) (tracker.NewIssue, error) {
+	if g.calls.Add(1) == 1 {
+		close(g.entered)
+		<-g.gate
+	}
+	return g.fakeWriter.CreateIssue(ctx, d)
+}
+
+// getGrillSession reads the session off the detail resource, the fresh page load's
+// own view of it.
+func getGrillSession(t *testing.T, ts *httptest.Server, sid int64) GrillSessionView {
+	t.Helper()
+	res, err := http.Get(ts.URL + APIPrefix + "/grill/" + strconv.FormatInt(sid, 10))
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var out GrillDetailResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	return out.Session
+}
+
+// awaitingGrillView finds a session on the machine-wide feed the dock reads, which is
+// where its applying badge comes from.
+func awaitingGrillView(t *testing.T, ts *httptest.Server, sid int64) (GrillAwaitingView, bool) {
+	t.Helper()
+	_, body := get(t, ts, APIPrefix+"/grill")
+	var list GrillAwaitingResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode awaiting: %v", err)
+	}
+	for _, sess := range list.Sessions {
+		if sess.ID == strconv.FormatInt(sid, 10) {
+			return sess, true
+		}
+	}
+	return GrillAwaitingView{}, false
+}
+
+// applyGrillRefused posts an apply that is expected to be refused, returning the
+// status and the error string the review keys on.
+func applyGrillRefused(t *testing.T, ts *httptest.Server, sid int64) (int, string) {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+strconv.FormatInt(sid, 10)+"/apply", GrillApplyRequest{})
+	defer func() { _ = res.Body.Close() }()
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode refusal: %v", err)
+	}
+	return res.StatusCode, body.Error
+}
+
+// readGrillState reads on to the next state frame, past the conversation the stream
+// backfills on connect.
+func readGrillState(t *testing.T, r *bufio.Reader) GrillSessionView {
+	t.Helper()
+	for {
+		event, data := readFrame(t, r)
+		if event != "state" {
+			continue
+		}
+		var view GrillSessionView
+		if err := json.Unmarshal([]byte(data), &view); err != nil {
+			t.Fatalf("decode state frame: %v", err)
+		}
+		return view
+	}
+}
+
+// Two Creates racing one session: only the first reaches the tracker, the second is
+// refused with the in-progress error rather than filing a duplicate, and the session
+// reads as applying on a fresh GET and on the live stream until the first settles.
+func TestGrillApplyRefusesConcurrentApplies(t *testing.T) {
+	gate := newGatedWriter()
+	defer gate.open()
+	gate.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "COD-100"}}}
+	ts, stores, root := grillApplyServer(t, gate)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Add dark mode toggle",
+		ProposedDescription: "As a user I can toggle dark mode in settings.",
+		Summary:             "specced the toggle",
+	})
+	path := APIPrefix + "/grill/" + strconv.FormatInt(sid, 10)
+
+	stream := openSSE(t, ts, path+"/stream", nil)
+	if state := readGrillState(t, stream); state.Applying {
+		t.Fatalf("state frame before the apply = %+v, want no applying indicator", state)
+	}
+
+	landed := make(chan *http.Response, 1)
+	failed := make(chan error, 1)
+	go func() {
+		res, err := http.Post(ts.URL+path+"/apply", "application/json", strings.NewReader("{}"))
+		if err != nil {
+			failed <- err
+			return
+		}
+		landed <- res
+	}()
+	select {
+	case <-gate.entered:
+	case err := <-failed:
+		t.Fatalf("first apply: %v", err)
+	}
+
+	if state := readGrillState(t, stream); !state.Applying {
+		t.Fatalf("state frame mid-apply = %+v, want the applying indicator", state)
+	}
+	if got := getGrillSession(t, ts, sid); !got.Applying {
+		t.Fatalf("GET mid-apply = %+v, want the applying indicator", got)
+	}
+	if view, ok := awaitingGrillView(t, ts, sid); !ok || !view.Applying {
+		t.Fatalf("awaiting feed mid-apply = (%+v, %v), want the session carrying the applying indicator", view, ok)
+	}
+	if status, msg := applyGrillRefused(t, ts, sid); status != http.StatusConflict || msg != grillApplyInProgress {
+		t.Fatalf("second apply = (%d, %q), want (409, %q)", status, msg, grillApplyInProgress)
+	}
+
+	gate.open()
+	var out GrillApplyResponse
+	select {
+	case res := <-landed:
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatalf("decode apply: %v", err)
+		}
+		_ = res.Body.Close()
+	case err := <-failed:
+		t.Fatalf("first apply: %v", err)
+	}
+
+	if !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("first apply = %+v, want applied", out)
+	}
+	if out.Session.Applying {
+		t.Errorf("settled apply response = %+v, want the applying indicator cleared", out.Session)
+	}
+	if len(gate.created) != 1 {
+		t.Fatalf("creates = %d, want exactly the winner's one", len(gate.created))
+	}
+	if state := readGrillState(t, stream); state.State != hubstore.GrillApplied || state.Applying {
+		t.Fatalf("settle frame = %+v, want applied with the indicator cleared", state)
+	}
+	if got := getGrillSession(t, ts, sid); got.Applying {
+		t.Errorf("GET after the settle = %+v, want the applying indicator cleared", got)
+	}
+	if view, ok := awaitingGrillView(t, ts, sid); ok {
+		t.Errorf("awaiting feed after the settle = %+v, want the settled session gone", view)
+	}
+	if status, msg := applyGrillRefused(t, ts, sid); status != http.StatusConflict || msg != "session is already applied" {
+		t.Fatalf("re-apply after the settle = (%d, %q), want the already-applied conflict", status, msg)
+	}
+}
+
+// A partial failure releases the guard too: the session stays finished, the stream
+// hears it, and the review can retry at once.
+func TestGrillApplyPartialFailureClearsApplying(t *testing.T) {
+	fake := newFakeWriter()
+	fake.commentErr = errors.New("linear 500")
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition:         grillDispRewrite,
+		ProposedDescription: "A crisp new description.",
+		Summary:             "clarified the flow",
+	})
+	stream := openSSE(t, ts, APIPrefix+"/grill/"+strconv.FormatInt(sid, 10)+"/stream", nil)
+	_ = readGrillState(t, stream)
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if out.Applied || out.Session.State != hubstore.GrillFinished || out.Session.Applying {
+		t.Fatalf("partial apply = %+v, want a still-finished session with no applying indicator", out.Session)
+	}
+	if state := readGrillState(t, stream); !state.Applying {
+		t.Fatalf("state frame after the apply opened = %+v, want the applying indicator", state)
+	}
+	if state := readGrillState(t, stream); state.State != hubstore.GrillFinished || state.Applying {
+		t.Fatalf("settle frame = %+v, want finished with the indicator cleared", state)
+	}
+	if got := getGrillSession(t, ts, sid); got.Applying {
+		t.Errorf("GET after the partial apply = %+v, want the applying indicator cleared", got)
 	}
 }
