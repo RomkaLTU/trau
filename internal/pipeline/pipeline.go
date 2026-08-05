@@ -754,6 +754,14 @@ type Pipeline struct {
 	// the WIP it stashed, the epic branch it left behind. ExitCleanup consumes it.
 	exit exitState
 
+	// lessonSiblings memoizes the epic-sibling set lessons recall resolved for one
+	// ticket, so a run's build and verify pay the hierarchy lookup once. The loop
+	// drives one ticket at a time, so a single unguarded entry suffices.
+	lessonSiblings struct {
+		id  string
+		ids map[string]bool
+	}
+
 	// detachedBase records the ref checkoutBase parked HEAD on when another worktree
 	// held the base branch, so baseRef cuts from those commits and not from the local
 	// base branch that stayed behind. Empty means the base branch itself is checked out.
@@ -1761,7 +1769,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if withNote {
 		note = resumeNote
 	}
-	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
+	note += buildLessonsNote(p.recallTicketLessons(ctx, id))
 	if p.FolderRepo {
 		note += p.folderBuildNote(ctx)
 	}
@@ -2261,7 +2269,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	rubricRepair := repairRubricNote(rubricRef)
 	notesRef, _ := p.activeBuildNotes(id)
 	notesRepair := buildNotesNote(notesRef)
-	lessonsVerify := verifyLessonsNote(p.recallLessons(p.lessonQuery(id)))
+	lessonsVerify := verifyLessonsNote(p.recallTicketLessons(ctx, id))
 	resolver := p.skillResolver()
 	changed, _ := p.sliceChangedFiles(ctx)
 	skillCtx := agent.SkillContext{Changed: changed}
