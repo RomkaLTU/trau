@@ -1,7 +1,9 @@
 package hubstore
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -66,6 +68,152 @@ func TestSearchRanksTitleAboveDescription(t *testing.T) {
 	got := searchIDs(t, s, "/repo/acme", "telemetry")
 	if len(got) != 2 || got[0] != "COD-2" {
 		t.Fatalf("ranking = %v, want the title match COD-2 first", got)
+	}
+}
+
+func TestSearchPinsExactIdentifierOverBodyMentions(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
+		{
+			Identifier:  "COD-733",
+			Title:       "web: V0 prompt for the run detail",
+			Description: strings.Repeat("a long specification of the prompt pipeline ", 40),
+			StatusGroup: "started",
+		},
+		{
+			Identifier:  "COD-741",
+			Title:       "web: wire Terminal + Lessons restyle",
+			Description: "follows COD-733",
+			StatusGroup: "started",
+		},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	for _, query := range []string{"COD-733", "cod-733", "  COD-733  "} {
+		got := searchIDs(t, s, "/repo/acme", query)
+		if len(got) == 0 || got[0] != "COD-733" {
+			t.Fatalf("Search(%q) = %v, want the exact identifier first", query, got)
+		}
+	}
+}
+
+func TestSearchRanksIdentifierPrefixAboveTextMatches(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
+		{Identifier: "COD-900", Title: "cod 73 rollout plan", StatusGroup: "started"},
+		{Identifier: "COD-733", Title: "prompt pipeline", Description: strings.Repeat("specification ", 60), StatusGroup: "started"},
+		{Identifier: "COD-738", Title: "queue draining", Description: strings.Repeat("specification ", 60), StatusGroup: "started"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got := searchIDs(t, s, "/repo/acme", "COD-73")
+	if len(got) != 3 {
+		t.Fatalf("Search = %v, want all three matches", got)
+	}
+	if !slices.Contains(got[:2], "COD-733") || !slices.Contains(got[:2], "COD-738") {
+		t.Fatalf("Search = %v, want the identifier-prefix matches ahead of the text match", got)
+	}
+}
+
+func TestSearchExactIdentifierSurvivesTheLimit(t *testing.T) {
+	s := testIssues(t)
+	issues := []Issue{{
+		Identifier:  "COD-733",
+		Title:       "prompt pipeline",
+		Description: strings.Repeat("a long specification of the prompt pipeline ", 40),
+		StatusGroup: "started",
+	}}
+	for i := range 8 {
+		issues = append(issues, Issue{
+			Identifier:  fmt.Sprintf("COD-%d", 800+i),
+			Title:       "follow-up to COD-733",
+			StatusGroup: "started",
+		})
+	}
+	if _, _, err := s.Upsert("/repo/acme", "linear", issues); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got, err := s.Search("/repo/acme", "COD-733", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(got) != 5 || got[0].Identifier != "COD-733" {
+		t.Fatalf("Search = %v, want COD-733 first within a limit of 5", got)
+	}
+}
+
+func TestSearchDemotesFinishedIssues(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
+		{Identifier: "COD-1", Title: "telemetry dashboard", StatusGroup: "done"},
+		{Identifier: "COD-2", Title: "telemetry dashboard", StatusGroup: "started"},
+		{Identifier: "COD-3", Title: "unrelated", Description: "a passing mention of telemetry", StatusGroup: "started"},
+		{Identifier: "COD-4", Title: "telemetry rollout", StatusGroup: "canceled"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	got := searchIDs(t, s, "/repo/acme", "telemetry")
+	if len(got) != 4 || got[0] != "COD-2" {
+		t.Fatalf("Search = %v, want the active title match first", got)
+	}
+	if slices.Index(got, "COD-1") > slices.Index(got, "COD-3") {
+		t.Fatalf("Search = %v, want the strong done title match still above the weak active body match", got)
+	}
+	if slices.Index(got, "COD-4") < slices.Index(got, "COD-2") {
+		t.Fatalf("Search = %v, want the canceled issue demoted like a done one", got)
+	}
+}
+
+func TestSearchPinsExactIdentifierOfFinishedIssue(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
+		{Identifier: "COD-733", Title: "prompt pipeline", StatusGroup: "done"},
+		{Identifier: "COD-741", Title: "follow-up to COD-733", StatusGroup: "started"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	if got := searchIDs(t, s, "/repo/acme", "COD-733"); len(got) == 0 || got[0] != "COD-733" {
+		t.Fatalf("Search = %v, want the exact identifier first even when it is done", got)
+	}
+}
+
+func TestSearchTiebreaksOnRecency(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
+		{Identifier: "COD-1", Title: "telemetry dashboard", StatusGroup: "started", UpdatedAt: "2024-01-01T00:00:00Z"},
+		{Identifier: "COD-2", Title: "telemetry dashboard", StatusGroup: "started", UpdatedAt: "2026-01-01T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	if got := searchIDs(t, s, "/repo/acme", "telemetry"); !slices.Equal(got, []string{"COD-2", "COD-1"}) {
+		t.Fatalf("Search = %v, want the more recently updated issue first", got)
+	}
+}
+
+func TestSearchTreatsLikeMetacharactersLiterally(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
+		{Identifier: "COD-1", Title: "widget", StatusGroup: "started"},
+		{Identifier: "COD-2", Title: "gadget", StatusGroup: "started"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	for _, query := range []string{"%", "_", `\`} {
+		if got := searchIDs(t, s, "/repo/acme", query); len(got) != 0 {
+			t.Fatalf("Search(%q) = %v, want no matches for a metacharacter-only query", query, got)
+		}
+	}
+	for _, query := range []string{"widget%", "widget_", `widget\`, "%widget%"} {
+		if got := searchIDs(t, s, "/repo/acme", query); !slices.Equal(got, []string{"COD-1"}) {
+			t.Fatalf("Search(%q) = %v, want [COD-1]", query, got)
+		}
 	}
 }
 
