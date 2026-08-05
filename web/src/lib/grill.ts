@@ -417,6 +417,24 @@ export const awaitingGrillsQueryOptions = () =>
     refetchInterval: 5_000,
   })
 
+const runningGrillsQueryKey = ['grill-running'] as const
+
+async function fetchRunningGrills(): Promise<GrillAwaitingResponse> {
+  const res = await apiFetch('/api/v1/grill?state=running')
+  if (!res.ok) throw new Error(await errorMessage(res, 'list running interviews failed'))
+  return res.json()
+}
+
+// The running feed is what turns a repo's switcher icon teal, so it polls at the
+// awaiting feed's cadence: a session that starts or settles shows within one poll.
+export const runningGrillsQueryOptions = () =>
+  queryOptions({
+    queryKey: runningGrillsQueryKey,
+    queryFn: fetchRunningGrills,
+    staleTime: 10_000,
+    refetchInterval: 5_000,
+  })
+
 // sortAwaiting ranks the awaiting feed the way the inbox ranks attention: a session
 // blocked on a live question leads a parked or stalled one, then latest activity
 // first. A session with no readable timestamp sorts after everything dated.

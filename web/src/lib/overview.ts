@@ -275,6 +275,50 @@ export function repoBadgeState(states: SessionState[]): RepoBadgeState {
   return "idle";
 }
 
+// ActivityCounts is what is at work in a repo right now: loops the hub is running,
+// interviews and research sessions mid-turn.
+export interface ActivityCounts {
+  loops: number;
+  interviews: number;
+  research: number;
+}
+
+export interface RepoBadge extends ActivityCounts {
+  state: RepoBadgeState;
+}
+
+const ACTIVITY_LABELS: [keyof ActivityCounts, string, string][] = [
+  ["loops", "loop", "loops"],
+  ["interviews", "interview", "interviews"],
+  ["research", "research", "research"],
+];
+
+// activityBreakdown is the tooltip line a teal icon owes the user — "2 loops · 1
+// research" — naming only the parts that are running, and empty when nothing is.
+export function activityBreakdown(activity: ActivityCounts): string {
+  return ACTIVITY_LABELS.filter(([key]) => activity[key] > 0)
+    .map(([key, one, many]) => {
+      const n = activity[key];
+      return `${n} ${n === 1 ? one : many}`;
+    })
+    .join(" · ");
+}
+
+// sumActivity totals what several repos are running, for the surfaces that stand
+// for more than one: a folded project's header, the All-repos trigger.
+export function sumActivity(
+  activities: readonly ActivityCounts[],
+): ActivityCounts {
+  return activities.reduce(
+    (total, a) => ({
+      loops: total.loops + a.loops,
+      interviews: total.interviews + a.interviews,
+      research: total.research + a.research,
+    }),
+    { loops: 0, interviews: 0, research: 0 },
+  );
+}
+
 // reposBadgeState folds several repos' badges into one, on the same precedence
 // repoBadgeState uses: a collapsed group must not hide a member that is running
 // or wants a hand.
