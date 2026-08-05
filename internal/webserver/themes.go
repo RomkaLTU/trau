@@ -10,14 +10,16 @@ import (
 
 // ThemeView is one theme as the themes resource lists it. Modes names the
 // polarities the theme paints; a surface asked for any other mode keeps its
-// built-in palette.
+// built-in palette. Roles carries each defined mode's authored role colors, so a
+// picker can paint every theme's swatch without resolving a palette per theme.
 type ThemeView struct {
-	Slug    string   `json:"slug"`
-	Name    string   `json:"name"`
-	Author  string   `json:"author,omitempty"`
-	Version string   `json:"version,omitempty"`
-	Modes   []string `json:"modes"`
-	Origin  string   `json:"origin"`
+	Slug    string                       `json:"slug"`
+	Name    string                       `json:"name"`
+	Author  string                       `json:"author,omitempty"`
+	Version string                       `json:"version,omitempty"`
+	Modes   []string                     `json:"modes"`
+	Roles   map[string]map[string]string `json:"roles"`
+	Origin  string                       `json:"origin"`
 }
 
 // ThemesResponse is the /api/v1/themes resource: the themes this build carries,
@@ -49,12 +51,18 @@ func (s *Server) handleThemes(w http.ResponseWriter, r *http.Request) {
 	bundled := theme.Bundled()
 	views := make([]ThemeView, 0, len(bundled))
 	for _, t := range bundled {
+		modes := t.DefinedModes()
+		roles := make(map[string]map[string]string, len(modes))
+		for _, mode := range modes {
+			roles[mode], _ = t.ModeRoles(mode)
+		}
 		views = append(views, ThemeView{
 			Slug:    t.Slug,
 			Name:    t.Name,
 			Author:  t.Author,
 			Version: t.Version,
-			Modes:   t.DefinedModes(),
+			Modes:   modes,
+			Roles:   roles,
 			Origin:  theme.OriginBundled,
 		})
 	}

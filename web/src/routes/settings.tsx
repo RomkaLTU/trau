@@ -28,6 +28,7 @@ import {
 } from '@/components/trau/settings-editor'
 import { PhaseMatrix } from '@/components/trau/settings-matrix'
 import { ThemeGrid } from '@/components/trau/settings-theme-grid'
+import { ThemePicker } from '@/components/trau/settings-appearance'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
 import { configQueryOptions, type ConfigKey } from '@/lib/config'
@@ -39,8 +40,9 @@ import {
 import { matchesProjectDefaults } from '@/lib/projects'
 import { matchesTeamSync } from '@/lib/teamsync'
 import {
+  APPEARANCE_SECTION,
   ROUTING_SECTION,
-  THEME_SECTION,
+  THEME_KEY,
   deriveSections,
   displayValue,
   isModified,
@@ -226,6 +228,25 @@ function ConfigView({ repo }: { repo: string }) {
     />
   )
 
+  // THEME renders as the picker wherever it shows up; a THEME the hub refuses to
+  // write over the web keeps the plain read-only row.
+  const themeItemIn = (section: Section, items: ConfigKey[]) =>
+    section.group === APPEARANCE_SECTION
+      ? items.find((k) => k.key === THEME_KEY && k.editable)
+      : undefined
+
+  const pickerFor = (item: ConfigKey, section: Section) => (
+    <div className="border-b border-border/60 p-4">
+      <ThemePicker
+        repo={repo}
+        item={item}
+        layers={layers}
+        hubRestart={section.hubRestart}
+        onSaved={handleSaved}
+      />
+    </div>
+  )
+
   const advancedBody = (section: Section) => {
     const editorProps = {
       repo,
@@ -245,7 +266,7 @@ function ConfigView({ repo }: { repo: string }) {
       )
     }
 
-    if (section.group === THEME_SECTION) {
+    if (section.group === APPEARANCE_SECTION) {
       const colorKeys = section.advancedKeys.filter((k) => k.kind === 'color')
       const otherKeys = section.advancedKeys.filter((k) => k.kind !== 'color')
       return (
@@ -267,12 +288,16 @@ function ConfigView({ repo }: { repo: string }) {
     if (searching) {
       const matched = section.keys.filter((k) => matchesQuery(k, query))
       if (matched.length === 0) return null
+      const matchedTheme = themeItemIn(section, matched)
       return (
         <section key={section.id} id={section.id} className="scroll-mt-6">
           <TerminalCard title={section.group} bodyClassName="p-0">
             <div className="flex flex-col">
               <SectionDescription section={section} />
-              {matched.map((item) => rowFor(item, section))}
+              {matchedTheme && pickerFor(matchedTheme, section)}
+              {matched
+                .filter((item) => item !== matchedTheme)
+                .map((item) => rowFor(item, section))}
             </div>
           </TerminalCard>
         </section>
@@ -281,13 +306,17 @@ function ConfigView({ repo }: { repo: string }) {
 
     const isExpanded = Boolean(expanded[section.id])
     const advancedCount = section.advancedKeys.length
+    const themeItem = themeItemIn(section, section.primaryKeys)
 
     return (
       <section key={section.id} id={section.id} className="scroll-mt-6">
         <TerminalCard title={section.group} bodyClassName="p-0">
           <div className="flex flex-col">
             <SectionDescription section={section} />
-            {section.primaryKeys.map((item) => rowFor(item, section))}
+            {themeItem && pickerFor(themeItem, section)}
+            {section.primaryKeys
+              .filter((item) => item !== themeItem)
+              .map((item) => rowFor(item, section))}
             {advancedCount > 0 && (
               <>
                 {isExpanded && advancedBody(section)}

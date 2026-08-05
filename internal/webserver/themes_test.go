@@ -64,6 +64,63 @@ func TestThemesListsBundledSetAndResolvesDefault(t *testing.T) {
 	}
 }
 
+// A swatch shows the theme, not the repo's resolution of it, so the seeded
+// THEME_BRAND override must not reach any card's brand color.
+func TestThemesCarryTheirSwatchRoles(t *testing.T) {
+	home := t.TempDir()
+	root := seedConfigRepo(t, home, "acme")
+	if err := os.WriteFile(config.ProjectConfigPath(root), []byte("THEME_BRAND=#ff0000\n"), 0o644); err != nil {
+		t.Fatalf("seed project config: %v", err)
+	}
+	ts := instancesServer(t, home)
+
+	bySlug := map[string]ThemeView{}
+	for _, view := range getThemes(t, ts, "?repo=acme").Themes {
+		bySlug[view.Slug] = view
+	}
+
+	cases := []struct {
+		slug string
+		mode string
+		role string
+		want string
+	}{
+		{"nord", theme.ModeDark, "surface", "#3b4252"},
+		{"nord", theme.ModeDark, "brand", "#88c0d0"},
+		{"nord", theme.ModeLight, "text", "#2e3440"},
+		{"gruvbox", theme.ModeLight, "accent", "#8f3f71"},
+		{"gruvbox", theme.ModeDark, "error", "#fb4934"},
+		{"default", theme.ModeDark, "brand", "#ff7a18"},
+		{"default", theme.ModeLight, "success", "#0f9d63"},
+	}
+	for _, tc := range cases {
+		view, ok := bySlug[tc.slug]
+		if !ok {
+			t.Fatalf("themes is missing %s", tc.slug)
+		}
+		if got := view.Roles[tc.mode][tc.role]; got != tc.want {
+			t.Errorf("%s %s.%s = %q, want %q", tc.slug, tc.mode, tc.role, got, tc.want)
+		}
+	}
+
+	for slug, view := range bySlug {
+		if len(view.Roles) != len(view.Modes) {
+			t.Errorf("%s carries %d role sets for %d modes", slug, len(view.Roles), len(view.Modes))
+		}
+		for _, mode := range view.Modes {
+			roles := view.Roles[mode]
+			if len(roles) != len(theme.Roles) {
+				t.Errorf("%s %s carries %d roles, want %d", slug, mode, len(roles), len(theme.Roles))
+			}
+			for _, role := range theme.Roles {
+				if _, err := theme.ParseColor(roles[role]); err != nil {
+					t.Errorf("%s %s.%s: %v", slug, mode, role, err)
+				}
+			}
+		}
+	}
+}
+
 func TestThemesFollowsTheRepoConfig(t *testing.T) {
 	home := t.TempDir()
 	root := seedConfigRepo(t, home, "acme")

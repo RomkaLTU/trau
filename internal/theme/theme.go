@@ -177,6 +177,26 @@ func (t Theme) DefinedModes() []string {
 	return out
 }
 
+// ModeRoles returns a mode's roles exactly as the theme authored them,
+// normalized to hex: no derivation, no terminal re-points and no config
+// overrides, so a preview swatch paints the theme itself rather than the palette
+// one repo resolves it to. ok is false when the theme does not define the mode.
+func (t Theme) ModeRoles(mode string) (map[string]string, bool) {
+	m, ok := t.Modes[mode]
+	if !ok {
+		return nil, false
+	}
+	out := make(map[string]string, len(Roles))
+	for _, role := range Roles {
+		c, err := ParseColor(m.Roles[role])
+		if err != nil {
+			continue
+		}
+		out[role] = c.Hex()
+	}
+	return out, true
+}
+
 // ModeName maps a background polarity onto a mode name.
 func ModeName(dark bool) string {
 	if dark {

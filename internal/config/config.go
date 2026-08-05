@@ -1804,6 +1804,7 @@ const (
 	sectionAgent     = "Agent runtime"
 	sectionHub       = "Hub & web server"
 	sectionRetention = "Retention"
+	sectionAppear    = "Appearance"
 	sectionTUI       = "TUI & notifications"
 	sectionTimeLog   = "Time logging"
 	sectionPaths     = "Paths & misc"
@@ -1814,8 +1815,8 @@ const (
 var configSections = []string{
 	sectionTracker, sectionGit, sectionCI, sectionProviders, sectionRouting,
 	sectionPipeline, sectionVerify, sectionCost, sectionGrilling, sectionSkills,
-	sectionTeam, sectionAgent, sectionHub, sectionRetention, sectionTUI,
-	sectionTimeLog, sectionPaths,
+	sectionTeam, sectionAgent, sectionHub, sectionRetention, sectionAppear,
+	sectionTUI, sectionTimeLog, sectionPaths,
 }
 
 // ConfigSections returns the canonical catalog Section order shared by the web
@@ -1921,7 +1922,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "VERIFY_PANEL_POLICY", Group: sectionVerify, WebEditable: true, Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
 		{Key: "PANEL_PARALLEL", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Run verify panel members concurrently so panel wall clock is the slowest member, not the sum; set 0 when concurrent member test runs collide (shared DB, ports, build artifacts) (1 = yes, 0 = no)", Bool: true},
 		{Key: "TRAU_TUI", Group: sectionTUI, Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
-		{Key: "THEME", Group: sectionTUI, WebEditable: true, Default: theme.DefaultSlug, Description: "Color theme for both surfaces: the terminal UI's palette and the web UI's variables", Options: theme.Slugs()},
+		{Key: "THEME", Group: sectionAppear, WebEditable: true, Default: theme.DefaultSlug, Description: "Color theme for both surfaces: the terminal UI's palette and the web UI's variables", Options: theme.Slugs()},
 		{Key: "EPIC_FLOW", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
 		{Key: "EPIC_STACKED_PRS", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "0", Description: "Epic slices chain as a native GitHub stack instead of fanning into an epic branch (experimental; requires GitHub's stacked-PRs preview)", Bool: true},
 		{Key: "NOTIFY", Group: sectionTUI, WebEditable: true, Default: "0", Description: "Desktop notifications on pause, quarantine, and session end (opt-in; 1 = yes, 0 = no)", Bool: true},
@@ -2016,7 +2017,7 @@ func KnownKeys() []KeyMeta {
 	for _, role := range ThemeRoles {
 		keys = append(keys, KeyMeta{
 			Key:         "THEME_" + strings.ToUpper(role),
-			Group:       sectionTUI,
+			Group:       sectionAppear,
 			Kind:        "color",
 			WebEditable: true,
 			Advanced:    true,

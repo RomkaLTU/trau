@@ -79,9 +79,58 @@ function defaultHint(item: ConfigKey): string {
     : item.default
 }
 
-function initialTarget(item: ConfigKey, layers: string[]): string {
+export function initialTarget(item: ConfigKey, layers: string[]): string {
   if (item.layer === 'user') return 'user'
   return layers[0] ?? 'project'
+}
+
+export function WriteTarget({
+  item,
+  layers,
+  value,
+  onChange,
+}: {
+  item: ConfigKey
+  layers: string[]
+  value: string
+  onChange: (target: string) => void
+}) {
+  return (
+    <span className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">
+      write to:
+      <SegmentedControl
+        aria-label={`${item.key} write target`}
+        options={layers.map((l) => ({ value: l, label: l }))}
+        value={value}
+        onChange={onChange}
+      />
+    </span>
+  )
+}
+
+export function LayerHint({
+  target,
+  hubRestart,
+}: {
+  target: string
+  hubRestart: boolean
+}) {
+  return (
+    <p className="font-mono text-[0.7rem] text-faint">
+      {target === 'user'
+        ? 'user layer applies to every repo on this machine'
+        : 'project layer applies only to this repo'}
+      {hubRestart && ' · applies on hub restart'}
+    </p>
+  )
+}
+
+export function WriteError({ error }: { error: unknown }) {
+  return (
+    <p className="font-mono text-xs text-fail" role="alert">
+      {String((error as Error).message)}
+    </p>
+  )
 }
 
 function draftIsValid(item: ConfigKey, draft: string): boolean {
@@ -143,15 +192,12 @@ export function InlineEditor({
       {warning && <ValueWarning text={warning} />}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <span className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">
-          write to:
-          <SegmentedControl
-            aria-label={`${item.key} write target`}
-            options={layers.map((l) => ({ value: l, label: l }))}
-            value={target}
-            onChange={setTarget}
-          />
-        </span>
+        <WriteTarget
+          item={item}
+          layers={layers}
+          value={target}
+          onChange={setTarget}
+        />
         <span className="font-mono text-[0.7rem] text-faint">
           default: {defaultHint(item)}
         </span>
@@ -201,18 +247,9 @@ export function InlineEditor({
         </p>
       )}
 
-      <p className="font-mono text-[0.7rem] text-faint">
-        {target === 'user'
-          ? 'user layer applies to every repo on this machine'
-          : 'project layer applies only to this repo'}
-        {hubRestart && ' · applies on hub restart'}
-      </p>
+      <LayerHint target={target} hubRestart={hubRestart} />
 
-      {mutation.error && (
-        <p className="font-mono text-xs text-fail">
-          {String((mutation.error as Error).message)}
-        </p>
-      )}
+      {mutation.error && <WriteError error={mutation.error} />}
     </div>
   )
 }

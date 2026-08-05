@@ -142,14 +142,12 @@ function loadCachedPalettes(): Palettes {
   }
 }
 
-// initPalettes paints the last known palette first — the cache is also what the
-// pre-paint script in index.html reads — then reconciles with the hub. The
-// project scope decides whose THEME applies, so a repo that sets its own theme
-// wins while it is the selected project.
-export async function initPalettes(): Promise<void> {
-  const cached = loadCachedPalettes()
-  if (cached.light || cached.dark) applyPalettes(cached)
-  const scope = loadStoredScope()
+// refreshPalettes re-reads the resolved palettes from the hub and repaints. repo
+// names whose THEME applies; omitting it falls back to the stored project scope,
+// which is what a reload resolves. Callers use it after writing THEME so the new
+// theme lands without one.
+export async function refreshPalettes(repo?: string): Promise<void> {
+  const scope = repo ?? loadStoredScope()
   try {
     const res = await fetchThemes(
       scope && scope !== ALL_SCOPE ? scope : undefined,
@@ -161,4 +159,14 @@ export async function initPalettes(): Promise<void> {
     // A hub that cannot answer leaves the cached or built-in palette in place;
     // the connectivity surfaces already report an unreachable hub.
   }
+}
+
+// initPalettes paints the last known palette first — the cache is also what the
+// pre-paint script in index.html reads — then reconciles with the hub. The
+// project scope decides whose THEME applies, so a repo that sets its own theme
+// wins while it is the selected project.
+export async function initPalettes(): Promise<void> {
+  const cached = loadCachedPalettes()
+  if (cached.light || cached.dark) applyPalettes(cached)
+  await refreshPalettes()
 }
