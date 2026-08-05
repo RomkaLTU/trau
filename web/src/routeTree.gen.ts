@@ -20,6 +20,7 @@ import { Route as LoopRouteImport } from './routes/loop'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as InboxRouteImport } from './routes/inbox'
+import { Route as HubRouteImport } from './routes/hub'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as BacklogRouteImport } from './routes/backlog'
 import { Route as AtlasRouteImport } from './routes/atlas'
@@ -85,6 +86,11 @@ const InboxRoute = InboxRouteImport.update({
   path: '/inbox',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HubRoute = HubRouteImport.update({
+  id: '/hub',
+  path: '/hub',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const CostsRoute = CostsRouteImport.update({
   id: '/costs',
   path: '/costs',
@@ -138,6 +144,7 @@ export interface FileRoutesByFullPath {
   '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
+  '/hub': typeof HubRoute
   '/inbox': typeof InboxRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
@@ -160,6 +167,7 @@ export interface FileRoutesByTo {
   '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
+  '/hub': typeof HubRoute
   '/inbox': typeof InboxRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
@@ -183,6 +191,7 @@ export interface FileRoutesById {
   '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
+  '/hub': typeof HubRoute
   '/inbox': typeof InboxRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
@@ -207,6 +216,7 @@ export interface FileRouteTypes {
     | '/atlas'
     | '/backlog'
     | '/costs'
+    | '/hub'
     | '/inbox'
     | '/instances'
     | '/lessons'
@@ -229,6 +239,7 @@ export interface FileRouteTypes {
     | '/atlas'
     | '/backlog'
     | '/costs'
+    | '/hub'
     | '/inbox'
     | '/instances'
     | '/lessons'
@@ -251,6 +262,7 @@ export interface FileRouteTypes {
     | '/atlas'
     | '/backlog'
     | '/costs'
+    | '/hub'
     | '/inbox'
     | '/instances'
     | '/lessons'
@@ -274,6 +286,7 @@ export interface RootRouteChildren {
   AtlasRoute: typeof AtlasRoute
   BacklogRoute: typeof BacklogRoute
   CostsRoute: typeof CostsRoute
+  HubRoute: typeof HubRoute
   InboxRoute: typeof InboxRoute
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
@@ -370,6 +383,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InboxRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/hub': {
+      id: '/hub'
+      path: '/hub'
+      fullPath: '/hub'
+      preLoaderRoute: typeof HubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/costs': {
       id: '/costs'
       path: '/costs'
@@ -442,6 +462,7 @@ const rootRouteChildren: RootRouteChildren = {
   AtlasRoute: AtlasRoute,
   BacklogRoute: BacklogRoute,
   CostsRoute: CostsRoute,
+  HubRoute: HubRoute,
   InboxRoute: InboxRoute,
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,

@@ -297,7 +297,7 @@ export function Sidebar({
           <dt className="text-muted-foreground/60">cli</dt>
           <dd className="flex min-w-0 items-center gap-1.5">
             <Link
-              to="/settings"
+              to="/hub"
               hash="updates"
               title={hint ?? cliLabel ?? 'unavailable'}
               className="inline-flex min-w-0 items-center gap-1.5 text-foreground/75 transition-colors hover:text-foreground"

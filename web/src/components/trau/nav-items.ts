@@ -11,6 +11,7 @@ import {
   Network,
   Puzzle,
   RefreshCw,
+  Server,
   Settings,
   SquareTerminal,
   type LucideIcon,
@@ -93,6 +94,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: 'New project', icon: FolderPlus, to: '/projects/new' },
       { label: 'Skills', icon: Puzzle, to: '/skills' },
       { label: 'Settings', icon: Settings, to: '/settings' },
+      { label: 'Hub', icon: Server, to: '/hub' },
     ],
   },
 ]

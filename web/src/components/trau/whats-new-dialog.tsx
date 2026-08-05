@@ -123,11 +123,11 @@ export function WhatsNewDialog({
                   className="w-fit font-mono text-xs"
                 >
                   <Link
-                    to="/settings"
+                    to="/hub"
                     hash="updates"
                     onClick={() => onOpenChange(false)}
                   >
-                    Go to Settings
+                    Go to Hub
                   </Link>
                 </Button>
               </>

@@ -441,7 +441,7 @@ export function CommandPalette({
     onSuccess: (status) => {
       queryClient.setQueryData(updateQueryOptions.queryKey, status)
       toast.success(updateCheckMessage(status))
-      void navigate({ to: '/settings', hash: 'updates' })
+      void navigate({ to: '/hub', hash: 'updates' })
     },
     onError: toastError,
   })
