@@ -795,15 +795,19 @@ type Pipeline struct {
 	// provider ran and which skills its session loaded — the inputs to the
 	// post-build no-skills warning. buildSkillsKnown is false in the Unknown state,
 	// which suppresses the warning so a lost transcript never reads as a skill-less build.
-	buildProvider    string
-	buildSkills      []string
-	buildSkillsKnown bool
+	// buildSkillAttempts holds the names the agent typed at the Skill tool that
+	// loaded nothing — a rejected call or a sighting matching no installed skill.
+	buildProvider      string
+	buildSkills        []string
+	buildSkillsKnown   bool
+	buildSkillAttempts []string
 
 	// verifyProvider/verifySkills mirror the build capture for the primary
 	// verify call — the inputs to the post-verify no-skills warning.
-	verifyProvider    string
-	verifySkills      []string
-	verifySkillsKnown bool
+	verifyProvider      string
+	verifySkills        []string
+	verifySkillsKnown   bool
+	verifySkillAttempts []string
 
 	// qaRoster is the roster the verify prompt was built from, held so the
 	// capture ingest can tell a newly discovered credential from one the
@@ -1809,21 +1813,28 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 
 const noSkillsWarning = "build loaded no skills — the repo has skills installed but the agent used none"
 
-// warnBuildWithoutSkills flags a build that loaded none of the skills its prompt
-// named. Advisory only — the run proceeds. It prints to the console/TUI and, in
-// serve mode, records a durable event so the web UI surfaces the same warning a
-// headless run would otherwise bury. It fires only on a confirmed empty set; the
-// Unknown state (buildSkillsKnown false) stays silent.
+// warnBuildWithoutSkills flags what a build did with the skills its prompt named:
+// a per-skill warning for each named skill the agent tried to load and could not,
+// and — when the build loaded nothing at all — the blanket no-skills warning.
+// Advisory only, the run proceeds. Both print to the console/TUI and, in serve
+// mode, record a durable event. They fire only on confirmed evidence; the Unknown
+// state (buildSkillsKnown false) stays silent.
 func (p *Pipeline) warnBuildWithoutSkills(id string, named []string) {
 	if p.skillsModeFor(agent.PhaseBuild) == skillsModeInject {
 		return
 	}
-	if p.SkillsExpected == nil || len(named) == 0 || len(p.buildSkills) > 0 || !p.buildSkillsKnown || !p.SkillsExpected(p.buildProvider) {
+	if p.SkillsExpected == nil || len(named) == 0 || !p.buildSkillsKnown || !p.SkillsExpected(p.buildProvider) {
 		return
 	}
-	p.logf("  ⚠ %s", noSkillsWarning)
+	fails := failedSkillLoads(named, p.buildSkills, p.buildSkillAttempts)
+	p.warnSkillLoadFailures(id, "build", fails)
+	if len(p.buildSkills) > 0 {
+		return
+	}
+	msg, fields := noSkillsMessage(id, "build", noSkillsWarning, fails)
+	p.logf("  ⚠ %s", msg)
 	if p.Events != nil {
-		p.Events.Emit(event.KindBuildNoSkills, "build", noSkillsWarning, map[string]any{"ticket": id})
+		p.Events.Emit(event.KindBuildNoSkills, "build", msg, fields)
 	}
 }
 
@@ -2390,20 +2401,27 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 
 const verifyNoSkillsWarning = "verify loaded no skills — the repo has skills installed but the agent used none"
 
-// warnVerifyWithoutSkills flags a primary verify attempt that loaded none of the
-// skills its prompt named, mirroring warnBuildWithoutSkills: a console/TUI line
-// plus, in serve mode, a durable verify_no_skills event. Called once per Verify,
-// after the first attempt only, so a run emits the event at most once.
+// warnVerifyWithoutSkills flags what a primary verify attempt did with the skills
+// its prompt named, mirroring warnBuildWithoutSkills: a per-skill warning for each
+// failed load plus, when nothing loaded, the blanket verify_no_skills event.
+// Called once per Verify, after the first attempt only, so a run emits each event
+// at most once.
 func (p *Pipeline) warnVerifyWithoutSkills(id string, named []string) {
 	if p.skillsModeFor(agent.PhaseVerify) == skillsModeInject {
 		return
 	}
-	if p.SkillsExpected == nil || len(named) == 0 || len(p.verifySkills) > 0 || !p.verifySkillsKnown || !p.SkillsExpected(p.verifyProvider) {
+	if p.SkillsExpected == nil || len(named) == 0 || !p.verifySkillsKnown || !p.SkillsExpected(p.verifyProvider) {
 		return
 	}
-	p.logf("  ⚠ %s", verifyNoSkillsWarning)
+	fails := failedSkillLoads(named, p.verifySkills, p.verifySkillAttempts)
+	p.warnSkillLoadFailures(id, "verify", fails)
+	if len(p.verifySkills) > 0 {
+		return
+	}
+	msg, fields := noSkillsMessage(id, "verify", verifyNoSkillsWarning, fails)
+	p.logf("  ⚠ %s", msg)
 	if p.Events != nil {
-		p.Events.Emit(event.KindVerifyNoSkills, "verify", verifyNoSkillsWarning, map[string]any{"ticket": id})
+		p.Events.Emit(event.KindVerifyNoSkills, "verify", msg, fields)
 	}
 }
 
@@ -3718,8 +3736,10 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 	switch phase {
 	case "build":
 		p.buildSkills, p.buildProvider, p.buildSkillsKnown = res.Skills, phaseProvider(runner, phase), res.SkillsKnown
+		p.buildSkillAttempts = skillAttempts(res)
 	case "verify":
 		p.verifySkills, p.verifyProvider, p.verifySkillsKnown = res.Skills, phaseProvider(runner, phase), res.SkillsKnown
+		p.verifySkillAttempts = skillAttempts(res)
 	}
 	p.putPhaseLog(id, phase, res.Final)
 	return res.Final, err

@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -76,6 +77,82 @@ func TestParseTranscriptCountsSubagentDispatches(t *testing.T) {
 	}
 	if st.Explores != 2 {
 		t.Errorf("Explores = %d, want 2", st.Explores)
+	}
+}
+
+// TestParseTranscriptSettlesSkillCallsByResult is the COD-1502 guard: Claude
+// Code's Skill tool is exact-match only, so a name the model re-typed with spaces
+// comes back an error and the phase runs without that skill. The transcript's
+// tool_results decide — a rejected call is a failed attempt, never a load, even
+// when its input is a near-miss the live snapper would happily settle, and a
+// retry that succeeds counts as loaded regardless of what preceded it.
+func TestParseTranscriptSettlesSkillCallsByResult(t *testing.T) {
+	skillCall := func(id, name string) string {
+		return `{"type":"assistant","message":{"usage":{"input_tokens":1,"output_tokens":1},"content":[{"type":"tool_use","id":"` + id + `","name":"Skill","input":{"skill":"` + name + `"}}]}}`
+	}
+	result := func(id string, isErr bool) string {
+		return `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"` + id + `","is_error":` + map[bool]string{true: "true", false: "false"}[isErr] + `}]}}`
+	}
+
+	cases := []struct {
+		name       string
+		lines      []string
+		wantLoaded []string
+		wantFailed []string
+	}{
+		{
+			name:       "successful call loads",
+			lines:      []string{skillCall("t1", "tdd"), result("t1", false)},
+			wantLoaded: []string{"tdd"},
+		},
+		{
+			name:       "rejected call is an attempt, not a load",
+			lines:      []string{skillCall("t1", "vercel- react- best- practices"), result("t1", true)},
+			wantFailed: []string{"vercel- react- best- practices"},
+		},
+		{
+			name:       "a near-miss the snapper would settle still fails",
+			lines:      []string{skillCall("t1", "code- review"), result("t1", true)},
+			wantFailed: []string{"code- review"},
+		},
+		{
+			name: "one loads while another fails",
+			lines: []string{
+				skillCall("t1", "tdd"), result("t1", false),
+				skillCall("t2", "vercel- react- best- practices"), result("t2", true),
+			},
+			wantLoaded: []string{"tdd"},
+			wantFailed: []string{"vercel- react- best- practices"},
+		},
+		{
+			name: "a successful retry loads the skill",
+			lines: []string{
+				skillCall("t1", "vercel- react- best- practices"), result("t1", true),
+				skillCall("t2", "vercel-react-best-practices"), result("t2", false),
+			},
+			wantLoaded: []string{"vercel-react-best-practices"},
+			wantFailed: []string{"vercel- react- best- practices"},
+		},
+		{
+			name:       "a call whose result never landed still counts as loaded",
+			lines:      []string{skillCall("t1", "tdd")},
+			wantLoaded: []string{"tdd"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, ok := parseTranscript(strings.NewReader(strings.Join(tc.lines, "\n")))
+			if !ok {
+				t.Fatal("parseTranscript reported no usage-bearing lines")
+			}
+			if !reflect.DeepEqual(st.Skills, tc.wantLoaded) {
+				t.Errorf("Skills = %v, want %v", st.Skills, tc.wantLoaded)
+			}
+			if !reflect.DeepEqual(st.SkillsFailed, tc.wantFailed) {
+				t.Errorf("SkillsFailed = %v, want %v", st.SkillsFailed, tc.wantFailed)
+			}
+		})
 	}
 }
 

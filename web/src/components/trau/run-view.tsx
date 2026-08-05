@@ -183,6 +183,12 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyphClass: "text-warn",
         text: ev.msg || "build loaded no skills",
       };
+    case "skill_load_failed":
+      return {
+        glyph: "⚠",
+        glyphClass: "text-warn",
+        text: ev.msg || "a Skill call failed",
+      };
     case "test_gate": {
       const failed = fieldStr(ev, "result") === "fail";
       return {
