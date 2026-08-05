@@ -124,6 +124,100 @@ func TestReadSkipsUnsafeAndMissingFiles(t *testing.T) {
 	}
 }
 
+func TestReadFallsBackToDirectoryImages(t *testing.T) {
+	ticket := "COD-1146-" + t.Name()
+	t.Cleanup(func() { Remove(ticket) })
+
+	Reset(ticket)
+	writeShot(t, ticket, "02-dashboard.png")
+	writeShot(t, ticket, "01-login.png")
+	if err := os.WriteFile(filepath.Join(Dir(ticket), "notes.txt"), []byte("not a screenshot"), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+
+	man, shots, err := Read(ticket)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if man.TraceDir != "" {
+		t.Errorf("trace_dir = %q, want empty without a manifest", man.TraceDir)
+	}
+	if len(shots) != 2 {
+		t.Fatalf("read %d screenshots, want the 2 images with the text file skipped", len(shots))
+	}
+	if shots[0].Filename != "01-login.png" || shots[1].Filename != "02-dashboard.png" {
+		t.Errorf("fallback order = %q, %q, want filename order", shots[0].Filename, shots[1].Filename)
+	}
+	if shots[0].MimeType != "image/png" {
+		t.Errorf("shot 0 mime = %q, want image/png", shots[0].MimeType)
+	}
+}
+
+func TestReadFallsBackWhenManifestNamesNothingReadable(t *testing.T) {
+	ticket := "COD-1146-" + t.Name()
+	t.Cleanup(func() { Remove(ticket) })
+
+	writeManifest(t, ticket, Manifest{
+		TraceDir:    "/tmp/rec/abc",
+		Screenshots: []ManifestShot{{File: "never-saved.png", Caption: "missing"}},
+	})
+	writeShot(t, ticket, "actual.png")
+
+	man, shots, err := Read(ticket)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if man.TraceDir != "/tmp/rec/abc" {
+		t.Errorf("trace_dir = %q, want the manifest's still honored", man.TraceDir)
+	}
+	if len(shots) != 1 || shots[0].Filename != "actual.png" {
+		t.Fatalf("read %+v, want the saved actual.png", shots)
+	}
+}
+
+func TestReadFallsBackWhenManifestUnparseable(t *testing.T) {
+	ticket := "COD-1146-" + t.Name()
+	t.Cleanup(func() { Remove(ticket) })
+
+	Reset(ticket)
+	// A fenced manifest is a plausible agent write; it must cost the run its
+	// captions, not its screenshots.
+	fenced := "```json\n{\"trace_dir\": \"/tmp/rec/abc\", \"screenshots\": []}\n```"
+	if err := os.WriteFile(filepath.Join(Dir(ticket), "manifest.json"), []byte(fenced), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	writeShot(t, ticket, "01-shot.png")
+
+	_, shots, err := Read(ticket)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(shots) != 1 || shots[0].Filename != "01-shot.png" {
+		t.Fatalf("read %+v, want the saved 01-shot.png despite the unparseable manifest", shots)
+	}
+}
+
+func TestResetCreatesEmptyDir(t *testing.T) {
+	ticket := "COD-1146-" + t.Name()
+	t.Cleanup(func() { Remove(ticket) })
+
+	writeManifest(t, ticket, Manifest{})
+	writeShot(t, ticket, "stale.png")
+
+	Reset(ticket)
+
+	entries, err := os.ReadDir(Dir(ticket))
+	if err != nil {
+		t.Fatalf("ReadDir after Reset: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Reset left %d entrie(s) behind, want an empty contract directory", len(entries))
+	}
+	if _, _, err := Read(ticket); !errors.Is(err, ErrNoManifest) {
+		t.Errorf("Read after Reset err = %v, want ErrNoManifest", err)
+	}
+}
+
 func TestRemoveClearsDir(t *testing.T) {
 	ticket := "COD-1146-" + t.Name()
 	writeManifest(t, ticket, Manifest{})

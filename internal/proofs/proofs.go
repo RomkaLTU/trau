@@ -21,9 +21,9 @@ const dirPrefix = "trau-proofs-"
 // MaxScreenshots caps how many screenshots a run harvests, matching the hub's cap.
 const MaxScreenshots = 8
 
-// ErrNoManifest reports a run that wrote no proofs manifest — the verify agent
-// never followed the proofs contract (typically because it drove no browser). It
-// is distinct from a real read error so the caller can stay silent.
+// ErrNoManifest reports a run that saved nothing to harvest — no usable manifest
+// and no screenshot file of its own — the one case the caller may stay silent
+// about, since a verify that drove no browser leaves exactly this.
 var ErrNoManifest = errors.New("no proofs manifest")
 
 // Dir is the contract directory the verify agent writes a run's proofs into.
@@ -31,6 +31,15 @@ func Dir(ticket string) string { return tmpfile.Path(dirPrefix + ticket) }
 
 // Remove drops a ticket's harvested proofs directory.
 func Remove(ticket string) { _ = os.RemoveAll(Dir(ticket)) }
+
+// Reset clears a ticket's leftover proofs and creates the contract directory, so an
+// attempt finds the path its prompt names already on disk and can never harvest an
+// earlier attempt's screenshots as its own. Best-effort: a directory the loop cannot
+// create is one the agent creates itself.
+func Reset(ticket string) {
+	Remove(ticket)
+	_ = os.MkdirAll(Dir(ticket), 0o755)
+}
 
 // Manifest is the contract file the verify agent writes alongside the screenshots.
 type Manifest struct {
@@ -53,24 +62,48 @@ type Screenshot struct {
 	Bytes    []byte
 }
 
-// Read parses a run's manifest and reads up to MaxScreenshots screenshots in
-// manifest order. A missing manifest returns ErrNoManifest. A screenshot the
-// manifest names but cannot be read is skipped rather than failing the harvest.
+// Read materializes a run's proofs: up to MaxScreenshots screenshots, in manifest
+// order, plus the manifest itself for its trace directory. A screenshot the
+// manifest names but cannot be read is skipped rather than failing the harvest,
+// and when the manifest is unusable — absent, unreadable, malformed, or naming
+// nothing readable — the directory's own image files stand in for it.
+// ErrNoManifest is returned only when there is neither a usable manifest nor a
+// single readable image, the one case the caller may stay silent about.
 func Read(ticket string) (Manifest, []Screenshot, error) {
 	dir := Dir(ticket)
-	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
-	if errors.Is(err, os.ErrNotExist) {
+	man, haveManifest := readManifest(dir)
+
+	shots := listedScreenshots(dir, man.Screenshots)
+	if len(shots) == 0 {
+		shots = scannedScreenshots(dir)
+	}
+	if !haveManifest && len(shots) == 0 {
 		return Manifest{}, nil, ErrNoManifest
 	}
+	return man, shots, nil
+}
+
+// readManifest parses the run's manifest.json, reporting false when there is no
+// usable one. A missing, unreadable or malformed manifest — a fenced or truncated
+// write is a plausible agent slip — reads as absent rather than aborting the
+// harvest: the screenshots on disk are the evidence, and losing them to a bad
+// sidecar is exactly the false "no proofs" this contract exists to avoid.
+func readManifest(dir string) (Manifest, bool) {
+	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
-		return Manifest{}, nil, err
+		return Manifest{}, false
 	}
 	var man Manifest
 	if err := json.Unmarshal(raw, &man); err != nil {
-		return Manifest{}, nil, err
+		return Manifest{}, false
 	}
-	shots := make([]Screenshot, 0, len(man.Screenshots))
-	for _, s := range man.Screenshots {
+	return man, true
+}
+
+// listedScreenshots reads the files the manifest names, in manifest order.
+func listedScreenshots(dir string, listed []ManifestShot) []Screenshot {
+	shots := make([]Screenshot, 0, min(len(listed), MaxScreenshots))
+	for _, s := range listed {
 		if len(shots) >= MaxScreenshots {
 			break
 		}
@@ -78,18 +111,50 @@ func Read(ticket string) (Manifest, []Screenshot, error) {
 		if name == "" {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil || len(body) == 0 {
+		shot, ok := readShot(dir, name)
+		if !ok {
 			continue
 		}
-		shots = append(shots, Screenshot{
-			Filename: name,
-			MimeType: detectMime(body),
-			Caption:  strings.TrimSpace(s.Caption),
-			Bytes:    body,
-		})
+		shot.Caption = strings.TrimSpace(s.Caption)
+		shots = append(shots, shot)
 	}
-	return man, shots, nil
+	return shots
+}
+
+// scannedScreenshots harvests a proofs directory that has no usable manifest: the
+// image files sitting in it, in filename order, capped like the manifest path.
+// These shots carry no caption — the hub labels them by sequence number instead.
+func scannedScreenshots(dir string) []Screenshot {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	shots := make([]Screenshot, 0, min(len(entries), MaxScreenshots))
+	for _, e := range entries {
+		if len(shots) >= MaxScreenshots {
+			break
+		}
+		if e.IsDir() {
+			continue
+		}
+		shot, ok := readShot(dir, e.Name())
+		if !ok || !strings.HasPrefix(shot.MimeType, "image/") {
+			continue
+		}
+		shots = append(shots, shot)
+	}
+	return shots
+}
+
+// readShot materializes one saved file, reporting false for a file that cannot be
+// read or is empty: a screenshot the agent named but never wrote is skipped rather
+// than failing the harvest.
+func readShot(dir, name string) (Screenshot, bool) {
+	body, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil || len(body) == 0 {
+		return Screenshot{}, false
+	}
+	return Screenshot{Filename: name, MimeType: detectMime(body), Bytes: body}, true
 }
 
 // safeName keeps a manifest-named file inside the proofs directory: a screenshot
