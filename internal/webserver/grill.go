@@ -337,6 +337,7 @@ func (s *Server) handleGrillAwaiting(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	sessions = append(sessions, s.grillApplyingSessions()...)
 	views := make([]GrillAwaitingView, len(sessions))
 	for i, sess := range sessions {
 		views[i] = GrillAwaitingView{
