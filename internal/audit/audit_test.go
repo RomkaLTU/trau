@@ -36,6 +36,7 @@ var allowedReaders = map[string]string{
 	"internal/agent/skilldrift.go":      "repo-installed skills hashed against skills-lock.json",
 	"internal/agent/skillinject.go":     "repo skills' SKILL.md bodies delivered by content",
 	"internal/checks/checks.go":         "repo .trau/checks",
+	"internal/pipeline/testgate.go":     "repo test files inventoried by the mechanical test gate",
 	"internal/skillrules/skillrules.go": "repo .trau/skills-rules.json",
 	"internal/state/gitignore.go":       "target repo .gitignore",
 
