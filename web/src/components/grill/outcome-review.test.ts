@@ -751,4 +751,30 @@ describe("OutcomeReview applying", () => {
 
     expect(el.textContent).not.toContain("Filing epic");
   });
+
+  it("reads the hub's in-flight apply on a reload that ran no mutation", () => {
+    const el = renderReview(createEpic, "linear", "linear", {
+      ...session,
+      applying: true,
+    });
+
+    expect(el.textContent).toContain("Filing epic + 1 sub-issue to Linear…");
+    expect(button("Creating…").disabled).toBe(true);
+  });
+
+  it("joins the apply another tab owns instead of reporting the refusal", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse(409, { error: "apply already in progress" }),
+      ),
+    );
+    const el = renderReview(createEpic, "linear", "linear");
+
+    await act(async () => button("Create").click());
+
+    expect(el.textContent).not.toContain("apply already in progress");
+    expect(el.textContent).toContain("Filing epic + 1 sub-issue to Linear…");
+    expect(button("Creating…").disabled).toBe(true);
+  });
 });

@@ -46,6 +46,7 @@ import {
   diffLines,
   grillAppliedOutcome,
   grillSessionsQueryOptions,
+  isApplyInProgress,
   type DiffLine,
   type GrillApplyResponse,
   type GrillApplyStep,
@@ -215,6 +216,21 @@ export function OutcomeReview({
       ),
   });
 
+  // Losing the hub's guard to another tab is not a failure to report: the card joins
+  // that apply in applying mode until the hub's own indicator takes over. The bridge
+  // expires on its own, so an apply that settles before the card ever hears it
+  // announced leaves a reviewable session rather than a stuck one.
+  const [guarded, setGuarded] = useState(false);
+  useEffect(() => {
+    if (!guarded) return;
+    if (session.applying) {
+      setGuarded(false);
+      return;
+    }
+    const timer = setTimeout(() => setGuarded(false), guardBridgeMs);
+    return () => clearTimeout(timer);
+  }, [guarded, session.applying]);
+
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
   // panel's now-settled active session back to a preview. Only the issue and board
@@ -268,6 +284,7 @@ export function OutcomeReview({
         );
       }
     },
+    onError: (err) => setGuarded(isApplyInProgress(err)),
   });
 
   const discard = useMutation({
@@ -278,7 +295,9 @@ export function OutcomeReview({
     },
   });
 
-  const applying = apply.isPending;
+  // A reload and a second tab have the hub's indicator instead of a mutation of their
+  // own.
+  const applying = apply.isPending || guarded || session.applying === true;
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     if (!applying) {
@@ -309,7 +328,9 @@ export function OutcomeReview({
 
   const failedSteps = apply.data && !apply.data.applied ? apply.data.steps : [];
   const warnings = apply.data?.warnings ?? [];
-  const busy = apply.isPending || discard.isPending;
+  const applyError =
+    apply.error && !isApplyInProgress(apply.error) ? apply.error : null;
+  const busy = applying || discard.isPending;
   const splitReady = subsAreComplete(subs);
   const createReady =
     title.trim() !== "" &&
@@ -424,10 +445,8 @@ export function OutcomeReview({
 
       {warnings.length > 0 && <WarningList warnings={warnings} />}
 
-      {apply.error && (
-        <p className="text-xs text-destructive">
-          {(apply.error as Error).message}
-        </p>
+      {applyError && (
+        <p className="text-xs text-destructive">{applyError.message}</p>
       )}
       {discard.error && (
         <p className="text-xs text-destructive">
@@ -1570,6 +1589,8 @@ function RequeueAction({ repo, ticket }: { repo: string; ticket: string }) {
 }
 
 const slowApplyMs = 8_000;
+
+const guardBridgeMs = 2_000;
 
 const PENDING_LABELS: Record<string, string> = {
   create: "Creating…",

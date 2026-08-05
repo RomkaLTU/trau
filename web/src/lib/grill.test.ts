@@ -7,6 +7,7 @@ import {
   activeFixSessionForIssue,
   activeSessionForIssue,
   applyGrill,
+  APPLY_IN_PROGRESS,
   applySessionModel,
   awaitingBreakdown,
   awaitingGrillsQueryKey,
@@ -18,12 +19,14 @@ import {
   diffLines,
   dropAwaiting,
   grillAppliedOutcome,
+  GrillApplyError,
   grillBanner,
   grillProgress,
   grillReducer,
   grillSessionsQueryOptions,
   isActiveSessionConflict,
   isAwaitingAnswer,
+  isApplyInProgress,
   isAutoAnswer,
   isGrillable,
   isOver,
@@ -314,6 +317,26 @@ describe('awaitingBreakdown', () => {
       session({ id: '2', state: 'stalled' }),
     ]
     expect(awaitingBreakdown(sessions)).toBe('1 thinking · 1 waiting · 1 stalled')
+  })
+
+  it('leads with the session whose apply the hub is still writing', () => {
+    const sessions = [
+      session({ id: '9', state: 'finished', applying: true }),
+      session({ id: '1', state: 'waiting' }),
+    ]
+    expect(awaitingBreakdown(sessions)).toBe('1 applying · 1 waiting')
+  })
+})
+
+describe('isApplyInProgress', () => {
+  it('reads only the hub guard refusing a second apply', () => {
+    expect(isApplyInProgress(new GrillApplyError(APPLY_IN_PROGRESS, 409))).toBe(true)
+  })
+
+  it('leaves every other refusal a failure to report', () => {
+    expect(isApplyInProgress(new GrillApplyError('session is already applied', 409))).toBe(false)
+    expect(isApplyInProgress(new GrillApplyError(APPLY_IN_PROGRESS, 500))).toBe(false)
+    expect(isApplyInProgress(new Error(APPLY_IN_PROGRESS))).toBe(false)
   })
 })
 

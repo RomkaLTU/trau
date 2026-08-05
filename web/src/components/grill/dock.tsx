@@ -197,6 +197,7 @@ export function InterviewDock() {
       session={tab}
       feed={{
         thinking: inflight !== null,
+        applying: tab.applying === true,
         count: standsFor.length,
         breakdown: awaitingBreakdown(standsFor),
         unread: awaiting.some((s) => hasUnseenSession(seen, s)),
@@ -211,17 +212,19 @@ export function InterviewDock() {
 // the full tab and the pill it collapses to are always speaking about the same thing.
 interface InterviewFeed {
   thinking: boolean;
+  applying: boolean;
   count: number;
   breakdown: string;
   unread: boolean;
 }
 
-function interviewLabel({ thinking }: InterviewFeed): string {
+function interviewLabel({ thinking, applying }: InterviewFeed): string {
+  if (applying) return "Applying the outcome…";
   return thinking ? "Interviewer is thinking…" : "Interview waiting";
 }
 
-function InterviewStatus({ thinking, unread }: InterviewFeed) {
-  if (thinking) {
+function InterviewStatus({ thinking, applying, unread }: InterviewFeed) {
+  if (thinking || applying) {
     return (
       <Loader2
         className="size-3 shrink-0 animate-spin text-teal"

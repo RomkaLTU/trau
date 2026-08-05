@@ -589,7 +589,7 @@ function SessionColumn({
         position={position}
         total={total}
         session={live ?? null}
-        pill={live ? inboxPill(live.state) : null}
+        pill={live ? inboxPill(live) : null}
         reconnecting={status?.stream === "error"}
         showContextToggle={hasSession}
         contextOpen={contextOpen}
@@ -711,7 +711,7 @@ function DraftColumn({
         total={total}
         draft
         session={live}
-        pill={live ? inboxPill(live.state) : null}
+        pill={live ? inboxPill(live) : null}
         reconnecting={status?.stream === "error"}
         showContextToggle={false}
         contextOpen={false}
@@ -760,7 +760,7 @@ function DoneColumn({
   contextOpen: boolean;
   onToggleContext: () => void;
 }) {
-  const pill = inboxPill(session.state);
+  const pill = inboxPill(session);
 
   return (
     <>
@@ -1425,7 +1425,7 @@ function QueueRow({
   // The row's pill answers "what is this conversation doing right now" without
   // opening it; an untouched item has no conversation to report on.
   const session = rowSession(item, live);
-  const pill = session ? inboxPill(session.state) : null;
+  const pill = session ? inboxPill(session) : null;
   return (
     <li className="group/row relative">
       <button

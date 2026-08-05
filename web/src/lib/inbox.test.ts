@@ -597,11 +597,20 @@ describe("resolveSelection", () => {
 
 describe("inboxPill", () => {
   it("reads a session from the triager’s seat", () => {
-    expect(inboxPill("waiting")).toEqual({ tone: "warn", label: "your turn" });
-    expect(inboxPill("parked")).toEqual({ tone: "warn", label: "your turn" });
-    expect(inboxPill("running")).toEqual({ tone: "active", label: "thinking" });
-    expect(inboxPill("stalled")).toEqual({ tone: "warn", label: "stalled" });
-    expect(inboxPill("finished")).toEqual({ tone: "verify", label: "review" });
+    const pill = (state: GrillState) => inboxPill(session({ state }));
+
+    expect(pill("waiting")).toEqual({ tone: "warn", label: "your turn" });
+    expect(pill("parked")).toEqual({ tone: "warn", label: "your turn" });
+    expect(pill("running")).toEqual({ tone: "active", label: "thinking" });
+    expect(pill("stalled")).toEqual({ tone: "warn", label: "stalled" });
+    expect(pill("finished")).toEqual({ tone: "verify", label: "review" });
+  });
+
+  it("has nothing for the triager to do while the hub writes the apply", () => {
+    expect(inboxPill(session({ state: "finished", applying: true }))).toEqual({
+      tone: "active",
+      label: "applying",
+    });
   });
 });
 
