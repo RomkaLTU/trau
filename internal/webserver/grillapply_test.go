@@ -1166,8 +1166,9 @@ func TestFindRepoByRoot(t *testing.T) {
 	seeded := filepath.Join(t.TempDir(), "seeded")
 	unclean := filepath.Join(t.TempDir(), "unclean") + string(filepath.Separator)
 	known := registry.Repo{Name: "ran", Root: ran, RunsDir: filepath.Join(ran, ".trau", "runs")}
-	knownUnclean := registry.Repo{Name: "unclean", Root: unclean, RunsDir: filepath.Join(unclean, ".trau", "runs")}
-	if err := stores.Registrations().Remember([]registry.Repo{known, knownUnclean}); err != nil {
+	seededUnclean := registry.Repo{Name: "unclean", Root: unclean, RunsDir: filepath.Join(unclean, ".trau", "runs")}
+	knownUnclean := registry.Repo{Name: "unclean", Root: filepath.Clean(unclean), RunsDir: filepath.Join(unclean, ".trau", "runs")}
+	if err := stores.Registrations().Remember([]registry.Repo{known, seededUnclean}); err != nil {
 		t.Fatalf("remember repo: %v", err)
 	}
 	if err := stores.Registrations().Register(web); err != nil {
@@ -1184,8 +1185,8 @@ func TestFindRepoByRoot(t *testing.T) {
 		{name: "repo registered from the web", root: web, want: workspaceRepo(web)},
 		{name: "repo from the workspace seed", root: seeded, want: workspaceRepo(seeded)},
 		{name: "trailing separator", root: web + string(filepath.Separator), want: workspaceRepo(web)},
-		{name: "known root stored with a trailing separator", root: unclean, want: knownUnclean},
-		{name: "known root stored unclean, looked up clean", root: filepath.Clean(unclean), want: knownUnclean},
+		{name: "known root remembered with a trailing separator", root: unclean, want: knownUnclean},
+		{name: "known root remembered unclean, looked up clean", root: filepath.Clean(unclean), want: knownUnclean},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

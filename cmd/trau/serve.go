@@ -142,6 +142,10 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		return console.Actionable(err, "import legacy registration state",
 			"fix or move the named file aside, then restart trau serve")
 	}
+	if err := stores.CanonicalizeRoots(); err != nil {
+		return console.Actionable(err, "merge the duplicate repo roots the hub stored",
+			fmt.Sprintf("move %s aside (mv %s %s.bak) and restart to recreate it", hubdb.Path(home), hubdb.Path(home), hubdb.Path(home)))
+	}
 	if err := stores.ImportLegacyQueues(); err != nil {
 		return console.Actionable(err, "import legacy queue state",
 			"fix or move the named queue.json aside, then restart trau serve")

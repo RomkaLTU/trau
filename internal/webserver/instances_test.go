@@ -205,7 +205,7 @@ func TestInstancesLegacyEntryReportsUnknownWithoutDeriving(t *testing.T) {
 
 func TestInstancesRetainsExitedRepos(t *testing.T) {
 	home := t.TempDir()
-	gone := registry.Repo{Name: "gone", Root: "/repo/gone", RunsDir: "/repo/gone/.trau/runs"}
+	gone := registry.Repo{Name: "gone", Root: filepath.FromSlash("/repo/gone"), RunsDir: "/repo/gone/.trau/runs"}
 
 	store := testStores(t)
 	if err := store.Registrations().Remember([]registry.Repo{gone}); err != nil {

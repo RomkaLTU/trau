@@ -101,19 +101,19 @@ func TestAddRepoGroupsInOrderAndMovesBetweenProjects(t *testing.T) {
 
 	mustAddRepo(t, p, group.ID, "/repos/api")
 	proj := mustAddRepo(t, p, group.ID, "/repos/web")
-	if want := []string{"/repos/api", "/repos/web"}; !reflect.DeepEqual(proj.Repos, want) {
+	if want := fixtureRoots("/repos/api", "/repos/web"); !reflect.DeepEqual(proj.Repos, want) {
 		t.Fatalf("members = %v, want %v in add order", proj.Repos, want)
 	}
 
 	moved := mustAddRepo(t, p, other.ID, "/repos/web")
-	if want := []string{"/repos/web"}; !reflect.DeepEqual(moved.Repos, want) {
+	if want := fixtureRoots("/repos/web"); !reflect.DeepEqual(moved.Repos, want) {
 		t.Fatalf("moved project members = %v, want %v", moved.Repos, want)
 	}
 	left, err := p.Get(group.ID)
 	if err != nil {
 		t.Fatalf("Get after move: %v", err)
 	}
-	if want := []string{"/repos/api"}; !reflect.DeepEqual(left.Repos, want) {
+	if want := fixtureRoots("/repos/api"); !reflect.DeepEqual(left.Repos, want) {
 		t.Fatalf("source project members = %v, want %v — a root belongs to one project", left.Repos, want)
 	}
 }
@@ -125,7 +125,7 @@ func TestAddRepoIsIdempotentAndKeepsPosition(t *testing.T) {
 	mustAddRepo(t, p, group.ID, "/repos/web")
 
 	proj := mustAddRepo(t, p, group.ID, "/repos/api")
-	if want := []string{"/repos/api", "/repos/web"}; !reflect.DeepEqual(proj.Repos, want) {
+	if want := fixtureRoots("/repos/api", "/repos/web"); !reflect.DeepEqual(proj.Repos, want) {
 		t.Fatalf("re-add reordered members: got %v, want %v", proj.Repos, want)
 	}
 }
@@ -166,7 +166,7 @@ func TestRemoveRepoLeavesProjectStanding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RemoveRepo: %v", err)
 	}
-	if want := []string{"/repos/web"}; !reflect.DeepEqual(proj.Repos, want) {
+	if want := fixtureRoots("/repos/web"); !reflect.DeepEqual(proj.Repos, want) {
 		t.Fatalf("members = %v, want %v", proj.Repos, want)
 	}
 	if _, err := p.RemoveRepo(group.ID, "/repos/api"); !errors.Is(err, ErrProjectRepoNotFound) {
@@ -192,7 +192,7 @@ func TestRenameKeepsIdentifierAndMembers(t *testing.T) {
 	if renamed.Name != "Core" {
 		t.Errorf("name = %q, want Core", renamed.Name)
 	}
-	if want := []string{"/repos/api"}; !reflect.DeepEqual(renamed.Repos, want) {
+	if want := fixtureRoots("/repos/api"); !reflect.DeepEqual(renamed.Repos, want) {
 		t.Errorf("members = %v, want %v", renamed.Repos, want)
 	}
 	if _, err := p.Rename(group.ID, " "); !errors.Is(err, ErrProjectNameEmpty) {
@@ -236,7 +236,7 @@ func TestDeleteDropsGroupingOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Registered: %v", err)
 	}
-	if want := []string{"/repos/api", "/repos/web"}; !reflect.DeepEqual(registered, want) {
+	if want := fixtureRoots("/repos/api", "/repos/web"); !reflect.DeepEqual(registered, want) {
 		t.Fatalf("registered = %v, want %v — deleting a project must not unregister its repos", registered, want)
 	}
 	if err := p.Delete(group.ID); !errors.Is(err, ErrProjectNotFound) {
@@ -294,7 +294,7 @@ func TestEnsureRootsLeavesGroupedRepoWhereItIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if want := []string{"/repos/api"}; !reflect.DeepEqual(proj.Repos, want) {
+	if want := fixtureRoots("/repos/api"); !reflect.DeepEqual(proj.Repos, want) {
 		t.Fatalf("grouped repo moved: members = %v, want %v", proj.Repos, want)
 	}
 	projects, err := p.List()
@@ -427,7 +427,7 @@ func TestForgetRootDropsMembershipAndVacatedProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if want := []string{"/repos/web"}; !reflect.DeepEqual(proj.Repos, want) {
+	if want := fixtureRoots("/repos/web"); !reflect.DeepEqual(proj.Repos, want) {
 		t.Fatalf("members = %v, want %v", proj.Repos, want)
 	}
 
@@ -439,5 +439,50 @@ func TestForgetRootDropsMembershipAndVacatedProject(t *testing.T) {
 	}
 	if err := p.ForgetRoot("/repos/nowhere"); err != nil {
 		t.Fatalf("ForgetRoot for an ungrouped root: %v", err)
+	}
+}
+
+// TestCanonicalizeKeepsTheProjectThatClaimedFirst covers the upgrade path: a hub
+// written before roots were canonicalized filed two spellings of one directory
+// into different projects, and the merge has to hand the directory to whichever
+// project claimed it first rather than to whichever slug sorts first.
+func TestCanonicalizeKeepsTheProjectThatClaimedFirst(t *testing.T) {
+	p := testProjects(t, t.TempDir())
+	root := fixtureRoot("/repos/acme")
+	first := mustCreateProject(t, p, "Zulu")
+	second := mustCreateProject(t, p, "Alpha")
+	seedMembership(t, p, first.ID, root)
+	seedMembership(t, p, second.ID, root+string(filepath.Separator))
+	if _, err := p.db.Exec(
+		`INSERT INTO project_tracker_seeded(root, key) VALUES(?, ?)`,
+		root+string(filepath.Separator), "LINEAR_TEAM",
+	); err != nil {
+		t.Fatalf("seed tracker key: %v", err)
+	}
+
+	if err := p.Canonicalize(); err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+
+	held, err := p.Holder(root)
+	if err != nil {
+		t.Fatalf("Holder: %v", err)
+	}
+	if held != first.ID {
+		t.Fatalf("holder = %q, want %q, the project that claimed %s first", held, first.ID, root)
+	}
+	if got := seededOf(t, p, root); !got["LINEAR_TEAM"] {
+		t.Fatalf("seeded keys = %v, want LINEAR_TEAM under the canonical root", got)
+	}
+}
+
+// seedMembership writes a membership row the way a pre-canonical hub left it,
+// under the spelling given rather than the canonical one AddRepo would store.
+func seedMembership(t *testing.T, p *Projects, id, root string) {
+	t.Helper()
+	if _, err := p.db.Exec(
+		`INSERT INTO project_repos(root, project, position) VALUES(?, ?, 1)`, root, id,
+	); err != nil {
+		t.Fatalf("seed membership %q: %v", root, err)
 	}
 }

@@ -177,6 +177,18 @@ func (s *Stores) EnsureProjects() error {
 	return s.projects.EnsureRoots(roots)
 }
 
+// CanonicalizeRoots merges the rows a hub written before roots were canonicalized
+// on the way in left holding two spellings of one repo, across the registration
+// tables and the project memberships that reference them. Serve startup runs it
+// before anything else reads a root, so the queue import, the prune, and the
+// project backfill all see one row per directory.
+func (s *Stores) CanonicalizeRoots() error {
+	if err := s.repos.Canonicalize(); err != nil {
+		return err
+	}
+	return s.projects.Canonicalize()
+}
+
 // PruneStaleRepos drops the known-repo rows the hub should never have kept — a
 // throwaway clone under the temp dir, a root gone from disk — along with the
 // project each was filed into and any other project left holding nothing. Roots
