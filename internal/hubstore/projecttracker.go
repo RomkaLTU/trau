@@ -5,6 +5,8 @@ import (
 	"errors"
 	"maps"
 	"slices"
+
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 // Tracker returns the tracker config the project's member repos share, keyed by
@@ -53,7 +55,7 @@ func (p *Projects) SetTracker(id string, keys map[string]string) error {
 // behalf. Every other key in its config file is the repo's own and outranks the
 // project default.
 func (p *Projects) SeededTrackerKeys(root string) (keys map[string]bool, err error) {
-	rows, err := p.db.Query(`SELECT key FROM project_tracker_seeded WHERE root = ?`, root)
+	rows, err := p.db.Query(`SELECT key FROM project_tracker_seeded WHERE root = ?`, registry.CanonicalRoot(root))
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +74,7 @@ func (p *Projects) SeededTrackerKeys(root string) (keys map[string]bool, err err
 // MarkTrackerSeeded records the keys root now holds on its project's behalf,
 // replacing whatever it held before.
 func (p *Projects) MarkTrackerSeeded(root string, keys []string) error {
+	root = registry.CanonicalRoot(root)
 	tx, err := p.db.Begin()
 	if err != nil {
 		return err
@@ -90,8 +93,55 @@ func (p *Projects) MarkTrackerSeeded(root string, keys []string) error {
 // ReleaseTrackerKey hands one key back to the repo, for a root that sets it
 // itself rather than inheriting it. A project edit leaves it alone from then on.
 func (p *Projects) ReleaseTrackerKey(root, key string) error {
-	_, err := p.db.Exec(`DELETE FROM project_tracker_seeded WHERE root = ? AND key = ?`, root, key)
+	_, err := p.db.Exec(`DELETE FROM project_tracker_seeded WHERE root = ? AND key = ?`, registry.CanonicalRoot(root), key)
 	return err
+}
+
+// canonicalizeSeeded rewrites every seeded-key root to its canonical spelling,
+// folding the rows two spellings of one directory left behind. Seeded keys are
+// read canonically now, so a row a pre-canonical hub stored under the spelling the
+// loop resolved is invisible: the hub stops believing the repo holds the keys its
+// project seeded and a project edit walks past them.
+func canonicalizeSeeded(tx *sql.Tx) error {
+	roots, err := seededRoots(tx)
+	if err != nil {
+		return err
+	}
+	for _, root := range roots {
+		canonical := registry.CanonicalRoot(root)
+		if canonical == root {
+			continue
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO project_tracker_seeded(root, key)
+			 SELECT ?, key FROM project_tracker_seeded WHERE root = ?
+			 ON CONFLICT(root, key) DO NOTHING`, canonical, root,
+		); err != nil {
+			return err
+		}
+		if err := clearSeeded(tx, root); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seededRoots returns the distinct roots carrying seeded keys. They are read out
+// before the first rewrite because the transaction holds a single connection.
+func seededRoots(tx *sql.Tx) (roots []string, err error) {
+	rows, err := tx.Query(`SELECT DISTINCT root FROM project_tracker_seeded`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
+	}
+	return roots, rows.Err()
 }
 
 // clearSeeded hands root's seeded keys back to the repo: the values stay in its

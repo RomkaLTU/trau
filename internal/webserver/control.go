@@ -539,34 +539,44 @@ func withinRoot(root, path string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// matchRoot resolves a repo identifier against a set of roots: an exact cleaned
+// matchRoot resolves a repo identifier against a set of roots: an exact canonical
 // path, or an unambiguous base name. An ambiguous base name matches nothing, so
 // a caller never acts on the wrong repo when two roots share a directory name.
 func matchRoot(roots []string, ident string) (string, bool) {
-	ident = strings.TrimSpace(ident)
-	if ident == "" {
+	matches := matchingRoots(roots, ident)
+	if len(matches) != 1 {
 		return "", false
 	}
-	cleaned := filepath.Clean(ident)
-	for _, r := range roots {
-		if r == cleaned {
-			return r, true
-		}
-	}
-	var match string
-	for _, r := range roots {
-		if filepath.Base(r) == ident {
-			if match != "" {
-				return "", false
-			}
-			match = r
-		}
-	}
-	return match, match != ""
+	return matches[0], true
 }
 
-// normalizeRoots cleans and de-duplicates the configured workspace roots while
-// preserving order, so allowlist comparisons are path-stable.
+// matchingRoots is every root ident resolves to: the one whose canonical path it
+// spells, else every root sharing its base name. More than one means the
+// identifier is ambiguous — matchRoot resolves it to nothing, and a removal has to
+// report that as ambiguity rather than as a repo the hub never heard of.
+func matchingRoots(roots []string, ident string) []string {
+	ident = strings.TrimSpace(ident)
+	if ident == "" {
+		return nil
+	}
+	canonical := registry.CanonicalRoot(ident)
+	for _, r := range roots {
+		if r == canonical {
+			return []string{r}
+		}
+	}
+	var named []string
+	for _, r := range roots {
+		if filepath.Base(r) == ident {
+			named = append(named, r)
+		}
+	}
+	return named
+}
+
+// normalizeRoots canonicalizes and de-duplicates the configured workspace roots
+// while preserving order, so allowlist comparisons are path-stable and two
+// spellings of one directory collapse to the single root the hub keys by.
 func normalizeRoots(roots []string) []string {
 	if len(roots) == 0 {
 		return nil
@@ -574,12 +584,8 @@ func normalizeRoots(roots []string) []string {
 	seen := make(map[string]bool, len(roots))
 	out := make([]string, 0, len(roots))
 	for _, raw := range roots {
-		root := strings.TrimSpace(raw)
-		if root == "" {
-			continue
-		}
-		root = filepath.Clean(root)
-		if seen[root] {
+		root := registry.CanonicalRoot(strings.TrimSpace(raw))
+		if root == "" || seen[root] {
 			continue
 		}
 		seen[root] = true

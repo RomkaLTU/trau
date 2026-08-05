@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -964,19 +963,20 @@ func grillDestination(requested string, cfg config.Config) string {
 // seed and the web registrations — synthesized as workspace views. Without that
 // second tier a repo registered from the web but never run in resolves on the
 // create side and misses on the run side, parking every session it starts.
-// Known roots are stored as the loop resolved them, so both sides are cleaned.
+// A stored session's root can be spelled however the loop that opened it resolved
+// it, so both sides are canonicalized.
 func (s *Server) findRepoByRoot(root string) (registry.Repo, bool) {
-	if root == "" {
+	canonical := registry.CanonicalRoot(root)
+	if canonical == "" {
 		return registry.Repo{}, false
 	}
-	cleaned := filepath.Clean(root)
 	for _, repo := range s.knownRepos(s.liveInstances()) {
-		if filepath.Clean(repo.Root) == cleaned {
+		if repo.Root == canonical {
 			return repo, true
 		}
 	}
 	for _, allowed := range s.effectiveRoots() {
-		if allowed == cleaned {
+		if allowed == canonical {
 			return workspaceRepo(allowed), true
 		}
 	}

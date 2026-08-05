@@ -207,9 +207,9 @@ func (s *Server) liveInstances() []registry.Entry {
 // entry's root and the stored row's can spell the same directory differently, and
 // the refusal has to fire on either spelling.
 func (s *Server) repoIsLive(root string) bool {
-	cleaned := filepath.Clean(root)
+	canonical := registry.CanonicalRoot(root)
 	return slices.ContainsFunc(s.liveInstances(), func(e registry.Entry) bool {
-		return filepath.Clean(e.RepoRoot) == cleaned
+		return registry.CanonicalRoot(e.RepoRoot) == canonical
 	})
 }
 

@@ -261,16 +261,20 @@ func (s *Server) rememberLiveRepos() {
 }
 
 // reposFromEntries projects live registry entries onto known-repo rows, naming a
-// repo by its root's base and skipping entries with no repo root.
+// repo by its root's base and skipping entries with no repo root. The root is
+// canonicalized here rather than at the store: a loop under Git Bash heartbeats
+// the `git rev-parse` spelling of a directory the web registered with separators,
+// and the sweep would otherwise remember it as a second repo.
 func reposFromEntries(entries []registry.Entry) []registry.Repo {
 	repos := make([]registry.Repo, 0, len(entries))
 	for _, e := range entries {
-		if e.RepoRoot == "" {
+		root := registry.CanonicalRoot(e.RepoRoot)
+		if root == "" {
 			continue
 		}
 		repos = append(repos, registry.Repo{
-			Name:    filepath.Base(e.RepoRoot),
-			Root:    e.RepoRoot,
+			Name:    filepath.Base(root),
+			Root:    root,
 			RunsDir: e.RunsDir,
 		})
 	}

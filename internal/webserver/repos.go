@@ -3,6 +3,7 @@ package webserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -83,6 +84,20 @@ func seededRepoRefusal(ident, verb string) string {
 
 func liveLoopRefusal(name string) string {
 	return fmt.Sprintf("a loop is live in %q; stop it before removing the repo", name)
+}
+
+// errUnknownRepo and errAmbiguousRepo are the two ways resolving a repo
+// identifier fails. They are kept apart because a removal answers them
+// differently: an identifier the hub cannot place is a 404, while one two listed
+// repos answer to is a conflict the caller resolves by naming a root — reporting
+// it as unknown sends them looking for a repo that is right there in the list.
+var (
+	errUnknownRepo   = errors.New("repo is not known to the hub")
+	errAmbiguousRepo = errors.New("repo identifier is ambiguous")
+)
+
+func ambiguousRepoRefusal(ident string) string {
+	return fmt.Sprintf("repo %q names more than one repo the hub lists; address it by its root path instead", ident)
 }
 
 // nothingRemovedFailure words a removal that deleted no row. Both legitimate
@@ -171,37 +186,42 @@ func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
 // registration is all that lists a repo no loop has run in yet, so the repo is
 // remembered on the way out and leaves the list only through a removal. A repo
 // granted by the static SERVE_WORKSPACE seed is config-owned, not registry-owned,
-// so the attempt is refused rather than silently doing nothing. It follows the
-// same exposure gate as registration: refused on a non-loopback bind unless
-// SERVE_ALLOW_REGISTER is set.
+// so the attempt is refused rather than silently doing nothing. It resolves the
+// identifier over the same union removal does, not over the registered roots
+// alone: a registration stored under a second spelling of its directory is
+// unreachable from the narrower set, which is what made the duplicate row
+// unremovable. It follows the same exposure gate as registration: refused on a
+// non-loopback bind unless SERVE_ALLOW_REGISTER is set.
 func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 	if s.denyRegistrationIfExposed(w, "unregistering a repo") {
 		return
 	}
-	name := r.PathValue("repo")
-	if s.denySeededRepo(w, name, "unregistered") {
+	ident := r.PathValue("repo")
+	if s.denySeededRepo(w, ident, "unregistered") {
 		return
 	}
-	registered, _ := s.stores.Registrations().Registered()
-	root, ok := matchRoot(normalizeRoots(registered), name)
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
+	repo, err := s.matchListedRepo(ident)
+	if errors.Is(err, errAmbiguousRepo) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": ambiguousRepoRefusal(ident)})
 		return
 	}
-	removed, err := s.stores.Registrations().Unregister(root)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", ident)})
+		return
+	}
+	removed, err := s.stores.Registrations().Unregister(repo.Root)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to unregister repo: " + err.Error()})
 		return
 	}
 	if !removed {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", ident)})
 		return
 	}
-	repo := workspaceRepo(root)
 	if err := s.stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
-		logger.Verbosef("remember %s after unregister: %v", root, err)
+		logger.Verbosef("remember %s after unregister: %v", repo.Root, err)
 	}
-	s.dropUnregisteredRepoState(root)
+	s.dropUnregisteredRepoState(repo.Root)
 	writeJSON(w, http.StatusOK, RepoView{Repo: repo, Allowed: false}.withKind())
 }
 
@@ -221,8 +241,12 @@ func (s *Server) forgetRepo(w http.ResponseWriter, r *http.Request) {
 	if s.denySeededRepo(w, ident, "removed") {
 		return
 	}
-	repo, ok := s.matchListedRepo(ident)
-	if !ok {
+	repo, err := s.matchListedRepo(ident)
+	if errors.Is(err, errAmbiguousRepo) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": ambiguousRepoRefusal(ident)})
+		return
+	}
+	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not known to the hub", ident)})
 		return
 	}

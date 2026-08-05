@@ -34,10 +34,23 @@ func testHubDB(t *testing.T, home string) *sql.DB {
 	return db.SQL()
 }
 
+// fixtureRoots spells POSIX-shorthand fixture roots the way the host stores them.
+// The tests name directories that never exist on disk, and the store keeps every
+// root canonicalized — on Windows that means separators rather than slashes.
+func fixtureRoots(roots ...string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		out = append(out, filepath.FromSlash(root))
+	}
+	return out
+}
+
+func fixtureRoot(root string) string { return filepath.FromSlash(root) }
+
 func TestRegisterInOrderAndDedupes(t *testing.T) {
 	s := testStore(t, t.TempDir())
 
-	for _, root := range []string{"/repos/a", "/repos/b", "/repos/a"} {
+	for _, root := range fixtureRoots("/repos/a", "/repos/b", "/repos/a") {
 		if err := s.Register(root); err != nil {
 			t.Fatalf("Register(%q): %v", root, err)
 		}
@@ -47,14 +60,26 @@ func TestRegisterInOrderAndDedupes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Registered: %v", err)
 	}
-	if want := []string{"/repos/a", "/repos/b"}; !reflect.DeepEqual(got, want) {
+	if want := fixtureRoots("/repos/a", "/repos/b"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("registered = %v, want %v", got, want)
+	}
+}
+
+func TestRegisterIgnoresAnEmptyRoot(t *testing.T) {
+	s := testStore(t, t.TempDir())
+
+	if err := s.Register(""); err != nil {
+		t.Fatalf("Register(\"\"): %v", err)
+	}
+
+	if got, _ := s.Registered(); len(got) != 0 {
+		t.Fatalf("registered = %v, want no row for an empty root", got)
 	}
 }
 
 func TestUnregisterReportsPresenceAndReappends(t *testing.T) {
 	s := testStore(t, t.TempDir())
-	for _, root := range []string{"/repos/a", "/repos/b", "/repos/c"} {
+	for _, root := range fixtureRoots("/repos/a", "/repos/b", "/repos/c") {
 		if err := s.Register(root); err != nil {
 			t.Fatalf("register %s: %v", root, err)
 		}
@@ -64,7 +89,7 @@ func TestUnregisterReportsPresenceAndReappends(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Unregister(/repos/b) = (%v, %v), want (true, nil)", found, err)
 	}
-	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{"/repos/a", "/repos/c"}) {
+	if got, _ := s.Registered(); !reflect.DeepEqual(got, fixtureRoots("/repos/a", "/repos/c")) {
 		t.Fatalf("after unregister = %v", got)
 	}
 
@@ -76,7 +101,7 @@ func TestUnregisterReportsPresenceAndReappends(t *testing.T) {
 	if err := s.Register("/repos/b"); err != nil {
 		t.Fatalf("re-register: %v", err)
 	}
-	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{"/repos/a", "/repos/c", "/repos/b"}) {
+	if got, _ := s.Registered(); !reflect.DeepEqual(got, fixtureRoots("/repos/a", "/repos/c", "/repos/b")) {
 		t.Fatalf("after re-register = %v, want b appended", got)
 	}
 }
@@ -103,8 +128,8 @@ func TestRememberAddsNewSortsAndDoesNotOverwrite(t *testing.T) {
 		t.Fatalf("Known: %v", err)
 	}
 	want := []registry.Repo{
-		{Name: "alpha", Root: "/repo/alpha", RunsDir: "/repo/alpha/runs"},
-		{Name: "beta", Root: "/repo/beta", RunsDir: "/repo/beta/runs"},
+		{Name: "alpha", Root: fixtureRoot("/repo/alpha"), RunsDir: "/repo/alpha/runs"},
+		{Name: "beta", Root: fixtureRoot("/repo/beta"), RunsDir: "/repo/beta/runs"},
 	}
 	if !reflect.DeepEqual(known, want) {
 		t.Fatalf("known = %v, want %v (sorted by name, no overwrite)", known, want)
@@ -126,7 +151,7 @@ func TestRememberSkipsScratchpadClonesOnARealHub(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Known: %v", err)
 	}
-	want := []registry.Repo{{Name: "acme", Root: "/repos/acme", RunsDir: "/repos/acme/runs"}}
+	want := []registry.Repo{{Name: "acme", Root: fixtureRoot("/repos/acme"), RunsDir: "/repos/acme/runs"}}
 	if !reflect.DeepEqual(known, want) {
 		t.Fatalf("known = %v, want %v — a temp-dir clone must not be adopted", known, want)
 	}
@@ -186,7 +211,7 @@ func TestPruneStaleDropsClonesAndVanishedRootsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	clone, registeredClone, vanished := t.TempDir(), t.TempDir(), "/repos/vanished"
+	clone, registeredClone, vanished := t.TempDir(), t.TempDir(), fixtureRoot("/repos/vanished")
 	// A throwaway hub adopts every root, which is how the rows a real hub must now
 	// prune reached the store on the builds before the guard.
 	seed := NewRegistrations(t.TempDir(), db)
@@ -230,12 +255,12 @@ func sortedRoots(roots ...string) []string {
 func TestForgetClearsBothSetsAndLeavesOthers(t *testing.T) {
 	s := testStore(t, t.TempDir())
 	if err := s.Remember([]registry.Repo{
-		{Name: "gone", Root: "/repo/gone", RunsDir: "/repo/gone/runs"},
-		{Name: "kept", Root: "/repo/kept", RunsDir: "/repo/kept/runs"},
+		{Name: "gone", Root: fixtureRoot("/repo/gone"), RunsDir: "/repo/gone/runs"},
+		{Name: "kept", Root: fixtureRoot("/repo/kept"), RunsDir: "/repo/kept/runs"},
 	}); err != nil {
 		t.Fatalf("Remember: %v", err)
 	}
-	for _, root := range []string{"/repo/gone", "/repo/kept"} {
+	for _, root := range fixtureRoots("/repo/gone", "/repo/kept") {
 		if err := s.Register(root); err != nil {
 			t.Fatalf("register %s: %v", root, err)
 		}
@@ -245,11 +270,11 @@ func TestForgetClearsBothSetsAndLeavesOthers(t *testing.T) {
 		t.Fatalf("Forget = (%v, %v), want (true, nil)", removed, err)
 	}
 
-	want := []registry.Repo{{Name: "kept", Root: "/repo/kept", RunsDir: "/repo/kept/runs"}}
+	want := []registry.Repo{{Name: "kept", Root: fixtureRoot("/repo/kept"), RunsDir: "/repo/kept/runs"}}
 	if known, _ := s.Known(); !reflect.DeepEqual(known, want) {
 		t.Fatalf("known = %v, want %v", known, want)
 	}
-	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{"/repo/kept"}) {
+	if got, _ := s.Registered(); !reflect.DeepEqual(got, fixtureRoots("/repo/kept")) {
 		t.Fatalf("registered = %v, want only the kept repo", got)
 	}
 	if removed, err := s.Forget("/repo/gone"); err != nil || removed {
@@ -307,8 +332,43 @@ func TestRememberSkipsACanonicalTwin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Known: %v", err)
 	}
-	if len(known) != 1 || known[0].Root != stored {
-		t.Fatalf("known = %v, want only the root as first stored", known)
+	if len(known) != 1 || known[0].Root != root {
+		t.Fatalf("known = %v, want only %s, canonicalized", known, root)
+	}
+}
+
+// TestCanonicalizeMergesTheSpellingsAlreadyStored covers the upgrade path: a hub
+// written before roots were canonicalized on the way in holds one directory under
+// two spellings, and serve startup has to converge them to a single row rather
+// than leave the repo listed twice.
+func TestCanonicalizeMergesTheSpellingsAlreadyStored(t *testing.T) {
+	s := testStore(t, t.TempDir())
+	root := filepath.Join(t.TempDir(), "acme")
+	for _, spelling := range []string{root, root + string(filepath.Separator)} {
+		if _, err := s.db.Exec(
+			`INSERT INTO known_repos(root, name, runs_dir) VALUES(?, ?, ?)`,
+			spelling, "acme", filepath.Join(root, ".trau", "runs"),
+		); err != nil {
+			t.Fatalf("seed known %q: %v", spelling, err)
+		}
+		if _, err := s.db.Exec(`INSERT INTO registered_repos(root) VALUES(?)`, spelling); err != nil {
+			t.Fatalf("seed registration %q: %v", spelling, err)
+		}
+	}
+
+	if err := s.Canonicalize(); err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+
+	known, err := s.Known()
+	if err != nil {
+		t.Fatalf("Known: %v", err)
+	}
+	if len(known) != 1 || known[0].Root != root {
+		t.Fatalf("known = %v, want the single canonical row %s", known, root)
+	}
+	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{root}) {
+		t.Fatalf("registered = %v, want the single canonical row %s", got, root)
 	}
 }
 
@@ -324,10 +384,10 @@ func TestImportLegacyBackfillsAndDeletesFiles(t *testing.T) {
 		t.Fatalf("ImportLegacy: %v", err)
 	}
 
-	if known, _ := s.Known(); len(known) != 1 || known[0].Root != "/repo/one" {
+	if known, _ := s.Known(); len(known) != 1 || known[0].Root != fixtureRoot("/repo/one") {
 		t.Fatalf("known after import = %v, want one", known)
 	}
-	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{"/repo/one", "/repo/two"}) {
+	if got, _ := s.Registered(); !reflect.DeepEqual(got, fixtureRoots("/repo/one", "/repo/two")) {
 		t.Fatalf("registered after import = %v", got)
 	}
 	if files := LegacyFiles(home); len(files) != 0 {
@@ -347,7 +407,7 @@ func TestImportLegacyIsIdempotent(t *testing.T) {
 	if err := s.ImportLegacy(home); err != nil {
 		t.Fatalf("second import: %v", err)
 	}
-	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{"/repo/one", "/repo/two"}) {
+	if got, _ := s.Registered(); !reflect.DeepEqual(got, fixtureRoots("/repo/one", "/repo/two")) {
 		t.Fatalf("registered after re-import = %v, want deduped union", got)
 	}
 }

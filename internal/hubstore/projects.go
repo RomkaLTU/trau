@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 var (
@@ -86,7 +88,7 @@ func (p *Projects) Get(id string) (Project, error) {
 // Holder returns the identifier of the project root belongs to, or "" when no
 // project holds it.
 func (p *Projects) Holder(root string) (string, error) {
-	return holderOf(p.db, root)
+	return holderOf(p.db, registry.CanonicalRoot(root))
 }
 
 // Create files a project under name, allocating a slug identifier unique across
@@ -177,6 +179,7 @@ func (p *Projects) Delete(id string) error {
 // A root belongs to one project at a time, so it leaves whichever project held
 // it before, keeping the tracker keys that project seeded as its own.
 func (p *Projects) AddRepo(id, root string) (Project, error) {
+	root = registry.CanonicalRoot(root)
 	tx, err := p.db.Begin()
 	if err != nil {
 		return Project{}, err
@@ -215,6 +218,7 @@ func (p *Projects) AddRepo(id, root string) (Project, error) {
 // RemoveRepo takes root out of the project, leaving it registered and standalone.
 // The project itself stays even when emptied — the caller is editing it.
 func (p *Projects) RemoveRepo(id, root string) (Project, error) {
+	root = registry.CanonicalRoot(root)
 	tx, err := p.db.Begin()
 	if err != nil {
 		return Project{}, err
@@ -244,6 +248,7 @@ func (p *Projects) RemoveRepo(id, root string) (Project, error) {
 
 // ForgetRoot drops root's membership, for a repo leaving the hub altogether.
 func (p *Projects) ForgetRoot(root string) error {
+	root = registry.CanonicalRoot(root)
 	tx, err := p.db.Begin()
 	if err != nil {
 		return err
@@ -279,6 +284,7 @@ func (p *Projects) EnsureRoots(roots []string) error {
 		return err
 	}
 	for _, root := range roots {
+		root = registry.CanonicalRoot(root)
 		if root == "" {
 			continue
 		}
@@ -302,6 +308,64 @@ func (p *Projects) EnsureRoots(roots []string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// Canonicalize rewrites every membership root to its canonical spelling, keeping
+// the first project that claimed the directory when two spellings of it landed in
+// different ones. Memberships are matched byte-equal, so a root left under a
+// second spelling hides the project a repo already belongs to and EnsureRoots
+// mints it another. The keys each root holds on its project's behalf move with it.
+func (p *Projects) Canonicalize() error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	members, err := allMembers(tx)
+	if err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	for _, group := range rootsToMerge(members, func(m projectMember) string { return m.root }) {
+		canonical := registry.CanonicalRoot(group[0].root)
+		for _, m := range group {
+			if _, err := tx.Exec(`DELETE FROM project_repos WHERE root = ?`, m.root); err != nil {
+				return errors.Join(err, tx.Rollback())
+			}
+		}
+		if err := appendMember(tx, group[0].project, canonical); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
+	if err := canonicalizeSeeded(tx); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	return tx.Commit()
+}
+
+// projectMember is one row of project_repos: the project holding a root and the
+// root as it is stored.
+type projectMember struct {
+	project string
+	root    string
+}
+
+// allMembers returns every membership in the order the store took it. Rows are
+// read by rowid rather than by project and position, because a merge picks the
+// project that claimed a directory first and only insertion order says which that
+// was — ordering by project would hand the directory to the first slug instead.
+func allMembers(tx *sql.Tx) (members []projectMember, err error) {
+	rows, err := tx.Query(`SELECT project, root FROM project_repos ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var m projectMember
+		if err := rows.Scan(&m.project, &m.root); err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
 }
 
 // PruneEmpty drops every project holding no repos, so the project auto-minted for

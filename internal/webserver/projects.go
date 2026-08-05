@@ -175,8 +175,8 @@ func (s *Server) forgetProjectRepos(w http.ResponseWriter, r *http.Request) {
 		Blocked: []ProjectRemovalRepo{},
 	}
 	for _, root := range proj.Repos {
-		repo, listed := s.matchListedRepo(root)
-		if !listed {
+		repo, err := s.matchListedRepo(root)
+		if err != nil {
 			// A membership the repos list no longer answers for has nothing left to
 			// remove, so dropping the row is the whole removal.
 			if err := s.stores.Projects().ForgetRoot(root); err != nil {

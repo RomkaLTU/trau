@@ -607,7 +607,8 @@ func TestForgetRepo(t *testing.T) {
 // TestForgetByRootRemovesTheRightNamesake covers the case that made the list
 // unclearable: two scratch clones known by the same basename, where only the root
 // identifies which row the user pressed Remove on. The shared name identifies
-// neither, so it is refused rather than resolved to whichever came first.
+// neither, so it is refused as ambiguous — naming the fix — rather than resolved
+// to whichever came first or reported as a repo the hub never heard of.
 func TestForgetByRootRemovesTheRightNamesake(t *testing.T) {
 	home := t.TempDir()
 	base := t.TempDir()
@@ -622,8 +623,11 @@ func TestForgetByRootRemovesTheRightNamesake(t *testing.T) {
 
 	_, ts := controlServer(t, home, nil)
 	res, body := deleteReq(t, ts, APIPrefix+"/repos/repo?forget=1")
-	if res.StatusCode != http.StatusNotFound {
-		t.Fatalf("DELETE by ambiguous name = %d, want 404 (%s)", res.StatusCode, body)
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("DELETE by ambiguous name = %d, want 409 (%s)", res.StatusCode, body)
+	}
+	if !strings.Contains(body, "more than one repo") {
+		t.Errorf("ambiguity refusal %q does not say the name is shared", body)
 	}
 	if roots := listedRepoRoots(t, ts); len(roots) != 2 {
 		t.Fatalf("ambiguous removal took a namesake: %v", roots)
@@ -704,6 +708,94 @@ func TestUnregisterRepoWithANonCanonicalRegisteredRoot(t *testing.T) {
 	}
 	if allowedRepoNames(t, ts)["acme"] {
 		t.Error("repo still allowed after unregister, want observe-only")
+	}
+}
+
+// TestTwoSpellingsOfOneRepoListAsOneRow covers the duplicate the picker served:
+// the web registers a directory with separators while the loop running in it
+// heartbeats the spelling `git rev-parse` hands back, and the list showed both
+// with the flags split between them.
+func TestTwoSpellingsOfOneRepoListAsOneRow(t *testing.T) {
+	home := t.TempDir()
+	root := gitRepo(t, t.TempDir(), "acme", "dir")
+
+	_, ts := controlServer(t, home, nil)
+	res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: root, Sync: new(bool)})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register = %d, want 201", res.StatusCode)
+	}
+	writeEntry(t, home, registry.Entry{
+		PID:      os.Getpid(),
+		RepoRoot: filepath.ToSlash(root) + "/",
+		RunsDir:  filepath.Join(root, ".trau", "runs"),
+	})
+
+	repos := listRepos(t, ts)
+	if len(repos) != 1 {
+		t.Fatalf("repos = %+v, want one row for %s", repos, root)
+	}
+	if got := repos[0]; got.Root != root || !got.Live || !got.Registered || !got.Allowed {
+		t.Errorf("row = %+v, want %s live, registered and allowed", got, root)
+	}
+}
+
+// TestRepoListOrderIsStableAcrossReads pins the ordering the 5s poll depends on:
+// two repos sharing a name used to fall out of a map in whichever order the
+// runtime chose, so a name-addressed lookup resolved to a different root between
+// polls and the board appeared to rewind.
+func TestRepoListOrderIsStableAcrossReads(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{
+		workspaceRepo(gitRepo(t, filepath.Join(base, "one"), "repo", "dir")),
+		workspaceRepo(gitRepo(t, filepath.Join(base, "two"), "repo", "dir")),
+	}); err != nil {
+		t.Fatalf("seed known repos: %v", err)
+	}
+
+	_, ts := controlServer(t, home, nil)
+	first := listedRepoRoots(t, ts)
+	for i := range 5 {
+		if got := listedRepoRoots(t, ts); !slices.Equal(got, first) {
+			t.Fatalf("read %d listed %v, want the order of the first read %v", i, got, first)
+		}
+	}
+}
+
+// TestUnregisterResolvesByRootAndRefusesAmbiguity covers the removal that could
+// not reach its row: unregister searched the registered roots alone under a bare
+// name, so the only way to address one of two namesakes 404'd as "not registered".
+func TestUnregisterResolvesByRootAndRefusesAmbiguity(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	first := gitRepo(t, filepath.Join(base, "one"), "repo", "dir")
+	second := gitRepo(t, filepath.Join(base, "two"), "repo", "dir")
+
+	_, ts := controlServer(t, home, nil)
+	for _, root := range []string{first, second} {
+		res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: root, Sync: new(bool)})
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("register %s = %d, want 201", root, res.StatusCode)
+		}
+	}
+
+	res, body := deleteReq(t, ts, APIPrefix+"/repos/repo")
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("DELETE by ambiguous name = %d, want 409 (%s)", res.StatusCode, body)
+	}
+	if !strings.Contains(body, "more than one repo") {
+		t.Errorf("ambiguity refusal %q does not say the name is shared", body)
+	}
+
+	res, body = deleteReq(t, ts, APIPrefix+"/repos/"+url.PathEscape(second))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE by root = %d, want 200 (%s)", res.StatusCode, body)
+	}
+	registered, _ := testStoresAt(t, home).Registrations().Registered()
+	if !slices.Equal(registered, []string{first}) {
+		t.Errorf("registered = %v, want only %s", registered, first)
 	}
 }
 

@@ -59,11 +59,12 @@ func (r *Registrations) Known() (repos []registry.Repo, err error) {
 }
 
 // Remember folds repos into the known set, leaving any already-known repo
-// untouched. New repos are added; it never overwrites an existing row. A repo
-// whose root canonicalizes to one already known is skipped rather than inserted
-// under its own spelling: the ON CONFLICT clause only catches a byte-identical
-// root, and a second row for the same directory is a row every later lookup and
-// removal has to reconcile. Throwaway roots are never folded in at all.
+// untouched. New repos are added; it never overwrites an existing row. Every root
+// is stored canonicalized, and a repo whose root canonicalizes to one already
+// known is skipped rather than inserted under its own spelling: the ON CONFLICT
+// clause only catches a byte-identical root, and a second row for the same
+// directory is a row every later lookup and removal has to reconcile. Throwaway
+// roots are never folded in at all.
 func (r *Registrations) Remember(repos []registry.Repo) error {
 	if len(repos) == 0 {
 		return nil
@@ -74,21 +75,21 @@ func (r *Registrations) Remember(repos []registry.Repo) error {
 	}
 	seen := make(map[string]bool, len(known)+len(repos))
 	for _, repo := range known {
-		seen[filepath.Clean(repo.Root)] = true
+		seen[registry.CanonicalRoot(repo.Root)] = true
 	}
 	tx, err := r.db.Begin()
 	if err != nil {
 		return err
 	}
 	for _, repo := range repos {
-		canonical := filepath.Clean(repo.Root)
-		if repo.Root == "" || seen[canonical] || r.throwaway(repo.Root) {
+		canonical := registry.CanonicalRoot(repo.Root)
+		if canonical == "" || seen[canonical] || r.throwaway(canonical) {
 			continue
 		}
 		seen[canonical] = true
 		if _, err := tx.Exec(
 			`INSERT INTO known_repos(root, name, runs_dir) VALUES(?, ?, ?) ON CONFLICT(root) DO NOTHING`,
-			repo.Root, repo.Name, repo.RunsDir,
+			canonical, repo.Name, repo.RunsDir,
 		); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}
@@ -120,7 +121,7 @@ func (r *Registrations) PruneStale() (pruned []string, err error) {
 	}
 	exempt := make(map[string]bool, len(registered))
 	for _, root := range registered {
-		exempt[filepath.Clean(root)] = true
+		exempt[registry.CanonicalRoot(root)] = true
 	}
 	tx, err := r.db.Begin()
 	if err != nil {
@@ -128,7 +129,7 @@ func (r *Registrations) PruneStale() (pruned []string, err error) {
 	}
 	for _, repo := range known {
 		usable := !r.throwaway(repo.Root) && dirExists(repo.Root)
-		if usable || exempt[filepath.Clean(repo.Root)] {
+		if usable || exempt[registry.CanonicalRoot(repo.Root)] {
 			continue
 		}
 		if _, err := tx.Exec(`DELETE FROM known_repos WHERE root = ?`, repo.Root); err != nil {
@@ -158,11 +159,18 @@ func (r *Registrations) Registered() (roots []string, err error) {
 	return roots, rows.Err()
 }
 
-// Register adds root to the startable set, returning without error when it is
-// already registered.
+// Register adds root to the startable set under its canonical spelling,
+// returning without error when it is already registered. Registering the same
+// directory under a second spelling is the no-op it reads as, not a second row:
+// every stored root is canonical, so the conflict clause catches it. An empty
+// root registers nothing.
 func (r *Registrations) Register(root string) error {
+	canonical := registry.CanonicalRoot(root)
+	if canonical == "" {
+		return nil
+	}
 	_, err := r.db.Exec(
-		`INSERT INTO registered_repos(root) VALUES(?) ON CONFLICT(root) DO NOTHING`, root,
+		`INSERT INTO registered_repos(root) VALUES(?) ON CONFLICT(root) DO NOTHING`, canonical,
 	)
 	return err
 }
@@ -200,25 +208,98 @@ func (r *Registrations) Forget(root string) (removed bool, err error) {
 	return removed, tx.Commit()
 }
 
+// Canonicalize rewrites every stored root to its canonical spelling, merging the
+// rows two spellings of one directory left behind. A store written before roots
+// were canonicalized on the way in holds both `C:\Users\x\y` and `C:/Users/x/y`
+// for one repo, which lists it twice with its flags split across the rows. Serve
+// startup runs the merge once instead of every read papering over it. Rows already
+// canonical are left where they are, so a hub with nothing to fix keeps its
+// registration order.
+func (r *Registrations) Canonicalize() error {
+	known, err := r.Known()
+	if err != nil {
+		return err
+	}
+	registered, err := r.Registered()
+	if err != nil {
+		return err
+	}
+	knownMerges := rootsToMerge(known, func(repo registry.Repo) string { return repo.Root })
+	registeredMerges := rootsToMerge(registered, func(root string) string { return root })
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, group := range knownMerges {
+		survivor := group[0]
+		canonical := registry.CanonicalRoot(survivor.Root)
+		if _, err := deleteRootsMatching(tx, "known_repos", canonical); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO known_repos(root, name, runs_dir) VALUES(?, ?, ?)`,
+			canonical, survivor.Name, survivor.RunsDir,
+		); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
+	for _, group := range registeredMerges {
+		canonical := registry.CanonicalRoot(group[0])
+		if _, err := deleteRootsMatching(tx, "registered_repos", canonical); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+		if _, err := tx.Exec(`INSERT INTO registered_repos(root) VALUES(?)`, canonical); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
+	return tx.Commit()
+}
+
+// rootsToMerge groups stored rows by the canonical spelling of the root each
+// carries, and returns every group a merge has to rewrite: a group holding more
+// than one row, or a lone row stored under something other than its canonical
+// spelling. A group already down to its canonical row is left out so nothing
+// moves. Groups keep the order stored gave them, so the first row of a group is
+// the first the store took.
+func rootsToMerge[T any](stored []T, rootOf func(T) string) [][]T {
+	groups := make(map[string][]T, len(stored))
+	var order []string
+	for _, row := range stored {
+		canonical := registry.CanonicalRoot(rootOf(row))
+		if _, ok := groups[canonical]; !ok {
+			order = append(order, canonical)
+		}
+		groups[canonical] = append(groups[canonical], row)
+	}
+	var merge [][]T
+	for _, canonical := range order {
+		if group := groups[canonical]; len(group) > 1 || rootOf(group[0]) != canonical {
+			merge = append(merge, group)
+		}
+	}
+	return merge
+}
+
 // deleteRootsMatching drops every row of table whose stored root canonicalizes to
-// root, reporting whether any did. A root is stored exactly as the loop resolved
-// it — `git rev-parse` hands back forward slashes on Windows — so a byte-equal
-// DELETE misses the very row it was aimed at, and a store holding both spellings
-// of one directory needs both gone in the same pass. The matches are collected
-// before the first delete because the transaction holds a single connection.
+// root, reporting whether any did. Roots reach the store canonicalized now, but a
+// hub upgraded from a build that stored them as the loop resolved them — `git
+// rev-parse` hands back forward slashes on Windows — still holds rows a byte-equal
+// DELETE would miss, and both spellings of one directory have to go in the same
+// pass. The matches are collected before the first delete because the transaction
+// holds a single connection.
 func deleteRootsMatching(tx *sql.Tx, table, root string) (bool, error) {
 	rows, err := tx.Query(`SELECT root FROM ` + table)
 	if err != nil {
 		return false, err
 	}
-	cleaned := filepath.Clean(root)
+	canonical := registry.CanonicalRoot(root)
 	var matches []string
 	for rows.Next() {
 		var stored string
 		if err := rows.Scan(&stored); err != nil {
 			return false, errors.Join(err, rows.Close())
 		}
-		if filepath.Clean(stored) == cleaned {
+		if registry.CanonicalRoot(stored) == canonical {
 			matches = append(matches, stored)
 		}
 	}
@@ -253,15 +334,17 @@ func underTempDir(path string) bool {
 	return false
 }
 
-// pathSpellings returns path cleaned, plus its symlink-resolved form when the
-// path exists and resolves elsewhere.
+// pathSpellings returns path canonicalized, plus its symlink-resolved form when
+// the path exists and resolves elsewhere. Both sides of the containment test come
+// through here, so a scratchpad clone the loop reported as `c:\...\Temp\x` still
+// prefix-matches the temp dir the OS spells `C:\...\Temp`.
 func pathSpellings(path string) []string {
-	cleaned := filepath.Clean(path)
-	resolved, err := filepath.EvalSymlinks(cleaned)
-	if err != nil || resolved == cleaned {
-		return []string{cleaned}
+	canonical := registry.CanonicalRoot(path)
+	resolved, err := filepath.EvalSymlinks(canonical)
+	if err != nil || registry.CanonicalRoot(resolved) == canonical {
+		return []string{canonical}
 	}
-	return []string{cleaned, resolved}
+	return []string{canonical, registry.CanonicalRoot(resolved)}
 }
 
 func dirExists(root string) bool {
@@ -329,11 +412,12 @@ func (r *Registrations) importRegistered(path string) error {
 		return fmt.Errorf("import legacy %s: %w", path, err)
 	}
 	for _, root := range ws.Repos {
-		if root == "" {
+		canonical := registry.CanonicalRoot(root)
+		if canonical == "" {
 			continue
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO registered_repos(root) VALUES(?) ON CONFLICT(root) DO NOTHING`, root,
+			`INSERT INTO registered_repos(root) VALUES(?) ON CONFLICT(root) DO NOTHING`, canonical,
 		); err != nil {
 			return fmt.Errorf("import legacy %s: %w", path, errors.Join(err, tx.Rollback()))
 		}

@@ -169,7 +169,7 @@ func (s *Server) repoViews() []RepoView {
 	entries := s.liveInstances()
 	live := make(map[string]bool, len(entries))
 	for _, e := range entries {
-		live[e.RepoRoot] = true
+		live[registry.CanonicalRoot(e.RepoRoot)] = true
 	}
 	roots := s.effectiveRoots()
 	allowed := make(map[string]bool, len(roots))
@@ -179,7 +179,7 @@ func (s *Server) repoViews() []RepoView {
 	registered := make(map[string]bool)
 	if roots, err := s.stores.Registrations().Registered(); err == nil {
 		for _, root := range roots {
-			registered[root] = true
+			registered[registry.CanonicalRoot(root)] = true
 		}
 	}
 	seen := make(map[string]bool)
@@ -195,12 +195,27 @@ func (s *Server) repoViews() []RepoView {
 		}
 		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: registered[root], Seeded: s.seeded(root)}.withKind())
 	}
-	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
+	sort.SliceStable(views, func(i, j int) bool {
+		return lessByNameThenRoot(views[i].Name, views[i].Root, views[j].Name, views[j].Root)
+	})
 	return views
 }
 
+// lessByNameThenRoot is the order the repo listing and the union it is built from
+// both sort by: name, then root among the repos sharing a basename. The two have
+// to agree, or the row a name-addressed lookup resolves to is not the row the
+// list showed under that name.
+func lessByNameThenRoot(nameA, rootA, nameB, rootB string) bool {
+	if nameA != nameB {
+		return nameA < nameB
+	}
+	return rootA < rootB
+}
+
 // knownRepos is the repos the hub keeps listed: the persisted known set unioned
-// with the currently live loops, sorted by name. Reading it never writes; the
+// with the currently live loops, keyed by canonical root so two spellings of one
+// directory are one repo, and ordered by name then root so a name shared by two
+// repos still resolves the same way on every poll. Reading it never writes; the
 // sweep persists live loops so they linger after exit, and unregistering a repo
 // remembers it so it lingers too. entries is the live snapshot the caller already
 // read, folded in so a just-started loop resolves before the next sweep.
@@ -208,6 +223,7 @@ func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	byRoot := make(map[string]registry.Repo)
 	if persisted, err := s.stores.Registrations().Known(); err == nil {
 		for _, repo := range persisted {
+			repo.Root = registry.CanonicalRoot(repo.Root)
 			byRoot[repo.Root] = repo
 		}
 	}
@@ -220,7 +236,9 @@ func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	for _, repo := range byRoot {
 		repos = append(repos, repo)
 	}
-	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+	sort.SliceStable(repos, func(i, j int) bool {
+		return lessByNameThenRoot(repos[i].Name, repos[i].Root, repos[j].Name, repos[j].Root)
+	})
 	return repos
 }
 
@@ -230,17 +248,18 @@ func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 // workspace seed and web registrations) synthesized as workspace views, so a
 // freshly registered repo resolves before its first loop runs. Known and live
 // entries win over a synthesized view on a name collision. An absolute ident is
-// matched against known roots before any name, which is the only way to address
-// one of two repos sharing a basename.
+// matched against known roots before any name, under the same canonicalization the
+// roots are stored with, which is the only way to address one of two repos sharing
+// a basename.
 func (s *Server) findRepo(ident string) (registry.Repo, bool) {
 	if ident == "" {
 		return registry.Repo{}, false
 	}
 	known := s.knownRepos(s.liveInstances())
 	if filepath.IsAbs(ident) {
-		cleaned := filepath.Clean(ident)
+		canonical := registry.CanonicalRoot(ident)
 		for _, repo := range known {
-			if repo.Root == ident || repo.Root == cleaned {
+			if repo.Root == canonical {
 				return repo, true
 			}
 		}
@@ -259,26 +278,30 @@ func (s *Server) findRepo(ident string) (registry.Repo, bool) {
 // matchListedRepo resolves ident against the same union findRepo does, but under
 // matchRoot's rule that an ambiguous base name matches nothing. Removal is the one
 // lookup that must not fall back to an arbitrary namesake, so it takes a root or a
-// name only one listed repo answers to. The stored repo comes back with its root
-// verbatim: matchRoot answers with a cleaned path, and a row stored under another
-// spelling of it is the row a removal has to address. Only a root with no stored
-// row at all — a seed-only or live-only repo — falls through to a synthesized view.
-func (s *Server) matchListedRepo(ident string) (registry.Repo, bool) {
+// name only one listed repo answers to; a name two listed repos answer to comes
+// back as errAmbiguousRepo, which the caller has to refuse as such rather than
+// report the repo unknown. Only a root with no stored row at all — a seed-only or
+// live-only repo — falls through to a synthesized view.
+func (s *Server) matchListedRepo(ident string) (registry.Repo, error) {
 	known := s.knownRepos(s.liveInstances())
 	roots := make([]string, 0, len(known))
 	for _, repo := range known {
 		roots = append(roots, repo.Root)
 	}
-	root, ok := matchRoot(normalizeRoots(append(roots, s.effectiveRoots()...)), ident)
-	if !ok {
-		return registry.Repo{}, false
+	roots = normalizeRoots(append(roots, s.effectiveRoots()...))
+	matches := matchingRoots(roots, ident)
+	if len(matches) > 1 {
+		return registry.Repo{}, errAmbiguousRepo
+	}
+	if len(matches) == 0 {
+		return registry.Repo{}, errUnknownRepo
 	}
 	for _, repo := range known {
-		if filepath.Clean(repo.Root) == root {
-			return repo, true
+		if repo.Root == matches[0] {
+			return repo, nil
 		}
 	}
-	return workspaceRepo(root), true
+	return workspaceRepo(matches[0]), nil
 }
 
 // collectRuns reads every checkpoint the authoritative table holds for root into
