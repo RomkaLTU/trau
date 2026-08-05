@@ -121,12 +121,17 @@ func TestSearchEndpointRejectsNonGet(t *testing.T) {
 // cross-repo endpoint is exercised over a real multi-repo fixture.
 func globalSearchServer(t *testing.T) (*httptest.Server, *hubstore.Stores, map[string]string) {
 	t.Helper()
+	return globalSearchServerRepos(t, "acme", "beta")
+}
+
+func globalSearchServerRepos(t *testing.T, names ...string) (*httptest.Server, *hubstore.Stores, map[string]string) {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	stores := testStoresAt(t, home)
 	roots := map[string]string{}
-	repos := make([]registry.Repo, 0, 2)
-	for _, name := range []string{"acme", "beta"} {
+	repos := make([]registry.Repo, 0, len(names))
+	for _, name := range names {
 		root := filepath.Join(t.TempDir(), name)
 		roots[name] = root
 		repos = append(repos, registry.Repo{Name: name, Root: root, RunsDir: filepath.Join(root, ".trau", "runs")})
@@ -268,6 +273,37 @@ func TestGlobalSearchCapsEachGroup(t *testing.T) {
 	}
 	if perRepo["acme"] != 5 || perRepo["beta"] != 5 {
 		t.Fatalf("per-repo counts = %v, want neither repo flooding the group", perRepo)
+	}
+}
+
+func TestGlobalSearchFloatsExactIdentifierMatches(t *testing.T) {
+	ts, stores, roots := globalSearchServerRepos(t, "acme", "beta", "gamma")
+	for _, name := range []string{"acme", "beta"} {
+		issues := make([]hubstore.Issue, 0, 8)
+		for i := range 8 {
+			issues = append(issues, hubstore.Issue{
+				Identifier:  fmt.Sprintf("COD-%d", 800+i),
+				Title:       "follow-up to COD-733",
+				StatusGroup: "started",
+			})
+		}
+		if _, _, err := stores.Issues().Upsert(roots[name], "linear", issues); err != nil {
+			t.Fatalf("upsert %s issues: %v", name, err)
+		}
+	}
+	if _, _, err := stores.Issues().Upsert(roots["gamma"], "linear", []hubstore.Issue{
+		{Identifier: "COD-733", Title: "prompt pipeline", StatusGroup: "started"},
+	}); err != nil {
+		t.Fatalf("upsert gamma issues: %v", err)
+	}
+
+	_, out, _ := getGlobalSearch(t, ts, "COD-733")
+	if len(out.Results.Issues) != 10 {
+		t.Fatalf("issues = %d, want the group capped at 10", len(out.Results.Issues))
+	}
+	top := out.Results.Issues[0]
+	if top.ID != "COD-733" || top.Repo != "gamma" {
+		t.Fatalf("top issue = %+v, want gamma's exact identifier match", top)
 	}
 }
 

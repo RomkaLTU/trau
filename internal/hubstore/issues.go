@@ -793,10 +793,14 @@ func (s *Issues) attachComments(repo string, issues []Issue, byID map[int64]int)
 const defaultSearchLimit = 20
 
 // Search returns a repo's issues matching query, ranked best-first over the FTS5
-// index of identifier, title, description, and labels. Identifier and title
-// outweigh description so a hit in either surfaces above a body-only mention. A
-// query that reduces to no searchable tokens — blank, or all punctuation —
-// returns no matches rather than an error, so the caller need not pre-validate.
+// index of identifier, title, description, and labels. An identifier that equals
+// the query — then one that starts with it — is pinned ahead of every text match,
+// so typing a ticket id lands on that ticket; the rest fall back to relevance,
+// with finished work softly demoted and recency breaking ties. Identifier and
+// title outweigh description so a hit in either surfaces above a body-only
+// mention. A query that reduces to no searchable tokens —
+// blank, or all punctuation — returns no matches rather than an error, so the
+// caller need not pre-validate.
 func (s *Issues) Search(repo, query string, limit int) (issues []Issue, err error) {
 	match := buildMatchQuery(query)
 	if match == "" {
@@ -805,13 +809,22 @@ func (s *Issues) Search(repo, query string, limit int) (issues []Issue, err erro
 	if limit <= 0 || limit > defaultSearchLimit {
 		limit = defaultSearchLimit
 	}
+	id := strings.TrimSpace(query)
 	rows, err := s.db.Query(
 		`SELECT `+prefixColumns("i")+`
 		 FROM issues_fts f JOIN issues i ON i.id = f.rowid
 		 WHERE issues_fts MATCH ? AND i.repo = ? AND i.deleted_at = ''
-		 ORDER BY bm25(issues_fts, 10.0, 5.0, 1.0, 3.0, 3.0)
+		 ORDER BY
+			CASE
+				WHEN i.identifier = ? COLLATE NOCASE THEN 0
+				WHEN substr(i.identifier, 1, length(?)) = ? COLLATE NOCASE THEN 1
+				ELSE 2
+			END,
+			bm25(issues_fts, 10.0, 5.0, 1.0, 3.0, 3.0) *
+				CASE WHEN i.status_group IN ('done', 'canceled') THEN 0.5 ELSE 1.0 END,
+			i.updated_at DESC
 		 LIMIT ?`,
-		match, repo, limit,
+		match, repo, id, id, id, limit,
 	)
 	if err != nil {
 		return nil, err

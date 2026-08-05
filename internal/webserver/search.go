@@ -120,10 +120,11 @@ func (s *Server) handleGlobalSearch(w http.ResponseWriter, r *http.Request) {
 		// The same list the repo switcher shows, so a repo registered from the web
 		// is searchable before its first loop has ever run.
 		for _, view := range s.repoViews() {
-			groups.Issues = appendCapped(groups.Issues, s.searchRepoIssues(view.Repo, query))
+			groups.Issues = append(groups.Issues, s.searchRepoIssues(view.Repo, query)...)
 			groups.Settings = appendCapped(groups.Settings, s.searchRepoSettings(view.Repo, terms))
 			groups.Runs = appendCapped(groups.Runs, s.searchRepoRuns(view.Repo, terms))
 		}
+		groups.Issues = floatIdentifierMatches(groups.Issues, query)
 	}
 	writeJSON(w, http.StatusOK, GlobalSearchResponse{Query: query, Results: groups})
 }
@@ -211,6 +212,26 @@ func matchesTerms(terms []string, fields ...string) bool {
 		}
 	}
 	return true
+}
+
+// floatIdentifierMatches reapplies the per-repo identifier pin across the merged
+// group before capping it, so an exact match found in a repo late in registry
+// order is neither buried nor cut.
+func floatIdentifierMatches(matches []GlobalIssueResult, query string) []GlobalIssueResult {
+	sort.SliceStable(matches, func(i, j int) bool {
+		return identifierTier(matches[i].ID, query) < identifierTier(matches[j].ID, query)
+	})
+	return matches[:min(len(matches), globalSearchTypeLimit)]
+}
+
+func identifierTier(id, query string) int {
+	switch {
+	case strings.EqualFold(id, query):
+		return 0
+	case strings.HasPrefix(strings.ToLower(id), strings.ToLower(query)):
+		return 1
+	}
+	return 2
 }
 
 func appendCapped[T any](group, matches []T) []T {
