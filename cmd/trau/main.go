@@ -1547,6 +1547,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		QANotes:              cfg.QANotes,
 		AutoMerge:            cfg.AutoMerge,
 		MergeMethod:          cfg.MergeMethod,
+		EpicStackedPRs:       cfg.EpicStackedPRs,
 		DeliveredState:       cfg.DeliveredState,
 		DeterministicCommit:  cfg.DeterministicCommit,
 		ExpectedChecks:       cfg.ExpectedChecks,

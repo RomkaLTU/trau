@@ -285,6 +285,13 @@ type Config struct {
 
 	EpicFlow bool
 
+	// EpicStackedPRs opts an epic into the experimental stacked shape: its slices
+	// chain as a native GitHub stack — each child cut from the previous child's
+	// branch, the bottom PR on the base — instead of fanning into one epic
+	// integration branch, and the whole stack merges once from the top. Default
+	// off; it engages only where GitHub's stacked-PRs preview answers.
+	EpicStackedPRs bool
+
 	// UsageWindow enables the HUD's provider rate-limit window probe (claude OAuth
 	// usage, codex app-server, kimi balance). On by default; every probe is
 	// metadata-only and fails closed to token/cost totals, so it is safe to leave
@@ -1026,6 +1033,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("EPIC_FLOW"); v != "" {
 		c.EpicFlow = v == "1"
 		sources["EPIC_FLOW"] = src.name
+	}
+	if v, src := get("EPIC_STACKED_PRS"); v != "" {
+		c.EpicStackedPRs = v == "1"
+		sources["EPIC_STACKED_PRS"] = src.name
 	}
 	if v, src := get("LESSONS"); v != "" {
 		c.Lessons = v == "1"
@@ -1910,6 +1921,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "TRAU_TUI", Group: sectionTUI, Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "THEME", Group: sectionTUI, WebEditable: true, Default: "default", Description: "TUI color theme preset", Options: []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}},
 		{Key: "EPIC_FLOW", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
+		{Key: "EPIC_STACKED_PRS", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "0", Description: "Epic slices chain as a native GitHub stack instead of fanning into an epic branch (experimental; requires GitHub's stacked-PRs preview)", Bool: true},
 		{Key: "NOTIFY", Group: sectionTUI, WebEditable: true, Default: "0", Description: "Desktop notifications on pause, quarantine, and session end (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_ENABLED", Group: sectionTimeLog, WebEditable: true, Default: "0", Description: "Write a per-ticket effort time log (JSON) after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_STORAGE", Group: sectionTimeLog, WebEditable: true, Default: "repo", Description: "Time-log location: repo (<repo>/.trau/time/) | user (~/.trau/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
@@ -2589,6 +2601,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.Theme
 	case "EPIC_FLOW":
 		if cfg.EpicFlow {
+			return "1"
+		}
+		return "0"
+	case "EPIC_STACKED_PRS":
+		if cfg.EpicStackedPRs {
 			return "1"
 		}
 		return "0"

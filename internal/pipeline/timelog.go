@@ -98,12 +98,15 @@ func (p *Pipeline) recordTimelog(ctx context.Context, id string) {
 	p.logf("  ⏱ logged ~%s effort for %s (.trau/time)", humanMinutes(minutes), id)
 }
 
-// timelogBase returns the branch the merged work diverged from: the epic
-// integration branch for an epic child, else the configured base branch.
+// timelogBase returns the branch the merged work diverged from: the layer below it
+// in a stacked epic, the epic integration branch for a classic epic child, else the
+// configured base branch. It goes through buildBase rather than resolving the epic
+// branch itself, so a stacked epic — which has no epic branch — is not handed one
+// here as a side effect of writing a time log.
 func (p *Pipeline) timelogBase(ctx context.Context) string {
 	if p.EpicID != "" {
-		if epic, err := p.epicBranchName(ctx); err == nil && epic != "" {
-			return epic
+		if base, err := p.buildBase(ctx); err == nil && base != "" {
+			return base
 		}
 	}
 	return p.Base
