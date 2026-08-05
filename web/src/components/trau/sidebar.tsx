@@ -11,6 +11,11 @@ import { ThemeToggle } from '@/components/trau/theme-toggle'
 import { WhatsNewDialog } from '@/components/trau/whats-new-dialog'
 import { Badge } from '@/components/ui/badge'
 import { useAttentionCount } from '@/lib/attention'
+import {
+  grillSessionsQueryOptions,
+  researchGrillSessionsQueryOptions,
+  type GrillSession,
+} from '@/lib/grill'
 import { healthQueryOptions } from '@/lib/health'
 import { useInboxCounts } from '@/lib/inbox'
 import { isMacPlatform, shortcutLabel } from '@/lib/palette-keys'
@@ -34,10 +39,15 @@ interface NavBadge {
   title?: string
 }
 
+function runningSessions(sessions: GrillSession[] | undefined): number {
+  return sessions?.filter((session) => session.state === 'running').length ?? 0
+}
+
 export function navBadge(
   item: NavItem,
   attention: number,
   inbox: { total: number; awaiting: number },
+  running: { interviews: number; research: number },
   queue?: QueueResponse,
 ): NavBadge | null {
   if (item.attention) {
@@ -65,12 +75,26 @@ export function navBadge(
         title: `${inbox.awaiting} question${inbox.awaiting === 1 ? '' : 's'} waiting on you`,
       }
     }
+    if (running.interviews > 0) {
+      return {
+        count: inbox.total > 0 ? inbox.total : running.interviews,
+        tone: 'active',
+        title: `${running.interviews} interview${running.interviews === 1 ? '' : 's'} in progress`,
+      }
+    }
     if (inbox.total > 0) {
       return {
         count: inbox.total,
         tone: 'muted',
         title: `${inbox.total} issue${inbox.total === 1 ? '' : 's'} to triage`,
       }
+    }
+  }
+  if (item.research && running.research > 0) {
+    return {
+      count: running.research,
+      tone: 'active',
+      title: `${running.research} research session${running.research === 1 ? '' : 's'} in progress`,
     }
   }
   return null
@@ -99,8 +123,14 @@ export function Sidebar({
   const { repo, repos, isAll, autoScope, openSwitcher } = useActiveRepo()
   const navigate = useNavigate()
   const attention = useAttentionCount(repo)
-  const inboxRepo = useProjectRepo(repo ?? '', repos)
-  const inbox = useInboxCounts(inboxRepo)
+  const projectRepo = useProjectRepo(repo ?? '', repos)
+  const inbox = useInboxCounts(projectRepo)
+  const interviews = useQuery(grillSessionsQueryOptions(projectRepo))
+  const research = useQuery(researchGrillSessionsQueryOptions(projectRepo))
+  const running = {
+    interviews: runningSessions(interviews.data?.sessions),
+    research: runningSessions(research.data?.sessions),
+  }
   const queue = useQuery({
     ...queueQueryOptions(repo ?? ''),
     refetchInterval: 3000,
@@ -166,7 +196,13 @@ export function Sidebar({
             </p>
             <ul className="flex flex-col gap-0.5">
               {group.items.map((item) => {
-                const badge = navBadge(item, attention, inbox, queue.data)
+                const badge = navBadge(
+                  item,
+                  attention,
+                  inbox,
+                  running,
+                  queue.data,
+                )
                 const disabled = isAll && item.requiresProject
 
                 if (disabled) {
