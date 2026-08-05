@@ -58,11 +58,11 @@ What an Instance is doing right now, reported by the instance itself alongside i
 _Avoid_: phase (that's pipeline progress, lives in the Checkpoint), status (bare, overloaded), activity (that's the work inside Working — its own term), faulted/paused (as session states — those are Failure classes on the Checkpoint)
 
 **Activity**:
-The pipeline work a Working Instance is executing right now — one of `build`, `lintfix`, `cleanup`, `handoff`, `verify`, `repair`, `bugfix`, `commit`, `pr`, `ci-wait`, `merge` — reported present-tense in the instance's heartbeat with an optional detail (the raw call label, e.g. `repair2`). Exists only while Working; dies with the session. Its durable trace is the `activity_change` event stream, from which per-activity wall-clock is derived. Distinct from the Checkpoint's phase, which is past-tense — what last *completed*, kept for resume.
+The pipeline work a Working Instance is executing right now — one of `build`, `lintfix`, `cleanup`, `handoff`, `testgate`, `verify`, `repair`, `bugfix`, `commit`, `pr`, `ci-wait`, `merge` — reported present-tense in the instance's heartbeat with an optional detail (the raw call label, e.g. `repair2`). Exists only while Working; dies with the session. Its durable trace is the `activity_change` event stream, from which per-activity wall-clock is derived. Distinct from the Checkpoint's phase, which is past-tense — what last *completed*, kept for resume.
 _Avoid_: phase (that's the Checkpoint's past-tense progress), step (that's the display grouping), session state (that's Idle/Grazing/Working/…)
 
 **Step**:
-The display grouping of Activities — exactly three, identical in web and TUI: **Build** (build, lintfix, cleanup, handoff), **Verify** (verify, repair, bugfix), **Ship** (commit, pr, ci-wait, merge). The active Step shows its live Activity as a sub-label ("Verify · repair 2"). The Activity→Step map lives at the display edge, never in the protocol; the handoff brief sits in Build because it runs concurrently with the cleanup chain and concurrent work cannot straddle sequential Steps.
+The display grouping of Activities — exactly three, identical in web and TUI: **Build** (build, lintfix, cleanup, handoff), **Verify** (testgate, verify, repair, bugfix), **Ship** (commit, pr, ci-wait, merge). The active Step shows its live Activity as a sub-label ("Verify · repair 2"). The Activity→Step map lives at the display edge, never in the protocol; the handoff brief sits in Build because it runs concurrently with the cleanup chain and concurrent work cannot straddle sequential Steps, and the Test gate opens Verify because it decides whether a verify turn is spent at all.
 _Avoid_: phase (that's the Checkpoint), stage, macro-step (just Step)
 
 **Registered repo**:

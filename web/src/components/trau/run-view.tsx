@@ -183,6 +183,18 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyphClass: "text-warn",
         text: ev.msg || "build loaded no skills",
       };
+    case "test_gate": {
+      const failed = fieldStr(ev, "result") === "fail";
+      return {
+        glyph: failed ? "✗" : "✓",
+        glyphClass: failed ? "text-fail" : "text-teal",
+        text:
+          ev.msg ||
+          (failed
+            ? "test gate failed — routed to repair without a verify turn"
+            : "test gate passed"),
+      };
+    }
     case "verify_no_browser":
       return {
         glyph: "⚠",

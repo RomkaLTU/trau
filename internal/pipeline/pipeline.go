@@ -2278,21 +2278,38 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		p.logf("  ↳ verify panel: %d cross-vendor verifiers, %s policy", n, normalizePolicy(p.PanelPolicy))
 	}
 
+	// A failing gate hands the loop a verdict of its own, so the first agent call
+	// below is the repair rather than a verifier that would only rediscover it.
+	gateVerdict, gated := p.testGate(ctx, id)
+	if gated {
+		p.persistVerdict(id, gateVerdict)
+		if err := writeVerdictFile(verdictPath, gateVerdict); err != nil {
+			p.logf("  ⚠ could not write the test gate's verdict to %s: %v", verdictPath, err)
+		}
+	}
+
 	repairAttempt := 0
 	bugfixAttempt := 0
 	passed := false
 	label := "verify"
 	var lastFail, passVerdict verdict
 	for {
-		p.setActivity(id, activity.Verify, "")
-		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx)
-		if err != nil {
-			return err
+		var v verdict
+		failedStep := "verify"
+		if gated {
+			v, gated, failedStep = gateVerdict, false, "test gate"
+		} else {
+			p.setActivity(id, activity.Verify, "")
+			attempt, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx)
+			if err != nil {
+				return err
+			}
+			if label == "verify" {
+				p.warnVerifyWithoutSkills(id, verifySkills.Names)
+			}
+			v = attempt
+			p.persistVerdict(id, v)
 		}
-		if label == "verify" {
-			p.warnVerifyWithoutSkills(id, verifySkills.Names)
-		}
-		p.persistVerdict(id, v)
 		if v.Pass {
 			passed = true
 			passVerdict = v
@@ -2303,7 +2320,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		if repairAttempt < p.MaxRepairs {
 			repairAttempt++
 			label = fmt.Sprintf("verify-retry%d", repairAttempt)
-			p.logf("  ⚠ verify failed — self-heal attempt %d/%d", repairAttempt, p.MaxRepairs)
+			p.logf("  ⚠ %s failed — self-heal attempt %d/%d", failedStep, repairAttempt, p.MaxRepairs)
 			for _, fl := range topFailures(v) {
 				p.logf("  ↳ %s", fl)
 			}

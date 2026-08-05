@@ -10,6 +10,7 @@ func TestStepOf(t *testing.T) {
 		LintFix:   StepBuild,
 		Cleanup:   StepBuild,
 		Handoff:   StepBuild,
+		TestGate:  StepVerify,
 		Verify:    StepVerify,
 		Repair:    StepVerify,
 		Bugfix:    StepVerify,

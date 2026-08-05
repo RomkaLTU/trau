@@ -35,6 +35,12 @@ const KindSkillsPlanned = "skills_planned"
 // closing claim so the two can be compared.
 const KindCleanupOutcome = "cleanup_outcome"
 
+// KindTestGate records the mechanical pre-verify test gate: whether the tests the
+// rubric requires exist and whether the packages whose tests this run changed hold
+// up under -race. A failing gate routes the run straight to repair, so this event
+// is the run view's explanation for a repair that follows no verify turn.
+const KindTestGate = "test_gate"
+
 // KindVerifyNoSkills marks a verify that loaded no skills in a repo that has
 // skills installed — the build_no_skills mirror for the QA phase.
 const KindVerifyNoSkills = "verify_no_skills"

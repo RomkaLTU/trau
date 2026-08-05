@@ -24,6 +24,7 @@ const ACTIVITY_STEP: Record<string, number> = {
   lintfix: 0,
   cleanup: 0,
   handoff: 0,
+  testgate: 1,
   verify: 1,
   repair: 1,
   bugfix: 1,

@@ -15,6 +15,7 @@ const (
 	LintFix   Activity = "lintfix"
 	Cleanup   Activity = "cleanup"
 	Handoff   Activity = "handoff"
+	TestGate  Activity = "testgate"
 	Verify    Activity = "verify"
 	Repair    Activity = "repair"
 	Bugfix    Activity = "bugfix"
@@ -41,11 +42,14 @@ const (
 var Steps = []Step{StepBuild, StepVerify, StepShip}
 
 // StepOf groups an Activity into its Step. Build absorbs the concurrent build tail
-// (lintfix, cleanup, handoff); Verify holds the self-heal loop; Ship covers commit
-// through merge.
+// (lintfix, cleanup, handoff); Verify holds the mechanical test gate and the
+// self-heal loop; Ship covers commit through merge. The test gate opens Verify
+// rather than closing Build: it decides whether the run spends a verify turn at
+// all, and a gate failure continues in the same Step as repair, so the stepper
+// never walks backwards.
 func StepOf(a Activity) Step {
 	switch a {
-	case Verify, Repair, Bugfix:
+	case TestGate, Verify, Repair, Bugfix:
 		return StepVerify
 	case Commit, PR, CIWait, Merge, MergeWait:
 		return StepShip
