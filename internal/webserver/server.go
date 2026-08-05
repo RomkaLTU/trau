@@ -295,6 +295,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/mcp", s.handleMCP)
 	mux.HandleFunc(APIPrefix+"/search", s.handleGlobalSearch)
+	mux.HandleFunc(APIPrefix+"/themes", s.handleThemes)
 	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
 	mux.HandleFunc(APIPrefix+"/hub/stop", s.handleHubStop)
 	mux.HandleFunc(APIPrefix+"/hub/reload", s.handleHubReload)

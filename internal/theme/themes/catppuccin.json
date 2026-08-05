@@ -1,0 +1,74 @@
+{
+  "name": "Catppuccin",
+  "slug": "catppuccin",
+  "author": "Catppuccin",
+  "version": "1",
+  "modes": {
+    "light": {
+      "roles": {
+        "brand": "#179299",
+        "accent": "#8839ef",
+        "success": "#40a02b",
+        "error": "#d20f39",
+        "warning": "#df8e1d",
+        "info": "#1e66f5",
+        "text": "#4c4f69",
+        "subtle": "#6c6f85",
+        "faint": "#9ca0b0",
+        "surface": "#ccd0da",
+        "border": "#bcc0cc",
+        "ink": "#eff1f5"
+      },
+      "vars": {
+        "--cli": "#8839ef"
+      },
+      "tui": {
+        "brand": "#179299",
+        "accent": "#ea76cb",
+        "success": "#40a02b",
+        "error": "#d20f39",
+        "warning": "#df8e1d",
+        "info": "#1e66f5",
+        "text": "#4c4f69",
+        "subtle": "#85889a",
+        "faint": "#a6a8b6",
+        "surface": "#dfe1e7",
+        "border": "#bec0cb",
+        "ink": "#eff1f5"
+      }
+    },
+    "dark": {
+      "roles": {
+        "brand": "#94e2d5",
+        "accent": "#cba6f7",
+        "success": "#a6e3a1",
+        "error": "#f38ba8",
+        "warning": "#f9e2af",
+        "info": "#89b4fa",
+        "text": "#cdd6f4",
+        "subtle": "#a6adc8",
+        "faint": "#6c7086",
+        "surface": "#313244",
+        "border": "#45475a",
+        "ink": "#1e1e2e"
+      },
+      "vars": {
+        "--cli": "#f5c2e7"
+      },
+      "tui": {
+        "brand": "#94e2d5",
+        "accent": "#f5c2e7",
+        "success": "#a6e3a1",
+        "error": "#f38ba8",
+        "warning": "#f9e2af",
+        "info": "#89b4fa",
+        "text": "#cdd6f4",
+        "subtle": "#9096af",
+        "faint": "#6d7187",
+        "surface": "#303042",
+        "border": "#535569",
+        "ink": "#1e1e2e"
+      }
+    }
+  }
+}

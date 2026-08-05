@@ -1,13 +1,25 @@
 import { useSyncExternalStore } from 'react'
 
+import { ALL_SCOPE, loadStoredScope } from './active-repo'
+import {
+  fetchThemes,
+  paletteBackground,
+  paletteCSS,
+  sanitizePalettes,
+  type Palettes,
+} from './palette'
+
 type Store = Pick<Storage, 'getItem' | 'setItem'>
 
 const THEME_KEY = 'trau.theme'
+const PALETTE_KEY = 'trau.palette'
+const PALETTE_STYLE_ID = 'trau-palette'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ResolvedTheme = 'light' | 'dark'
 
-// Mirrors --background so the installed window chrome tracks the app theme.
+// The built-in palette's --background, for the window chrome before a theme's
+// own palette has been applied.
 const CHROME_COLOR: Record<ResolvedTheme, string> = {
   light: '#faf8f5',
   dark: '#0c0a09',
@@ -94,6 +106,59 @@ export function applyTheme(mode: ThemeMode): ResolvedTheme {
   globalThis.document?.documentElement.classList.toggle('dark', theme === 'dark')
   globalThis.document
     ?.querySelector('meta[name="theme-color"]')
-    ?.setAttribute('content', CHROME_COLOR[theme])
+    ?.setAttribute(
+      'content',
+      paletteBackground(palettes, theme) ?? CHROME_COLOR[theme],
+    )
   return theme
+}
+
+// The active theme's resolved palettes. They layer over the styles.css defaults
+// rather than replacing them, so a mode the theme does not define keeps the
+// built-in look instead of inheriting the other mode's colors.
+let palettes: Palettes = {}
+
+function applyPalettes(next: Palettes): void {
+  palettes = next
+  const doc = globalThis.document
+  if (!doc) return
+  let style = doc.getElementById(PALETTE_STYLE_ID)
+  if (!style) {
+    style = doc.createElement('style')
+    style.id = PALETTE_STYLE_ID
+    doc.head.append(style)
+  }
+  style.textContent = paletteCSS(next)
+  applyTheme(loadThemeMode())
+}
+
+function loadCachedPalettes(): Palettes {
+  const raw = browserStore()?.getItem(PALETTE_KEY) ?? null
+  if (!raw) return {}
+  try {
+    return sanitizePalettes(JSON.parse(raw))
+  } catch {
+    return {}
+  }
+}
+
+// initPalettes paints the last known palette first — the cache is also what the
+// pre-paint script in index.html reads — then reconciles with the hub. The
+// project scope decides whose THEME applies, so a repo that sets its own theme
+// wins while it is the selected project.
+export async function initPalettes(): Promise<void> {
+  const cached = loadCachedPalettes()
+  if (cached.light || cached.dark) applyPalettes(cached)
+  const scope = loadStoredScope()
+  try {
+    const res = await fetchThemes(
+      scope && scope !== ALL_SCOPE ? scope : undefined,
+    )
+    const resolved = sanitizePalettes(res.resolved)
+    applyPalettes(resolved)
+    browserStore()?.setItem(PALETTE_KEY, JSON.stringify(resolved))
+  } catch {
+    // A hub that cannot answer leaves the cached or built-in palette in place;
+    // the connectivity surfaces already report an unreachable hub.
+  }
 }
