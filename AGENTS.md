@@ -8,6 +8,11 @@ Trau is an autonomous, ticket-driven development loop shipped as a single static
 
 Read `CONTEXT.md` first — it defines the domain vocabulary (**Provider / Model / Route / Fallback provider / Provider override**) and which near-synonyms to avoid. Use those terms exactly in code, comments, and tickets.
 
+## Language
+
+- **Write in ASD-STE100 Simplified Technical English.** This applies to everything you write: code, comments, commit messages, PR bodies, tickets, and replies to the operator. Keep one idea per sentence, prefer the active voice, use an approved word only in its approved part of speech, and never reach for a synonym of a term you have already used.
+- **Read every `CONTEXT.md` before you write, and use its ubiquitous language.** The terms it defines beat any near-synonym, in prose and in identifiers alike. A term the domain model does not define is a term you must not invent on the spot.
+
 ## Commands
 
 ```bash
