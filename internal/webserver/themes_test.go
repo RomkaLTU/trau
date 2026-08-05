@@ -39,8 +39,10 @@ func TestThemesListsBundledSetAndResolvesDefault(t *testing.T) {
 	if out.Active != theme.DefaultSlug {
 		t.Errorf("active = %q, want %q", out.Active, theme.DefaultSlug)
 	}
-	if len(out.Themes) != len(theme.Slugs()) {
-		t.Fatalf("themes = %d, want %d", len(out.Themes), len(theme.Slugs()))
+	// The server's home is a temp dir with no saved themes, so the listing is
+	// the bundled set — not this machine's, which Slugs would fold in.
+	if len(out.Themes) != len(theme.Bundled()) {
+		t.Fatalf("themes = %d, want %d", len(out.Themes), len(theme.Bundled()))
 	}
 	for _, view := range out.Themes {
 		if view.Origin != theme.OriginBundled {
@@ -161,15 +163,23 @@ func TestThemesUnknownNameFallsBackToDefault(t *testing.T) {
 	}
 }
 
-func TestThemesRejectsWrites(t *testing.T) {
+// The collection reads and saves; everything else on it is a method error, and
+// the draft resolver only ever takes a POST.
+func TestThemesRejectsUnsupportedMethods(t *testing.T) {
 	home := t.TempDir()
 	ts := instancesServer(t, home)
-	res, err := http.Post(ts.URL+APIPrefix+"/themes", "application/json", nil)
-	if err != nil {
-		t.Fatalf("POST themes: %v", err)
-	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("status = %d, want 405", res.StatusCode)
+	for _, path := range []string{"/themes", "/themes/resolve"} {
+		req, err := http.NewRequest(http.MethodPut, ts.URL+APIPrefix+path, nil)
+		if err != nil {
+			t.Fatalf("build PUT %s: %v", path, err)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("PUT %s: %v", path, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("PUT %s = %d, want 405", path, res.StatusCode)
+		}
 	}
 }

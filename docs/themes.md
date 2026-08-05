@@ -137,10 +137,59 @@ in the terminal it means the built-in palette for that background polarity.
 An unknown `THEME` value falls back to `default` with a note, and never fails a
 run.
 
+## Writing a theme
+
+### The editor
+
+Settings → Appearance is the easy path. **Create theme** opens the active theme
+as a draft; **Duplicate & edit** on any card opens that one. Each mode gets the
+twelve roles as a swatch and a hex field, and the whole app previews the draft
+live — buttons, focus rings, cards, every screen — while the editor is open. The
+preview is browser state only: nothing is written to config or to disk until you
+save, and **Cancel** puts the active theme back at once. A half-typed hex is
+reported inline and the preview keeps the last color that parsed, so the app
+never goes dark mid-edit.
+
+The name derives the slug (`My Theme` → `my-theme.json`). Predefined slugs are
+reserved; a slug already saved asks before it replaces that theme. A mode can be
+added or removed, and at least one is required. **Save theme** installs it and
+offers to activate it, which is an ordinary `THEME=<slug>` write to the layer the
+write-target control names.
+
+`vars` and `tui` blocks a duplicated theme pinned ride along untouched. v1 has no
+editing surface for them — the roles are the editor's whole vocabulary — but they
+survive the round trip, so duplicating a bundled preset never loses its exact
+terminal hexes.
+
+### Exporting and sharing
+
+**Copy JSON** and **Download .json** produce the canonical theme file: metadata,
+then each mode's roles and any pinned `vars`/`tui`. That file is the shareable
+theme — the same document trau.sh will take when community submissions open — and
+it re-resolves identically to the theme it came from, which is a tested property
+of the format rather than a convention.
+
+### Saved themes on disk
+
+Saved themes are files at `<trau home>/themes/<slug>.json`, where the trau home is
+`$TRAU_HOME` or `~/.trau` — the directory the hub's own data lives in. Themes are
+configuration, so they legitimately stay on disk rather than in the hub database.
+
+The hub reads the directory whenever it serves themes, so **dropping a valid file
+in by hand works too**: it joins `GET /api/v1/themes` with `origin: "local"`, the
+picker, and the `THEME` catalog. Loading is fail-soft — a file that is unreadable,
+over the 64 KiB cap, unparseable, or claiming a predefined slug is skipped with a
+logged note and every sibling still loads. Nothing in the UI promises to explain a
+hand-dropped file that was refused; run the hub with `--verbose` to see the note.
+
+Deleting a saved theme from the picker removes the file. A `THEME` value naming a
+theme that is no longer installed falls back to `default` with a note, exactly as
+an unknown name always has.
+
 ## The hub's themes resource
 
-`GET /api/v1/themes` lists the themes this build carries and resolves the active
-one:
+`GET /api/v1/themes` lists the themes this machine carries — bundled and saved —
+and resolves the active one:
 
 ```json
 {
@@ -159,6 +208,25 @@ the derivation rules. An optional `?repo=<name-or-root>` reads `THEME` from that
 registered project's config; without it only the machine baseline
 (`~/.trau.ini`) and the environment decide.
 
+`origin` is `bundled` for a theme compiled into the binary and `local` for one
+saved on this machine. `note` appears when `THEME` names a theme that is no
+longer installed and the default took over.
+
 The SPA applies the resolved palettes as a stylesheet layered over the
 `styles.css` defaults, caches the last one, and replays it before first paint, so
 a themed UI does not flash the built-in colors on reload.
+
+Four more endpoints back the editor. All of them sit behind the hub's existing
+bearer-token gating and nothing else: saving a theme is a cosmetic write that
+widens no capability, so unlike repo registration it takes no second gate.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /api/v1/themes` | Installs a theme file. Full format validation plus a 64 KiB cap; a predefined slug is refused as a reserved name (409); an already-saved slug is overwritten and the response says `"replaced": true`. Nothing is stored when validation fails. |
+| `GET /api/v1/themes/{slug}` | The theme as its canonical file — the export, and the source a duplicate copies. |
+| `DELETE /api/v1/themes/{slug}` | Removes a saved theme. Predefined themes refuse (409); an unknown slug is a 404. Deleting the active theme leaves `THEME` alone and the default paints instead. |
+| `POST /api/v1/themes/resolve` | Resolves a draft document into its per-mode variable sets without storing anything. The editor calls it debounced for the live preview. |
+
+`resolve` deliberately ignores `THEME_<ROLE>` overrides: they are this repo's
+resolution of a theme, not part of the theme, and a draft has to preview the
+colors its author is writing. It is the same rule the picker's swatches follow.

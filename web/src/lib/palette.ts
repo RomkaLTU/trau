@@ -55,6 +55,9 @@ export interface ThemesResponse {
   active: string
   themes: ThemeSummary[]
   resolved: Palettes
+  // Set when THEME names a theme that is no longer installed — a saved one the
+  // picker deleted, say — and the default took over.
+  note?: string
 }
 
 const COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i
@@ -85,11 +88,11 @@ export function sanitizePalettes(input: unknown): Palettes {
   return out
 }
 
-// paletteCSS renders the palettes as one stylesheet. Both selectors carry two
-// classes' worth of specificity so they outrank the :root/.dark defaults in
-// styles.css whatever order the browser sees them in, and light never leaks into
-// a dark document.
-export function paletteCSS(palettes: Palettes): string {
+function paletteBlocks(
+  palettes: Palettes,
+  lightSelector: string,
+  darkSelector: string,
+): string {
   const block = (selector: string, vars: PaletteVars | undefined): string => {
     if (!vars) return ''
     const body = PALETTE_VARS.filter((name) => name in vars)
@@ -98,8 +101,23 @@ export function paletteCSS(palettes: Palettes): string {
     return body === '' ? '' : `${selector}{${body}}`
   }
   return (
-    block(':root:not(.dark)', palettes.light) + block(':root.dark', palettes.dark)
+    block(lightSelector, palettes.light) + block(darkSelector, palettes.dark)
   )
+}
+
+// paletteCSS renders the palettes as one stylesheet. Both selectors carry two
+// classes' worth of specificity so they outrank the :root/.dark defaults in
+// styles.css whatever order the browser sees them in, and light never leaks into
+// a dark document.
+export function paletteCSS(palettes: Palettes): string {
+  return paletteBlocks(palettes, ':root:not(.dark)', ':root.dark')
+}
+
+// previewCSS is the same stylesheet one specificity step higher, so an editor
+// preview wins over the active theme's palette however the two style elements
+// end up ordered in the head.
+export function previewCSS(palettes: Palettes): string {
+  return paletteBlocks(palettes, ':root:root:not(.dark)', ':root:root.dark')
 }
 
 export function paletteBackground(
@@ -121,3 +139,59 @@ export const themesQueryOptions = (repo: string) =>
     queryKey: ['themes', repo],
     queryFn: () => fetchThemes(repo === '' ? undefined : repo),
   })
+
+// themeError surfaces the hub's own message. Theme writes fail by field — a role
+// that is not a color, a reserved slug — and that sentence is the whole value of
+// the response to an author.
+async function themeError(res: Response, fallback: string): Promise<Error> {
+  const detail = (await res.json().catch(() => null)) as {
+    error?: string
+  } | null
+  return new Error(detail?.error ?? `${fallback}: ${res.status}`)
+}
+
+export interface ThemeSaveResult {
+  theme: ThemeSummary
+  replaced: boolean
+}
+
+// saveTheme installs a theme file under the trau home. A slug already saved
+// there is replaced, which the result reports so the editor can say so.
+export async function saveTheme(doc: unknown): Promise<ThemeSaveResult> {
+  const res = await apiFetch('/api/v1/themes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(doc),
+  })
+  if (!res.ok) throw await themeError(res, 'save theme')
+  return (await res.json()) as ThemeSaveResult
+}
+
+export async function deleteTheme(slug: string): Promise<void> {
+  const res = await apiFetch(`/api/v1/themes/${encodeURIComponent(slug)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw await themeError(res, 'delete theme')
+}
+
+// fetchThemeDocument reads a theme as its canonical file — the export, and the
+// source 'Duplicate & edit' copies, pinned vars and tui blocks included.
+export async function fetchThemeDocument(slug: string): Promise<unknown> {
+  const res = await apiFetch(`/api/v1/themes/${encodeURIComponent(slug)}`)
+  if (!res.ok) throw await themeError(res, 'read theme')
+  return res.json()
+}
+
+// resolveDraft expands an unsaved theme into its per-mode variable sets. The
+// derivation stays in Go, so the preview is the palette the theme will actually
+// paint rather than a browser-side approximation of it.
+export async function resolveDraft(doc: unknown): Promise<Palettes> {
+  const res = await apiFetch('/api/v1/themes/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(doc),
+  })
+  if (!res.ok) throw await themeError(res, 'resolve theme')
+  const out = (await res.json()) as { resolved?: unknown }
+  return sanitizePalettes(out.resolved)
+}

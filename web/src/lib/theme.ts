@@ -5,6 +5,7 @@ import {
   fetchThemes,
   paletteBackground,
   paletteCSS,
+  previewCSS,
   sanitizePalettes,
   type Palettes,
 } from './palette'
@@ -14,6 +15,7 @@ type Store = Pick<Storage, 'getItem' | 'setItem'>
 const THEME_KEY = 'trau.theme'
 const PALETTE_KEY = 'trau.palette'
 const PALETTE_STYLE_ID = 'trau-palette'
+const PREVIEW_STYLE_ID = 'trau-palette-preview'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ResolvedTheme = 'light' | 'dark'
@@ -104,11 +106,12 @@ function systemPrefersDark(): boolean {
 export function applyTheme(mode: ThemeMode): ResolvedTheme {
   const theme = resolveTheme(mode, systemPrefersDark())
   globalThis.document?.documentElement.classList.toggle('dark', theme === 'dark')
+  const shown = preview ?? palettes
   globalThis.document
     ?.querySelector('meta[name="theme-color"]')
     ?.setAttribute(
       'content',
-      paletteBackground(palettes, theme) ?? CHROME_COLOR[theme],
+      paletteBackground(shown, theme) ?? CHROME_COLOR[theme],
     )
   return theme
 }
@@ -117,6 +120,31 @@ export function applyTheme(mode: ThemeMode): ResolvedTheme {
 // rather than replacing them, so a mode the theme does not define keeps the
 // built-in look instead of inheriting the other mode's colors.
 let palettes: Palettes = {}
+
+// The theme editor's draft, applied over the active palette while the editor is
+// open. It is browser state and nothing else: nothing is written to the hub, to
+// config, or to the palette cache, so a reload — or Cancel — is back on the
+// active theme immediately.
+let preview: Palettes | null = null
+
+export function previewPalettes(next: Palettes | null): void {
+  preview = next
+  const doc = globalThis.document
+  if (!doc) return
+  let style = doc.getElementById(PREVIEW_STYLE_ID)
+  if (next === null) {
+    style?.remove()
+    applyTheme(loadThemeMode())
+    return
+  }
+  if (!style) {
+    style = doc.createElement('style')
+    style.id = PREVIEW_STYLE_ID
+    doc.head.append(style)
+  }
+  style.textContent = previewCSS(next)
+  applyTheme(loadThemeMode())
+}
 
 function applyPalettes(next: Palettes): void {
   palettes = next
