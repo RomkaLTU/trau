@@ -11,6 +11,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/tmpfile"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // LessonStore is the pipeline's seam for the durable per-repo lessons ledger. Verify
@@ -46,6 +47,10 @@ const (
 	// maxInjectedLessons caps how many distilled lessons a phase prompt recalls,
 	// so retrieval stays a hint and never bloats the context.
 	maxInjectedLessons = 5
+	// maxSiblingLessons is the share of that budget reserved for lessons other
+	// children of the same epic recorded, leaving the rest to keyword matches that
+	// reach outside the epic.
+	maxSiblingLessons = 3
 	// maxEvidenceLines caps how many failure lines a record carries as evidence.
 	maxEvidenceLines = 8
 	// minLessonScore is the relevance floor for retrieval: a tag or failure-type
@@ -279,6 +284,135 @@ func (p *Pipeline) recallLessons(query string) []string {
 		return nil
 	}
 	return relevantLessons(p.ledger(), query, maxInjectedLessons)
+}
+
+// recallTicketLessons is the build/verify recall for one ticket: the lessons its
+// epic siblings recorded, newest first, ahead of the keyword-matched set, deduped
+// and capped at maxInjectedLessons overall.
+//
+// Sibling recall is unconditional because keyword relevance works against us inside
+// an epic: children of one epic split a feature into slices whose titles barely
+// overlap, so a sibling's takeaway scores below minLessonScore exactly when it bears
+// hardest. A ticket with no parent epic recalls what it did before.
+func (p *Pipeline) recallTicketLessons(ctx context.Context, id string) []string {
+	if !p.Lessons || p.LessonLedger == nil {
+		return nil
+	}
+	records := p.ledger()
+	siblings := siblingLessons(records, p.epicSiblings(ctx, id), maxSiblingLessons)
+	return mergeRecalled(siblings, relevantLessons(records, p.lessonQuery(id), maxInjectedLessons), maxInjectedLessons)
+}
+
+// siblingLessons returns up to max distilled lessons recorded by the given sibling
+// tickets, newest first — the ledger arrives in append order, so the scan runs
+// backwards. Unlike relevantLessons this applies no relevance floor: membership in
+// the epic is the relevance signal.
+func siblingLessons(lessons []lesson, siblings map[string]bool, max int) []string {
+	if len(lessons) == 0 || len(siblings) == 0 || max <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var out []string
+	for i := len(lessons) - 1; i >= 0; i-- {
+		if !siblings[normalizeTicket(lessons[i].Ticket)] {
+			continue
+		}
+		text := strings.TrimSpace(lessons[i].Lesson)
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		out = append(out, text)
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+// mergeRecalled concatenates the sibling recall ahead of the keyword recall,
+// collapsing identical takeaways onto one slot and capping the result at max.
+func mergeRecalled(siblings, keyword []string, max int) []string {
+	if max <= 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(siblings)+len(keyword))
+	var out []string
+	for _, group := range [][]string{siblings, keyword} {
+		for _, l := range group {
+			if l == "" || seen[l] {
+				continue
+			}
+			seen[l] = true
+			out = append(out, l)
+			if len(out) >= max {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// epicSiblings names the other children of id's parent epic, keyed for lookup
+// against the ledger's ticket column. Nil when the ticket is top-level, when the
+// hierarchy cannot be read, or when it is its epic's only child — recall then stays
+// keyword-only. Memoized so a run's build and verify pay the lookup once.
+func (p *Pipeline) epicSiblings(ctx context.Context, id string) map[string]bool {
+	if p.lessonSiblings.id == id {
+		return p.lessonSiblings.ids
+	}
+	ids := p.resolveEpicSiblings(ctx, id)
+	p.lessonSiblings.id = id
+	p.lessonSiblings.ids = ids
+	return ids
+}
+
+func (p *Pipeline) resolveEpicSiblings(ctx context.Context, id string) map[string]bool {
+	epic := p.parentEpic(ctx, id)
+	if epic == "" || p.Tracker == nil {
+		return nil
+	}
+	subs, err := p.Tracker.SubIssues(ctx, epic)
+	if err != nil {
+		return nil
+	}
+	self := normalizeTicket(id)
+	out := make(map[string]bool, len(subs))
+	for _, s := range subs {
+		key := normalizeTicket(s.ID)
+		if key == "" || key == self {
+			continue
+		}
+		out[key] = true
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// parentEpic names the epic id belongs to: the epic this run already stacks on,
+// otherwise the tracker's parent lookup. "" means top-level — uncertainty reads as
+// "no epic", never as a wrong one.
+func (p *Pipeline) parentEpic(ctx context.Context, id string) string {
+	if p.EpicID != "" {
+		return p.EpicID
+	}
+	parenter, ok := p.Tracker.(tracker.IssueParenter)
+	if !ok {
+		return ""
+	}
+	parent, err := parenter.ParentIssue(ctx, id)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parent)
+}
+
+// normalizeTicket keys a ticket identifier for comparison, so a ledger row written
+// as "cod-1253" still matches the sibling listed as "COD-1253".
+func normalizeTicket(id string) string {
+	return strings.ToUpper(strings.TrimSpace(id))
 }
 
 // ledger reads the repo's recorded lessons from the hub in append order (oldest

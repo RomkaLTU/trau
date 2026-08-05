@@ -1,10 +1,14 @@
 package pipeline
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/state"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // newLesson-style helper for terser table rows.
@@ -113,6 +117,190 @@ func TestRecallLessonsParity(t *testing.T) {
 	}
 	if got := (&Pipeline{Lessons: true, LessonLedger: &fakeLedger{allErr: errors.New("ledger unreachable")}}).recallLessons("migration"); got != nil {
 		t.Errorf("recall on a ledger error = %v, want nil", got)
+	}
+}
+
+// siblingTracker answers the epic hierarchy the lessons recall walks: a ticket's
+// parent epic and that epic's children. It counts the lookups so a test can prove
+// build and verify share one resolution.
+type siblingTracker struct {
+	fakeTracker
+	parent      string
+	children    []string
+	subErr      error
+	subCalls    int
+	parentCalls int
+}
+
+func (t *siblingTracker) ParentIssue(context.Context, string) (string, error) {
+	t.parentCalls++
+	return t.parent, nil
+}
+
+func (t *siblingTracker) SubIssues(context.Context, string) ([]tracker.SubIssue, error) {
+	t.subCalls++
+	if t.subErr != nil {
+		return nil, t.subErr
+	}
+	out := make([]tracker.SubIssue, 0, len(t.children))
+	for _, c := range t.children {
+		out = append(out, tracker.SubIssue{ID: c})
+	}
+	return out, nil
+}
+
+// siblingPipeline builds a lessons-enabled pipeline for ticket id with the given
+// title on its checkpoint and records in its ledger.
+func siblingPipeline(t *testing.T, id, title string, trk tracker.Tracker, records ...lesson) *Pipeline {
+	t.Helper()
+	st := state.NewStore(t.TempDir())
+	if err := st.Set(id, "TITLE", title); err != nil {
+		t.Fatalf("seed title for %s: %v", id, err)
+	}
+	return &Pipeline{Lessons: true, LessonLedger: seedLedger(records...), State: st, Tracker: trk}
+}
+
+// TestRecallTicketLessonsInjectsEpicSiblingsWithoutKeywordOverlap covers the case
+// the feature exists for: a ticket shipping the very defect its epic sibling was
+// repaired for, because the disjoint titles scored the sibling's lesson below the
+// relevance floor.
+func TestRecallTicketLessonsInjectsEpicSiblingsWithoutKeywordOverlap(t *testing.T) {
+	sibling := lsn("COD-1253", "ui", "switching repos silently reverts a selected Research session type back to Interview", "ui")
+	records := []lesson{sibling}
+	title := "Pre-select from the focus note"
+
+	// The keyword path alone finds nothing — the titles are disjoint.
+	if got := relevantLessons(records, title+" COD-1254", maxInjectedLessons); got != nil {
+		t.Fatalf("keyword recall unexpectedly matched %v — the fixture no longer proves the gap", got)
+	}
+
+	trk := &siblingTracker{parent: "COD-1252", children: []string{"COD-1253", "COD-1254"}}
+	p := siblingPipeline(t, "COD-1254", title, trk, records...)
+
+	got := p.recallTicketLessons(context.Background(), "COD-1254")
+	if len(got) != 1 || got[0] != sibling.Lesson {
+		t.Fatalf("recall = %v, want the sibling lesson %q", got, sibling.Lesson)
+	}
+
+	if trk.subCalls != 1 || trk.parentCalls != 1 {
+		t.Errorf("hierarchy lookups = %d sub / %d parent, want 1 each", trk.subCalls, trk.parentCalls)
+	}
+	if got2 := p.recallTicketLessons(context.Background(), "COD-1254"); len(got2) != 1 {
+		t.Fatalf("second recall = %v, want the same single lesson", got2)
+	}
+	if trk.subCalls != 1 {
+		t.Errorf("SubIssues called %d times across two recalls, want 1 (memoized)", trk.subCalls)
+	}
+
+	epicRun := siblingPipeline(t, "COD-1254", title, &siblingTracker{children: []string{"COD-1253", "COD-1254"}}, records...)
+	epicRun.EpicID = "COD-1252"
+	if got := epicRun.recallTicketLessons(context.Background(), "COD-1254"); len(got) != 1 || got[0] != sibling.Lesson {
+		t.Errorf("epic-flow recall = %v, want the sibling lesson", got)
+	}
+}
+
+// TestRecallTicketLessonsCapsAndOrders pins the split budget: at most
+// maxSiblingLessons sibling takeaways, newest first, ahead of the keyword matches,
+// with the overall maxInjectedLessons cap intact.
+func TestRecallTicketLessonsCapsAndOrders(t *testing.T) {
+	records := []lesson{
+		lsn("COD-900", "migration", "keyword A about migration", "migration"),
+		lsn("COD-901", "migration", "keyword B about migration", "migration"),
+		lsn("COD-902", "migration", "keyword C about migration", "migration"),
+		lsn("COD-10", "ui", "sibling oldest", "ui"),
+		lsn("COD-11", "ui", "sibling middle", "ui"),
+		lsn("COD-12", "ui", "sibling newer", "ui"),
+		lsn("COD-13", "ui", "sibling newest", "ui"),
+	}
+	trk := &siblingTracker{parent: "COD-1", children: []string{"COD-10", "COD-11", "COD-12", "COD-13", "COD-14"}}
+	p := siblingPipeline(t, "COD-14", "migration rollout", trk, records...)
+
+	got := p.recallTicketLessons(context.Background(), "COD-14")
+	if len(got) != maxInjectedLessons {
+		t.Fatalf("recall returned %d lessons, want the cap of %d: %v", len(got), maxInjectedLessons, got)
+	}
+	wantHead := []string{"sibling newest", "sibling newer", "sibling middle"}
+	for i, want := range wantHead {
+		if got[i] != want {
+			t.Errorf("recall[%d] = %q, want %q (siblings newest-first, ahead of keyword matches)", i, got[i], want)
+		}
+	}
+	if len(wantHead) != maxSiblingLessons {
+		t.Fatalf("fixture assumes maxSiblingLessons=%d, got %d", len(wantHead), maxSiblingLessons)
+	}
+	for _, l := range got[maxSiblingLessons:] {
+		if l == "sibling oldest" {
+			t.Errorf("sibling recall exceeded its share of %d slots: %v", maxSiblingLessons, got)
+		}
+		if !strings.HasPrefix(l, "keyword ") {
+			t.Errorf("tail slot %q should hold a keyword match, got %v", l, got)
+		}
+	}
+}
+
+// TestRecallTicketLessonsDedupes collapses a takeaway that is both a sibling's and
+// a keyword match onto one slot, keeping it in the sibling's leading position.
+func TestRecallTicketLessonsDedupes(t *testing.T) {
+	shared := "migration rollback needs the down step first"
+	records := []lesson{
+		lsn("COD-30", "migration", shared, "migration"),  // sibling
+		lsn("COD-900", "migration", shared, "migration"), // same takeaway, unrelated ticket
+		lsn("COD-901", "migration", "another migration takeaway", "migration"),
+	}
+	trk := &siblingTracker{parent: "COD-2", children: []string{"COD-30", "COD-31"}}
+	p := siblingPipeline(t, "COD-31", "migration guard", trk, records...)
+
+	got := p.recallTicketLessons(context.Background(), "COD-31")
+	if len(got) != 2 {
+		t.Fatalf("recall = %v, want the shared takeaway once plus the other match", got)
+	}
+	if got[0] != shared {
+		t.Errorf("recall[0] = %q, want the sibling takeaway %q first", got[0], shared)
+	}
+	if got[1] == shared {
+		t.Errorf("duplicate takeaway occupied two slots: %v", got)
+	}
+}
+
+// TestRecallTicketLessonsWithoutEpicIsUnchanged: a top-level ticket — and a ticket
+// whose hierarchy cannot be read — recalls exactly what it did before.
+func TestRecallTicketLessonsWithoutEpicIsUnchanged(t *testing.T) {
+	records := []lesson{
+		lsn("COD-40", "migration", "run migrations before seeding", "migration"),
+		lsn("COD-41", "ui", "wait for the selector before clicking", "ui"),
+	}
+	title := "migration ordering"
+
+	cases := []struct {
+		name string
+		trk  tracker.Tracker
+	}{
+		{"top-level ticket", &siblingTracker{}},
+		{"hierarchy unreadable", &siblingTracker{parent: "COD-3", subErr: errors.New("hub unreachable")}},
+		{"epic with no other children", &siblingTracker{parent: "COD-3", children: []string{"COD-42"}}},
+		{"tracker cannot report a parent", &fakeTracker{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := siblingPipeline(t, "COD-42", title, tc.trk, records...)
+			want := relevantLessons(records, p.lessonQuery("COD-42"), maxInjectedLessons)
+			got := p.recallTicketLessons(context.Background(), "COD-42")
+			if len(got) != len(want) {
+				t.Fatalf("recall = %v, want the keyword-only set %v", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("recall[%d] = %q, want %q", i, got[i], want[i])
+				}
+			}
+		})
+	}
+
+	// Lessons disabled or ledger-less still injects nothing, epic or not.
+	off := siblingPipeline(t, "COD-42", title, &siblingTracker{parent: "COD-3", children: []string{"COD-40"}}, records...)
+	off.Lessons = false
+	if got := off.recallTicketLessons(context.Background(), "COD-42"); got != nil {
+		t.Errorf("disabled recall = %v, want nil", got)
 	}
 }
 
