@@ -62,9 +62,7 @@ func Bundled() []Theme {
 }
 
 // Slugs lists the theme names a THEME value may take on this machine: the
-// bundled set in Bundled order, then the saved ones by slug. It is what the
-// config catalog offers as options and what the terminal names when THEME is
-// unknown, so a theme saved from the editor is a valid THEME everywhere.
+// bundled set in Bundled order, then the saved ones by slug.
 func Slugs() []string {
 	src := bundled()
 	local, _ := Local()
@@ -90,8 +88,7 @@ func Normalize(name string) string {
 
 // Lookup resolves a configured THEME value against the bundled themes first and
 // the ones saved on this machine second, so a predefined name always means the
-// theme trau ships whatever sits in the themes directory. A name neither set
-// carries is not found, and every caller falls back to the default with a note.
+// theme trau ships whatever sits in the themes directory.
 func Lookup(name string) (Theme, bool) {
 	if t, ok := LookupBundled(name); ok {
 		return t, true
@@ -111,8 +108,7 @@ func LookupIn(dir, name string) (Theme, bool) {
 }
 
 // LookupBundled resolves a name against the themes compiled into the binary
-// only. It is what makes predefined slugs reserved: a save or a delete asks
-// this before it touches the themes directory.
+// only, which is what makes predefined slugs reserved.
 func LookupBundled(name string) (Theme, bool) {
 	return findSlug(bundled(), Normalize(name))
 }

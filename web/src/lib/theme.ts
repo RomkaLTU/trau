@@ -122,9 +122,8 @@ export function applyTheme(mode: ThemeMode): ResolvedTheme {
 let palettes: Palettes = {}
 
 // The theme editor's draft, applied over the active palette while the editor is
-// open. It is browser state and nothing else: nothing is written to the hub, to
-// config, or to the palette cache, so a reload — or Cancel — is back on the
-// active theme immediately.
+// open. It is browser state and nothing else — nothing reaches the hub, config
+// or the palette cache — so a reload or a Cancel drops it.
 let preview: Palettes | null = null
 
 export function previewPalettes(next: Palettes | null): void {

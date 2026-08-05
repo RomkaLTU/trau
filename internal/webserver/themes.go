@@ -44,8 +44,7 @@ type ThemesResponse struct {
 }
 
 // ThemeSaveResponse answers a save. Replaced tells the editor whether the slug
-// took over a theme that was already saved, which is the one outcome the user
-// asked to be warned about before the write went out.
+// took over a theme that was already saved.
 type ThemeSaveResponse struct {
 	Theme    ThemeView `json:"theme"`
 	Replaced bool      `json:"replaced"`
@@ -211,9 +210,8 @@ func (s *Server) handleThemeResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 // decodeThemeBody reads a theme document from the request under the format's own
-// size cap. Both writes take the same path, so an oversized or malformed draft
-// is refused with the field-level message the format produces and nothing is
-// stored.
+// size cap, so an oversized or malformed draft is refused with the field-level
+// message the format produces.
 func decodeThemeBody(w http.ResponseWriter, r *http.Request) (theme.Theme, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, theme.MaxFileBytes)
 	data, err := io.ReadAll(r.Body)
@@ -244,8 +242,7 @@ func (s *Server) themeDir() string {
 }
 
 // localThemes loads the saved set. A file that no longer parses is skipped with
-// a logged note — a broken theme costs its author a color scheme, never the
-// hub's boot.
+// a logged note rather than failing the listing.
 func (s *Server) localThemes() []theme.Theme {
 	themes, skipped := theme.LoadLocal(s.themeDir())
 	for _, skip := range skipped {

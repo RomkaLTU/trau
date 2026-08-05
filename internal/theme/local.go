@@ -18,8 +18,7 @@ import (
 const OriginLocal = "local"
 
 // MaxFileBytes caps one saved theme file. A theme is twelve colors per mode plus
-// two small override blocks, so anything larger is not a theme; the cap keeps a
-// mistaken upload from filling the trau home.
+// two small override blocks, so anything larger is not a theme.
 const MaxFileBytes = 64 << 10
 
 // LocalDirName is the directory saved themes live in under a trau home. Themes
@@ -37,10 +36,9 @@ func LocalDir(home string) string {
 	return filepath.Join(home, LocalDirName)
 }
 
-// Skipped names a saved file the loader refused, and why. Loading is fail-soft
-// by contract — a theme that no longer parses must never stop the hub from
-// booting or the terminal from painting — so the loader collects these for the
-// caller to log instead of failing.
+// Skipped names a saved file the loader refused, and why. Loading is fail-soft:
+// a theme that no longer parses must never stop the hub from booting, so the
+// loader collects these for the caller to log.
 type Skipped struct {
 	File   string `json:"file"`
 	Reason string `json:"reason"`
@@ -233,9 +231,7 @@ func removeFiles(paths []string, keep string) error {
 }
 
 // Canonical renders t as the theme file a user downloads and later uploads: the
-// format's own fields, two-space indent, trailing newline. An exported file and
-// a hand-written one are the same document, which is what makes the export
-// round-trip through the resolver unchanged.
+// format's own fields, two-space indent, trailing newline.
 func Canonical(t Theme) ([]byte, error) {
 	data, err := json.MarshalIndent(t, "", "  ")
 	if err != nil {

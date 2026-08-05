@@ -30,9 +30,8 @@ import {
   type ThemeDraft,
 } from '@/lib/theme-editor'
 
-// The debounce the live preview runs on. Long enough that typing a six-digit hex
-// is one resolve rather than six, short enough that the app repaints while the
-// user is still looking at the swatch they changed.
+// Long enough that typing a six-digit hex is one resolve rather than six, short
+// enough that the app repaints while the user is still on that swatch.
 const PREVIEW_MS = 200
 
 export function ThemeEditor({
@@ -72,11 +71,10 @@ export function ThemeEditor({
   const blocked = hasIssues(issues)
   const modes = draftModes(draft)
 
-  // The whole app previews the draft while the editor is open: the resolved
-  // variables are applied in the browser only, and dropping them on unmount is
-  // what makes Cancel instant. A resolve still in flight is disowned rather than
-  // awaited — landing after Cancel it would re-apply the preview the user just
-  // dropped, and landing after a newer edit it would paint a stale draft.
+  // The whole app previews the draft while the editor is open, in the browser
+  // only. A resolve still in flight is disowned rather than awaited: landing
+  // after Cancel it would re-apply a dropped preview, and landing after a newer
+  // edit it would paint a stale draft.
   useEffect(() => {
     const document = previewDocument(draft, dropPins)
     let live = true

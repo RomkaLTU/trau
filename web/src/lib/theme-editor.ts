@@ -257,9 +257,8 @@ export function exportDocument(draft: ThemeDraft, dropPins = false): ThemeDocume
 }
 
 // pinCounts totals the vars and tui entries a duplicated theme brought along.
-// They win over everything the editor writes — a pinned --cli does not move when
-// brand does, and a pinned tui role keeps the terminal on the source's hex — so
-// the editor has to say they are there rather than let an edit look ignored.
+// They win over everything the editor writes, so the editor has to say they are
+// there rather than let an edit look ignored.
 export function pinCounts(draft: ThemeDraft): { vars: number; tui: number } {
   let vars = 0
   let tui = 0
@@ -273,7 +272,7 @@ export function pinCounts(draft: ThemeDraft): { vars: number; tui: number } {
 // themeJSON renders the document in the shape the hub writes to disk: two-space
 // indent, trailing newline. Key order follows the draft rather than Go's sorted
 // map keys, so a downloaded file is the same theme as the saved one, not the
-// same bytes — the format's contract is the document, not its byte order.
+// same bytes.
 export function themeJSON(doc: ThemeDocument): string {
   return `${JSON.stringify(doc, null, 2)}\n`
 }

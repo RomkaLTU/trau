@@ -140,9 +140,8 @@ export const themesQueryOptions = (repo: string) =>
     queryFn: () => fetchThemes(repo === '' ? undefined : repo),
   })
 
-// themeError surfaces the hub's own message. Theme writes fail by field — a role
-// that is not a color, a reserved slug — and that sentence is the whole value of
-// the response to an author.
+// themeError surfaces the hub's own message: theme writes fail by field — a role
+// that is not a color, a reserved slug.
 async function themeError(res: Response, fallback: string): Promise<Error> {
   const detail = (await res.json().catch(() => null)) as {
     error?: string
@@ -155,8 +154,8 @@ export interface ThemeSaveResult {
   replaced: boolean
 }
 
-// saveTheme installs a theme file under the trau home. A slug already saved
-// there is replaced, which the result reports so the editor can say so.
+// saveTheme installs a theme file under the trau home, replacing a slug already
+// saved there.
 export async function saveTheme(doc: unknown): Promise<ThemeSaveResult> {
   const res = await apiFetch('/api/v1/themes', {
     method: 'POST',
