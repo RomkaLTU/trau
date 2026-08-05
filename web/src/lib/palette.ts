@@ -1,3 +1,5 @@
+import { queryOptions } from '@tanstack/react-query'
+
 import { apiFetch } from './api'
 import type { ResolvedTheme } from './theme'
 
@@ -36,12 +38,16 @@ export const PALETTE_VARS = [
 export type PaletteVars = Record<string, string>
 export type Palettes = Partial<Record<ResolvedTheme, PaletteVars>>
 
+// ThemeSummary is one theme as the picker lists it. roles carries each defined
+// mode's authored colors — before derivation and before any THEME_<ROLE>
+// override — so a card's swatch shows the theme, not this repo's resolution.
 export interface ThemeSummary {
   slug: string
   name: string
   author?: string
   version?: string
   modes: string[]
+  roles?: Record<string, Record<string, string>>
   origin: string
 }
 
@@ -109,3 +115,9 @@ export async function fetchThemes(repo?: string): Promise<ThemesResponse> {
   if (!res.ok) throw new Error(`themes: ${res.status}`)
   return (await res.json()) as ThemesResponse
 }
+
+export const themesQueryOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ['themes', repo],
+    queryFn: () => fetchThemes(repo === '' ? undefined : repo),
+  })
