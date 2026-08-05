@@ -53,6 +53,29 @@ func (p *Pipeline) foreignWorkInPR(ctx context.Context, id, pr string) string {
 	return ""
 }
 
+// stackedPRRefusal names why a PR must not be auto-merged because it is a layer of
+// a GitHub stack, or "" when it may merge. The legacy merge endpoint `gh pr merge`
+// calls refuses a stacked PR at every position of the stack, so the attempt can only
+// end in an opaque failure and the ticket is parked for a human who can merge the
+// whole stack. A human can stack Trau's PRs at any moment, so the question is asked
+// here, immediately before the merge. Like the size half of the gate the check is
+// fail-open: a gh that cannot answer reads as unstacked.
+func (p *Pipeline) stackedPRRefusal(ctx context.Context, id, pr string) string {
+	stacked, err := p.GitHub.InStack(ctx, pr)
+	if err != nil {
+		p.logf("  merge gate: could not tell whether PR #%s is stacked (merging anyway): %v", pr, err)
+		return ""
+	}
+	if !stacked {
+		return ""
+	}
+	ref := p.State.Get(id, "PR_URL")
+	if ref == "" {
+		ref = "#" + pr
+	}
+	return fmt.Sprintf("PR %s is part of a GitHub stack; Trau cannot merge stacked PRs — merge it with 'gh stack merge' or the stack UI, or remove it from the stack and requeue", ref)
+}
+
 // sliceFileCount counts the files the run's own commits touch, 0 when that diff
 // cannot be measured.
 func (p *Pipeline) sliceFileCount(ctx context.Context, pin, branch string) int {

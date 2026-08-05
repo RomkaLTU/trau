@@ -1449,6 +1449,8 @@ func (e *epicGitHub) Merge(_ context.Context, _, method string, deleteBranch boo
 	return nil
 }
 
+func (e *epicGitHub) InStack(context.Context, string) (bool, error) { return false, nil }
+
 // TestEpicPRTitle: the epic PR header is a conventional 'epic(<id>): <subject>' —
 // case-conformed, stripped of stacked "Epic:" prefixes, and falling back to the id
 // when the tracker title is empty.
