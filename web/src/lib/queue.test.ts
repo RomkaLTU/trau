@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from './api'
 import {
   batchDisplayName,
+  batchMembers,
   batchName,
   batchSelectable,
   batchStartBlocker,
@@ -869,6 +870,37 @@ describe('batchSummary', () => {
       { status: 'done', count: 1 },
       { status: 'paused', count: 1 },
     ])
+  })
+})
+
+describe('batchMembers', () => {
+  const items = [
+    item({ id: 'COD-3', position: 3, batch: 'api-polish' }),
+    item({ id: 'COD-1', position: 1, batch: 'api-polish' }),
+    item({ id: 'COD-2', position: 2, batch: 'docs' }),
+    item({ id: 'COD-4', position: 4 }),
+  ]
+
+  it('holds only the named batch, in queue order', () => {
+    expect(batchMembers(items, 'api-polish').map((it) => it.id)).toEqual([
+      'COD-1',
+      'COD-3',
+    ])
+  })
+
+  it('leaves the source order alone', () => {
+    batchMembers(items, 'api-polish')
+    expect(items.map((it) => it.id)).toEqual([
+      'COD-3',
+      'COD-1',
+      'COD-2',
+      'COD-4',
+    ])
+  })
+
+  it('is empty for a batch nothing is left in', () => {
+    expect(batchMembers(items, 'gone')).toEqual([])
+    expect(batchMembers([], 'api-polish')).toEqual([])
   })
 })
 

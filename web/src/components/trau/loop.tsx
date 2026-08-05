@@ -79,6 +79,7 @@ import {
 import { loopTitle, usePageTitle, type LoopTitleState } from "@/lib/page-title";
 import {
   batchDisplayName,
+  batchMembers,
   batchName,
   batchSelectable,
   batchStartBlocker,
@@ -720,43 +721,105 @@ function batchCounts(summary: BatchSummary): string {
   return [held, ...outcomes].join(" · ");
 }
 
+// BatchMemberRow is view-only: the id opens the drawer and nothing else on the
+// row acts, so the expanded card reads the batch without editing it.
+function BatchMemberRow({
+  item,
+  onPeek,
+}: {
+  item: QueueItem;
+  onPeek: (id: string) => void;
+}) {
+  const { done, total } = epicCounts(item);
+
+  return (
+    <li className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-9 pr-3 last:border-0">
+      <TicketIdButton
+        id={item.id}
+        onPeek={onPeek}
+        className="text-xs text-primary/80"
+      />
+      <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
+        {item.title || "—"}
+      </span>
+      {item.blocked ? (
+        <span
+          title={`Blocked by ${(item.blockers ?? []).join(", ")}`}
+          className="shrink-0 rounded-sm border border-warn/40 bg-warn/10 px-1.5 py-0.5 font-mono text-[0.6rem] uppercase tracking-[0.14em] text-warn"
+        >
+          blocked
+        </span>
+      ) : null}
+      {item.kind === "epic" ? (
+        <span className="shrink-0 font-mono text-[0.65rem] text-muted-foreground">
+          epic · {done}/{total}
+        </span>
+      ) : null}
+      <StatusPill state={statusState(item.status)} label={item.status} />
+    </li>
+  );
+}
+
 // BatchCard's Start is a scoped Start — it runs the batch's members and stops at
 // the batch boundary — and says why whenever it cannot.
 function BatchCard({
   batch,
   summary,
+  members,
+  expanded,
   blocker,
   busy,
   starting,
   error,
+  onToggle,
   onStart,
   onRename,
   onDismiss,
+  onPeek,
 }: {
   batch: QueueBatch;
   summary: BatchSummary;
+  members: QueueItem[];
+  expanded: boolean;
   blocker: string;
   busy: boolean;
   starting: boolean;
   error: unknown;
+  onToggle: () => void;
   onStart: () => void;
   onRename: (name: string) => void;
   onDismiss: () => void;
+  onPeek: (id: string) => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
+  const label = batchDisplayName(batch);
   const save = (name: string) => {
     onRename(name.trim());
     setDraft(null);
   };
 
   return (
-    <div className="flex flex-col gap-2 rounded-md border border-border bg-secondary/20 px-3 py-2.5">
+    <div className="flex flex-col gap-2 overflow-hidden rounded-md border border-border bg-secondary/20 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${label}` : `Expand ${label}`}
+          className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {expanded ? (
+            <ChevronDown className="size-3.5" aria-hidden="true" />
+          ) : (
+            <ChevronRight className="size-3.5" aria-hidden="true" />
+          )}
+        </button>
+
         {draft === null ? (
           <>
             <span className="inline-flex items-center gap-1.5 font-mono text-sm text-foreground">
               <Layers className="size-3.5 text-teal" aria-hidden="true" />
-              {batchDisplayName(batch)}
+              {label}
             </span>
             <span className="font-mono text-xs text-muted-foreground">
               · {batchCounts(summary)}
@@ -774,7 +837,7 @@ function BatchCard({
                   save(draft);
                 }
               }}
-              aria-label={`Rename ${batchDisplayName(batch)}`}
+              aria-label={`Rename ${label}`}
               placeholder="API polish"
               autoFocus
               autoComplete="off"
@@ -841,6 +904,19 @@ function BatchCard({
       ) : blocker ? (
         <p className="font-mono text-xs text-muted-foreground">{blocker}</p>
       ) : null}
+
+      {expanded &&
+        (members.length > 0 ? (
+          <ul className="-mx-3 -mb-2.5 border-t border-border/60 bg-secondary/20">
+            {members.map((m) => (
+              <BatchMemberRow key={m.id} item={m} onPeek={onPeek} />
+            ))}
+          </ul>
+        ) : (
+          <p className="-mx-3 -mb-2.5 border-t border-border/60 bg-secondary/20 py-1.5 pl-9 pr-3 font-mono text-xs text-muted-foreground">
+            No items
+          </p>
+        ))}
     </div>
   );
 }
@@ -874,6 +950,7 @@ function LaunchQueueCard({
   const [selected, setSelected] = useState<string[]>([]);
   const [batchOpen, setBatchOpen] = useState(false);
   const [dismissId, setDismissId] = useState<string | null>(null);
+  const [expandedBatchIds, setExpandedBatchIds] = useState<string[]>([]);
 
   const batches = queue.data?.batches ?? [];
   // Selection is held by id and read back through what is still selectable, so a
@@ -1053,6 +1130,11 @@ function LaunchQueueCard({
   const toggleSelect = (id: string) =>
     setSelected((prev) =>
       prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id],
+    );
+
+  const toggleBatchExpand = (id: string) =>
+    setExpandedBatchIds((prev) =>
+      prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id],
     );
 
   return (
@@ -1378,6 +1460,8 @@ function LaunchQueueCard({
                     key={b.id}
                     batch={b}
                     summary={batchSummary(items, b.id)}
+                    members={batchMembers(items, b.id)}
+                    expanded={expandedBatchIds.includes(b.id)}
                     blocker={
                       queue.data ? batchStartBlocker(queue.data, b.id) : ""
                     }
@@ -1386,9 +1470,11 @@ function LaunchQueueCard({
                       launchBatch.isPending && launchBatch.variables === b.id
                     }
                     error={batchError(b.id)}
+                    onToggle={() => toggleBatchExpand(b.id)}
                     onStart={() => launchBatch.mutate(b.id)}
                     onRename={(name) => rename.mutate({ id: b.id, name })}
                     onDismiss={() => setDismissId(b.id)}
+                    onPeek={onPeek}
                   />
                 ))}
                 <p className="font-sans text-xs leading-relaxed text-muted-foreground">

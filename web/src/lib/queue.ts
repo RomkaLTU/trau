@@ -610,6 +610,13 @@ export function batchSummary(items: QueueItem[], id: string): BatchSummary {
   }
 }
 
+// batchMembers is what a batch holds, in the order a Start would launch it.
+export function batchMembers(items: QueueItem[], id: string): QueueItem[] {
+  return items
+    .filter((it) => it.batch === id)
+    .sort((a, b) => a.position - b.position)
+}
+
 // batchStartBlocker says why Start batch is unavailable, mirroring the refusals
 // the hub would answer with so the disabled control reads the same as the API.
 export function batchStartBlocker(queue: QueueResponse, id: string): string {
