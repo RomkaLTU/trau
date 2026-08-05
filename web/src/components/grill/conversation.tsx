@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRight, Sparkles } from "lucide-react";
 
 import { BannerRow } from "@/components/grill/banners";
@@ -13,7 +13,6 @@ import {
   answerGrill,
   canCompose,
   composerPlaceholder,
-  dropAwaiting,
   grillBanner,
   grillDetailQueryOptions,
   grillReducer,
@@ -48,8 +47,8 @@ export interface GrillStatus {
 }
 
 // GrillOutcomeVariant is how a host renders a finished session's proposal: the full
-// approve-then-apply review, or — for a host too small to review one in, like the
-// dock — a link handing it off to the surface that owns applying.
+// approve-then-apply review, or — for a host too small to review one in — a link
+// handing it off to the surface that owns applying.
 export type GrillOutcomeVariant = "review" | "link";
 
 // GrillConversation is the chat itself — thread, suggestions, composer, and outcome
@@ -71,15 +70,15 @@ export function GrillConversation({
   repo: string;
   initial: GrillSession;
   outcome?: GrillOutcomeVariant;
-  // A host with no room for the feed — the dock's 520px panel — turns it off outright;
-  // everywhere else it follows the reader's own preference.
+  // A host with no room for the feed turns it off outright; everywhere else it
+  // follows the reader's own preference.
   activity?: boolean;
   // report gives a settled research session the pane as a document, with the turns
   // that produced it behind a disclosure. Only a host whose whole surface is the
   // report — the Research page — asks for it.
   report?: boolean;
   // A host that mounts the conversation because the user came here to answer — a
-  // deep link off a notification or the dock — opens with the answer box ready.
+  // deep link off a notification — opens with the answer box ready.
   autoFocus?: boolean;
   onStatus?: (status: GrillStatus) => void;
   onApplied?: (applied: GrillAppliedOutcome) => void;
@@ -87,7 +86,6 @@ export function GrillConversation({
   onReview?: () => void;
 }) {
   useOpenConversation(initial.id);
-  const queryClient = useQueryClient();
   const detail = useQuery(grillDetailQueryOptions(initial.id));
   const [state, dispatch] = useReducer(grillReducer, undefined, () => ({
     session: initial,
@@ -161,7 +159,6 @@ export function GrillConversation({
       // only reset the reply the thread is still streaming.
       if (res.message.kind !== "interjection")
         dispatch({ type: "state", session: res.session });
-      dropAwaiting(queryClient, session.id);
     },
     onError: (_err, { id, text }) =>
       dispatch({ type: "send-failed", id, text }),

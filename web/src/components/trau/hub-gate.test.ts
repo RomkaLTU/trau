@@ -120,7 +120,7 @@ it('says so when the copy fails', async () => {
   )
 })
 
-it('takes the whole viewport, above every dialog and dock, and stays clickable under one', () => {
+it('takes the whole viewport, above every dialog, and stays clickable under one', () => {
   stubHub(() => false)
   mount()
   act(killHub)

@@ -46,8 +46,8 @@ interface ResearchSearch {
 export const Route = createFileRoute("/research")({
   component: ResearchPage,
   // session selects a report to read (or new to open the composer) and repo names the
-  // project it belongs to — both read at runtime through nuqs so the dock and a pushed
-  // notification can point straight at a waiting session.
+  // project it belongs to — both read at runtime through nuqs so a pushed notification
+  // can point straight at a waiting session.
   validateSearch: (search: Record<string, unknown>): ResearchSearch => {
     const out: ResearchSearch = {};
     if (typeof search.session === "string" && search.session !== "")

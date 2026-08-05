@@ -6,7 +6,7 @@ import { useActiveRepo } from "@/components/trau/active-repo";
 
 import { apiFetch } from "./api";
 import { subscribeAllEvents, type RepoFeedEvent } from "./events";
-import type { GrillMode, GrillSession } from "./grill";
+import type { GrillMode } from "./grill";
 import { draftItemId } from "./inbox";
 import type { RepoView } from "./instances";
 
@@ -160,13 +160,6 @@ function notificationOf(ev: RepoFeedEvent): HubNotification | null {
   return notification ?? null;
 }
 
-// showsInAppToast is whether a live notification still raises a corner toast.
-// Interview questions don't: the dock lights up in the same corner and is the
-// in-app signal for them.
-export function showsInAppToast(kind: NotificationKind): boolean {
-  return kind !== "grill_question";
-}
-
 // notificationTag is the coalescing key an OS notification carries. The hub sends
 // the same string as the push payload's tag (notificationPush in
 // internal/webserver/push.go), so the two paths replace each other rather than
@@ -207,21 +200,6 @@ export function notificationTarget(
     default:
       return null;
   }
-}
-
-// grillSessionTarget is where a session is answered, for the dock, which addresses
-// sessions directly rather than through a notification. It makes the same split
-// notificationTarget does, and sits beside it so the two cannot drift.
-export function grillSessionTarget(
-  session: GrillSession,
-): NonNullable<NotificationTarget> {
-  if (session.mode === "research")
-    return { kind: "research", repo: session.repo, session: session.id };
-  return {
-    kind: "inbox",
-    repo: session.repo,
-    issue: session.issue_id || draftItemId(session.id),
-  };
 }
 
 // knownRepo finds the RepoView a notification's repo addresses — the registry
