@@ -87,6 +87,7 @@ Usage:
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
   trau stop                  stop the running hub and leave it stopped (--force also stops live loops)
+  trau hub start             start the web hub in the background and hand the prompt back (says so if one is already up)
   trau hub restart           restart the web hub so it runs the current on-disk binary (starts one if none is up)
   trau hub restart --force   stop a hub whose API has wedged, then start a fresh one (refuses while any run is live)
   trau hub supervise         hand the hub to launchd with KeepAlive (macOS), so a crashed or killed one comes back on its own

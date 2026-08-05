@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, RotateCw } from 'lucide-react'
 
+import { CopyButton } from '@/components/trau/copy-button'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,10 @@ import {
   type HubConnectivity,
 } from '@/lib/connectivity'
 import { cn } from '@/lib/utils'
+
+// A command rather than a button: with the hub down there is no local process a
+// click could reach. It starts one detached, so the terminal can close again.
+const HUB_START_COMMAND = 'trau hub start'
 
 // Covers the app rather than replacing it: a hub that dies mid-session must not
 // take unsaved text in an open drawer or interview down with it, and the restart
@@ -60,7 +65,7 @@ function HubUnreachable({ hub }: { hub: HubConnectivity }) {
         aria-hidden="true"
       />
       <TerminalCard
-        title="trau serve — unreachable"
+        title="hub — unreachable"
         className="relative w-full max-w-md"
       >
         <div className="flex flex-col gap-4">
@@ -70,10 +75,18 @@ function HubUnreachable({ hub }: { hub: HubConnectivity }) {
             <span className="cursor-block text-primary">▍</span>
           </p>
           <p className="text-sm leading-relaxed text-muted-foreground">
-            Hub unreachable — start{' '}
-            <span className="font-mono text-foreground">trau serve</span> and
-            this page picks it back up on its own.
+            Hub unreachable — run this in a terminal and this page picks it back
+            up on its own.
           </p>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 truncate rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground">
+              {HUB_START_COMMAND}
+            </code>
+            <CopyButton
+              value={HUB_START_COMMAND}
+              label="Copy the hub start command"
+            />
+          </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">
               <Loader2

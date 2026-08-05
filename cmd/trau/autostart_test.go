@@ -279,14 +279,42 @@ func TestOpenHubLogAppendsForRestart(t *testing.T) {
 
 // spawnArgvRecordEnv turns a re-executed test binary into a stand-in for the
 // trau binary a spawn resolves to: it records the argv it was handed and exits.
-const spawnArgvRecordEnv = "TRAU_TEST_SPAWN_ARGV_RECORD"
+// spawnHealthAddrEnv additionally makes it answer health there first, so a caller
+// that waits for the hub it just started sees one come up.
+const (
+	spawnArgvRecordEnv = "TRAU_TEST_SPAWN_ARGV_RECORD"
+	spawnHealthAddrEnv = "TRAU_TEST_SPAWN_HEALTH_ADDR"
+	standInHubVersion  = "v0.0.0-standin"
+)
 
 func TestMain(m *testing.M) {
 	if record := os.Getenv(spawnArgvRecordEnv); record != "" && len(os.Args) > 1 && os.Args[1] == "serve" {
 		_ = os.WriteFile(record, []byte(strings.Join(os.Args[1:], " ")), 0o644)
+		serveStandInHub(os.Getenv(spawnHealthAddrEnv))
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// serveStandInHub answers health on addr for long enough that whoever spawned the
+// stand-in sees it come up, then lets the process exit rather than leaving a
+// detached listener behind for the rest of the package.
+func serveStandInHub(addr string) {
+	if addr == "" {
+		return
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc(webserver.APIPrefix+"/health", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(webserver.Health{Status: "ok", Version: standInHubVersion})
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	time.Sleep(3 * time.Second)
+	_ = srv.Close()
 }
 
 // TestRespawnServeReplaysServeFlags checks the successor inherits the outgoing

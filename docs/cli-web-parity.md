@@ -102,6 +102,7 @@ gap is a decision, not a surprise.
 
 | CLI / TUI | Why it stays terminal-only |
 | --- | --- |
+| `trau hub start` (start the hub in the background and hand the prompt back) | A browser tab cannot start the hub that serves it. While the hub is down there is no local process a click could reach, so the **hub unreachable** gate shows the command in monospace with a copy button instead. |
 | `trau doctor` (preflight: git/gh/provider/config/labels/write perms) | An exit-code-driven check meant to run before a loop and to drop into CI. It diagnoses the *machine*, which a browser tab can't act on, and predates having a hub to serve. |
 | Interactive planning flow (TUI *Plan*: raw idea → Q&A rounds → PRD → slices) | The web ships only the terminal publish step (Author → PRD), not the multi-round decomposition into an epic + slices. |
 | `--verbose` · `--debug` · `--no-tui` · `--json` · `--yes` · `-v/--version` | Shell/scripting/CI diagnostics with no browser analog. The hub's build version rides the `/api/v1/health` response rather than a screen. |

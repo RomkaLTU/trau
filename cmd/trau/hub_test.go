@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +21,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
 func TestHubRestartRejectsUnknownArg(t *testing.T) {
@@ -26,6 +30,102 @@ func TestHubRestartRejectsUnknownArg(t *testing.T) {
 	var ue usageError
 	if !errors.As(err, &ue) {
 		t.Fatalf("runHubRestart returned %v, want a usage error", err)
+	}
+}
+
+func TestHubStartRejectsUnknownArg(t *testing.T) {
+	err := runHubStart(context.Background(), []string{"--detach"}, io.Discard)
+
+	var ue usageError
+	if !errors.As(err, &ue) {
+		t.Fatalf("runHubStart returned %v, want a usage error", err)
+	}
+}
+
+// TestHubStartSpawnsADetachedHub covers the command the web's unreachable card
+// hands the user: nothing is listening, so a hub is started away from the
+// invoking terminal and the command reports it once it answers.
+func TestHubStartSpawnsADetachedHub(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TRAU_HOME", filepath.Join(home, ".trau"))
+	port := freePort(t)
+	t.Setenv("TRAU_SERVE_BIND", "127.0.0.1")
+	t.Setenv("TRAU_SERVE_PORT", port)
+	record := filepath.Join(home, "argv")
+	t.Setenv(spawnArgvRecordEnv, record)
+	t.Setenv(spawnHealthAddrEnv, net.JoinHostPort("127.0.0.1", port))
+
+	var out strings.Builder
+	if err := runHubStart(context.Background(), nil, &out); err != nil {
+		t.Fatalf("runHubStart: %v", err)
+	}
+
+	if want := "hub started (" + standInHubVersion + ")"; !strings.Contains(out.String(), want) {
+		t.Errorf("output = %q, want it to report %q", out.String(), want)
+	}
+	if got := waitForSpawnArgv(t, record); got != "serve" {
+		t.Errorf("spawned argv = %q, want a bare serve", got)
+	}
+}
+
+// TestHubStartOnARunningHubIsIdempotent keeps the command safe to paste blind:
+// a machine that already serves is told so and nothing is spawned onto its port.
+func TestHubStartOnARunningHubIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TRAU_HOME", filepath.Join(home, ".trau"))
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != webserver.APIPrefix+"/health" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(webserver.Health{Status: "ok", Version: "v1.2.3"})
+	}))
+	defer ts.Close()
+	host, port, err := net.SplitHostPort(ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	t.Setenv("TRAU_SERVE_BIND", host)
+	t.Setenv("TRAU_SERVE_PORT", port)
+	record := filepath.Join(home, "argv")
+	t.Setenv(spawnArgvRecordEnv, record)
+
+	var out strings.Builder
+	if err := runHubStart(context.Background(), nil, &out); err != nil {
+		t.Fatalf("runHubStart: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "hub already running (v1.2.3)") {
+		t.Errorf("output = %q, want it to name the hub already running", out.String())
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Error("a second hub was spawned onto the port the first one holds")
+	}
+}
+
+func TestHubStartPortBusyOffersForce(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	t.Setenv("TRAU_SERVE_BIND", "127.0.0.1")
+	t.Setenv("TRAU_SERVE_PORT", port)
+
+	err = runHubStart(context.Background(), nil, io.Discard)
+
+	var a *console.ActionableError
+	if !errors.As(err, &a) {
+		t.Fatalf("runHubStart returned %v, want an actionable error", err)
+	}
+	if !strings.Contains(a.Error(), "busy") || !strings.Contains(a.Suggestion, "--force") {
+		t.Fatalf("error %q / suggestion %q does not name the busy port and its escape hatch", a, a.Suggestion)
 	}
 }
 
