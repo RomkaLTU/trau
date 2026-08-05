@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/activity"
@@ -32,6 +33,20 @@ import (
 type stackDecision struct {
 	epic string
 	on   bool
+}
+
+// stackLinkMemo holds the chain this run last linked on GitHub, and the epic that
+// chain belongs to. The key is what makes the memo self-checking: a Pipeline is
+// reused across epics, and a chain linked for the previous one must never answer
+// for this one's — so the memo is asked about an epic, not merely read.
+type stackLinkMemo struct {
+	epic     string
+	branches []string
+}
+
+// holds reports whether epic's chain is already linked, exactly as branches.
+func (m stackLinkMemo) holds(epic string, branches []string) bool {
+	return m.epic == epic && slices.Equal(m.branches, branches)
 }
 
 // stackLayerMemo holds the branch the ticket in flight is stacked on, so every
@@ -163,7 +178,7 @@ func (p *Pipeline) stackedCutRef(ctx context.Context, id string) (string, error)
 			return "", fmt.Errorf("build %s: resolve the layer below: %w", id, err)
 		}
 		chain = p.resolveStackPRs(ctx, chain)
-		p.logStackAdoption(chain)
+		p.logStackChain(chain)
 		base = p.Base
 		if len(chain) > 0 {
 			base = chain[len(chain)-1].Branch
@@ -215,11 +230,24 @@ func (p *Pipeline) stackChain(ctx context.Context) ([]stackLayer, error) {
 		above[layer.Base] = layer
 	}
 	chain := make([]stackLayer, 0, len(above))
-	for cur := p.Base; len(chain) <= len(above); {
+	// The walk places every layer at most once: it stops the second time it stands
+	// on a base it has already stepped off, which is what checkpoints describing a
+	// cycle look like from here. Re-appending a layer would leave the wrong branch
+	// as the top PR the whole stack merges from — silently, since a cycle reads as
+	// a longer chain, not as an error.
+	//
+	// The length bound is the same statement counted rather than remembered — a
+	// chain can be no longer than the layers it is built from — and is strict for
+	// the same reason. Counting alone would not do: a child stacked on a branch
+	// this walk never reaches raises len(above) without lengthening any chain, and
+	// hands a cycle exactly the extra step the strict bound took away.
+	placed := make(map[string]bool, len(above))
+	for cur := p.Base; len(chain) < len(above) && !placed[cur]; {
 		next, ok := above[cur]
 		if !ok {
 			break
 		}
+		placed[cur] = true
 		chain = append(chain, next)
 		cur = next.Branch
 	}
@@ -242,9 +270,11 @@ func (p *Pipeline) resolveStackPRs(ctx context.Context, chain []stackLayer) []st
 	return out
 }
 
-// logStackAdoption records which layers a resume adopted, so the topology does not
-// have to be reconstructed from branch names.
-func (p *Pipeline) logStackAdoption(chain []stackLayer) {
+// logStackChain records the chain a walk read back, so the topology does not have
+// to be reconstructed from branch names. It names what the chain is rather than
+// what was adopted: the same walk runs on a straight-through epic, where every
+// layer it names is one this run just built.
+func (p *Pipeline) logStackChain(chain []stackLayer) {
 	if len(chain) == 0 {
 		return
 	}
@@ -258,7 +288,7 @@ func (p *Pipeline) logStackAdoption(chain []stackLayer) {
 		}
 		parts = append(parts, part+")")
 	}
-	p.logf("  ↳ epic %s stack: %d layer(s) adopted — %s", p.EpicID, len(chain), strings.Join(parts, " → "))
+	p.logf("  ↳ epic %s stack: %d layer(s) — %s", p.EpicID, len(chain), strings.Join(parts, " → "))
 }
 
 // assertStackedBaseCurrent is the freshness gate in the stacked shape. A layer above
@@ -289,17 +319,28 @@ func (p *Pipeline) linkStackLayer(ctx context.Context, id, branch string) {
 	}
 	if err := p.linkStack(ctx, branches); err != nil {
 		p.logf("  ⚠ couldn't link %s into the stack (continuing — the finalize links it again): %v", id, err)
-		return
 	}
-	p.logf("  ⛁ stack linked: %s", strings.Join(branches, " → "))
 }
 
 // linkStack links a chain bottom-first, with the transient-retry guard every other
-// gh call goes through.
+// gh call goes through, and announces the chains it really sent. A layer passes
+// here twice — once when its PR opens, once when it completes — so a chain
+// identical to the last one linked for this epic is skipped, log included. A
+// failed link leaves the memo alone, which keeps the finalize's re-link the
+// repair it is meant to be.
 func (p *Pipeline) linkStack(ctx context.Context, branches []string) error {
-	return p.retryGH(ctx, "gh stack link", func() error {
+	if p.stackLinked.holds(p.EpicID, branches) {
+		return nil
+	}
+	err := p.retryGH(ctx, "gh stack link", func() error {
 		return p.GitHub.LinkStack(ctx, branches)
 	})
+	if err != nil {
+		return err
+	}
+	p.stackLinked = stackLinkMemo{epic: p.EpicID, branches: slices.Clone(branches)}
+	p.logf("  ⛁ stack linked: %s", strings.Join(branches, " → "))
+	return nil
 }
 
 // stackBranches lists the chain's branches bottom-first, appending branch when the
@@ -350,7 +391,7 @@ func (p *Pipeline) finalizeStackedEpic(ctx context.Context) error {
 		return fmt.Errorf("finalize epic %s: read the stack: %w", p.EpicID, err)
 	}
 	chain = p.resolveStackPRs(ctx, chain)
-	p.logStackAdoption(chain)
+	p.logStackChain(chain)
 	if len(chain) == 0 {
 		return p.handOffEpic("no chained slice PR was ever recorded for it, so there is no stack to merge", "")
 	}
@@ -360,8 +401,10 @@ func (p *Pipeline) finalizeStackedEpic(ctx context.Context) error {
 		}
 	}
 	top := chain[len(chain)-1]
-	// Re-link before merging: linking is additive, so a chain a child run failed to
-	// link is repaired here, and one already linked is unchanged.
+	// Re-link before merging: a chain a child run failed to link is repaired here.
+	// A chain this run already linked is skipped by linkStack's memo — no call goes
+	// out, so a stack someone unstacked on GitHub after that link is NOT re-linked;
+	// the merge then fails with gh's exit 2, which says exactly that.
 	if err := p.linkStack(ctx, stackBranches(chain, top.Branch, top.Base)); err != nil {
 		p.logf("  ⚠ couldn't re-link the stack before merging (continuing): %v", err)
 	}
@@ -428,8 +471,11 @@ func (p *Pipeline) mergeStack(ctx context.Context, top stackLayer) error {
 }
 
 // stackMergeReason names what a failed stack merge means, from gh's exit status:
-// 3 is a rebase conflict, 4 an API failure, 9 the stacked-PRs feature no longer
-// answering. Anything else keeps gh's own message rather than inventing a cause.
+// 2 is the top PR no longer being in a stack, 3 a rebase conflict, 4 an API
+// failure, 5 a stack or merge method GitHub will not take, 9 the stacked-PRs
+// feature no longer answering. The codes are gh-stack's own (v0.1.0
+// cmd/utils.go). Anything else keeps gh's own message rather than inventing a
+// cause.
 func stackMergeReason(pr string, err error) string {
 	prefix := "stack merge of PR #" + pr + " failed: "
 	var merr *StackMergeError
@@ -437,10 +483,14 @@ func stackMergeReason(pr string, err error) string {
 		return prefix + err.Error()
 	}
 	switch merr.Code {
+	case 2:
+		return prefix + "GitHub no longer reads PR #" + pr + " as part of a stack — someone unstacked it, so the slice PRs have to be merged by hand, bottom first"
 	case 3:
 		return prefix + "GitHub could not rebase the stack onto the base — resolve the conflict and merge the stack yourself (trau runs no automated rebase repair)"
 	case 4:
 		return prefix + "GitHub's API rejected it — " + merr.Error()
+	case 5:
+		return prefix + "GitHub refused the merge as asked for — a layer is unmergeable, or the repo does not allow this MERGE_METHOD — " + merr.Error()
 	case 9:
 		return prefix + "GitHub's stacked-PRs preview is no longer available for this repo, so the stack has to be merged by hand"
 	}

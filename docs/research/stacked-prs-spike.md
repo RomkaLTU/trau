@@ -413,3 +413,145 @@ The cheapest next step is not the epic. It is the two-line defensive fix Q2 expo
 teach `retryableGH` that `"part of a stack"` is deterministic, and route it to
 `giveUp`. That converts a session-stopping fault into a single quarantined ticket,
 and it is worth doing whether or not `EPIC_STACKED_PRS` is ever built.
+
+## Live validation — a real stacked epic, end to end
+
+`EPIC_STACKED_PRS` is a public preview and can drift, so the mode was run against a
+live repo rather than re-read. **The checklist below is the deliverable**; the fixes
+it exposed ship in this same slice (COD-1460).
+
+| | |
+|---|---|
+| Date | 2026-08-05 |
+| Trau | branch `feature/COD-1460-live-validation-run-a-real-stacked`, on `d963ef37` (the `EPIC_STACKED_PRS` slice, COD-1459) |
+| Scratch repo | <https://github.com/RomkaLTU/stacked-pr-spike-2026-08> — the spike's, reused and left in place. **Private**, so the repo and PR links below only open for its owner; they are recorded to make the run traceable, not to be browsed |
+| Tracker | throwaway Linear epic `COD-1503 [test] stacked-PR live validation`, children `COD-1504/1505/1506` ("add line N to notes.md"), **archived after the run** |
+| Config | `EPIC_STACKED_PRS=1`, `AUTO_MERGE=1`, `MERGE_METHOD=squash`, `REQUIRE_CI=1` |
+| `gh` / `gh-stack` | 2.97.0 / `github/gh-stack` v0.1.0 |
+
+The epic was driven through trau's own pipeline — `stackedEpic`, `resolveBuildBranch`
+→ `stackedCutRef`, `CommitAndPR`, `CIAndMerge` → `completeStackedLayer`,
+`FinalizeEpic` → `finalizeStackedEpic` — against real `git`, real `gh` and the real
+Linear tracker. Only the build agent was stood in for: each slice's "work" was one
+deterministic appended line in `notes.md`, which is what the sub-tickets asked for.
+(The first pass ran the same code against a tracker double and produced the identical
+GitHub-side result — stack #16, PRs #14/#15/#17 — so the two runs cross-check.)
+
+### Checklist
+
+| # | Claim | Result |
+|---|---|---|
+| 1 | Feature detection engages, log line present | **pass** — `ⓘ epic COD-1503 runs as a GitHub stack (EPIC_STACKED_PRS=1) — slices chain onto each other and merge once, from the top` |
+| 2 | Branches chain; PRs target the layer below; bottom targets the base | **pass** — `feature/COD-1504-… ← origin/main`, `COD-1505 ← COD-1504`, `COD-1506 ← COD-1505`; PR bases `main`, `feature/COD-1504-…`, `feature/COD-1505-…` |
+| 3 | The stack exists on GitHub and each PR shows its position | **pass** — `GET /stacks` carries stack **#23** (`base.ref=main`); `#21 → position 1/3`, `#22 → 2/3`, `#24 → 3/3` |
+| 4 | Per-slice CI runs per layer, against the chained base | **pass** — each layer PR has its own `ok` check run (push + `pull_request`), all `success`; layer N's branch content is cumulative (`notes.md` on `COD-1506`'s branch holds all three lines, and each tip is an ancestor of the next) |
+| 5 | No child merges early; one top-of-stack merge on green | **pass** — every child ended `✓ … is green and stacked — it merges with the stack`; all three PRs report `merged_at` 16:06:12–14Z, i.e. at the finalize |
+| 6 | Main history matches the spike's whole-stack squash shape | **pass** — `28bb62f (#21)`, `40f3a46 (#22)`, `70805a8 (#24)`: one squash commit per slice, bottom-first, `main` linear. Head branches **not** deleted, exactly as Q7 recorded |
+| 7 | All layer PRs read merged; sub-tickets and epic advance to done | **pass** — `merged=true` on all three; Linear read back `Done` for `COD-1504/1505/1506` and for the epic `COD-1503` |
+| 8 | No orphaned state on a follow-up run | **pass** — no `epic/COD-1503-*` branch locally or on `origin`, no epic PR, no draft PR; a fresh pipeline on the same repo re-engages the stacked shape and `ExitCleanup` logs nothing |
+
+Finalize, verbatim:
+
+```
+[trau]   ✓ COD-1506 is green and stacked — it merges with the stack — marked Done
+[trau]   ↳ epic COD-1503 stack: 3 layer(s) adopted — COD-1504 (feature/COD-1504-test-add-line-1-to-notes, PR #21) → COD-1505 (feature/COD-1505-test-add-line-2-to-notes, PR #22) → COD-1506 (feature/COD-1506-test-add-line-3-to-notes, PR #24)
+[trau]   ✓ epic COD-1503 merged to main — 3 layer(s) via the stack on https://github.com/RomkaLTU/stacked-pr-spike-2026-08/pull/24
+[trau]   ✓ epic COD-1503 closed
+[live] COD-1504 PR_STATUS=merged PHASE=merged tracker=done
+[live] COD-1505 PR_STATUS=merged PHASE=merged tracker=done
+[live] COD-1506 PR_STATUS=merged PHASE=merged tracker=done
+[live] COD-1503 PR_STATUS=merged PHASE=merged tracker=done
+```
+
+(That `adopted` wording is one of the gaps fixed below; the line now reads
+`3 layer(s) — …`.)
+
+### Fallback spot-check
+
+Every repo this account can reach answers `GET /stacks` with 200, so a genuinely
+preview-less repo was not available. The **refusal** path was exercised instead, live:
+pointing the same config at a checkout whose `origin` names a repo the token cannot
+see produced exactly one line and the classic flow —
+
+```
+ⓘ epic COD-9470 runs the classic epic flow — GitHub's stacked-PRs preview did not
+answer for this repo (gh api stacks: exit status 1: gh: Not Found (HTTP 404))
+```
+
+which is the same branch a preview-off repo takes, since (as the Availability probe
+above records) a 404 is all either case returns. The remaining gates — flag off, no
+remote, non-GitHub forge, an epic branch already owning the epic — stay covered by
+the implementation slice's unit tests.
+
+### Drift vs the original spike
+
+None of Q1–Q7 changed. Three things are worth adding:
+
+- **Stack numbers still consume the shared issue/PR sequence.** The run's PRs came
+  out #21, #22, **#24** — #23 is the stack. Anyone reading a run log should not
+  expect the layer PR numbers to be contiguous.
+- **`gh stack merge` exit codes are documented after all**, in gh-stack's own source
+  (v0.1.0 `cmd/utils.go`): 1 silent, 2 not-in-stack, 3 rebase conflict, 4 API
+  failure, 5 invalid args, 6 ambiguous, 7 rebase in progress, 8 lock, 9 stacks
+  unavailable, 10 modify recovery. Confirmed live on the scratch repo: exit **2** for
+  `✗ #13 is not a stack number or a stacked pull request`, exit **3** for
+  `✗ merge failed: Pull request cannot be merged because it has a merge conflict. /
+  Stack merges are atomic, so nothing was merged.` The spike's "no exit code 9 was
+  ever observed" stands — that was `gh api`, not `gh stack`.
+- **An already-merged stack exits 0**, printing `✓ This stack is already fully
+  merged.` — so `mergeStack`'s MERGED short-circuit is belt-and-braces, not the only
+  thing standing between a re-run and a spurious failure.
+
+Scratch-repo state changed by this run, for whoever reads it next: stack **#8**
+(PRs #5/#6/#7, the Q2 refusal fixtures) was merged while probing exit codes and is no
+longer open, and `main` carries a `conflict.txt` from the exit-3 probe. Stacks #16 and
+#23 are this validation's, both closed. Everything else is as the spike left it.
+
+### Small gaps found — fixed in this slice
+
+1. **Off-by-one in the chain walk.** `stackChain`'s cycle guard was
+   `len(chain) <= len(above)`, one step too generous: checkpoints describing a cycle
+   let the walk re-append a layer it had already placed, and since the chain's last
+   element is the PR the whole stack merges from, that would have merged from the
+   middle of the stack. Now `<`, with a regression test.
+2. **The stack was linked twice per layer.** A layer passes the link seam once when
+   its PR opens (`CommitAndPR`) and again when it completes (`completeStackedLayer`,
+   which is the resume path's safety net). Both live runs show the identical
+   `⛁ stack linked: …` line twice in a row per layer, and two identical `gh stack
+   link` calls behind it. `linkStack` now remembers the chain it last sent and skips
+   an unchanged one — a *failed* link leaves the memo alone, so the finalize's
+   re-link still repairs a chain a child could not link.
+3. **`… N layer(s) adopted` on a straight-through run.** The chain line fires from
+   `stackedCutRef` for every child after the first, so a run that adopted nothing
+   announced "1 layer(s) adopted", "2 layer(s) adopted" for slices it had just built
+   itself. It now reports the chain (`N layer(s) — …`); "adopted" is left to
+   `stackedCutRef`'s remote-branch pickup, where it is true.
+4. **Two unmapped `gh stack merge` exit codes.** `stackMergeReason` named 3, 4 and 9
+   and let everything else fall through to gh's raw text. Two of the rest are
+   reachable from a finalize: **2** (someone unstacked the top PR from the web) and
+   **5** (a layer is closed or draft — `cannot merge the whole stack: pull request
+   #N is …` — or the repo does not allow the configured `MERGE_METHOD`). Both now
+   get a reason the operator can act on.
+
+### Structural gaps — follow-ups, not fixed here
+
+These touch the mode's shape or its hygiene invariants, so they are deliberately out
+of this slice. Both are filed: **COD-1507** and **COD-1508** (team `COD`, project
+`trau`, `needs-human` — each turns on a decision about what the mode guarantees,
+which is why neither is a fix this slice could make).
+
+- **A stacked epic leaves one stale remote branch per slice** (COD-1507). GitHub's
+  stack merge ignores `--delete-branch` (Q7) and the stacked finalize deletes
+  nothing, so `feature/COD-1504-…`, `-1505-…` and `-1506-…` all still resolve on
+  `origin` after the stack landed. The classic epic flow's `--delete-branch` sweeps
+  its slice branches; this one does not, and nothing else will. Deciding when a layer's branch
+  is safe to delete is a hygiene-invariant question (the merge is atomic but the
+  branches are what a partial-merge rewrite would have rewritten), which is why it is
+  not a one-liner here.
+- **The finalize re-gates every layer's CI it already gated** (COD-1508).
+  `assertLayerShippable` polls all N layers even though each one was polled green in
+  its own `ciAndMerge`.
+  That is correct as written — an upper layer's checks say nothing about the layers
+  below it, and a rebase can invalidate a lower one — but it means an N-slice epic
+  pays N extra `gh pr checks` rounds at finalize with no staleness signal to skip on.
+  Any fix changes what "green" means for the mode, so it belongs in its own ticket.

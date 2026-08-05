@@ -784,11 +784,14 @@ type Pipeline struct {
 	// the WIP it stashed, the epic branch it left behind. ExitCleanup consumes it.
 	exit exitState
 
-	// stackedShape memoizes the stacked-vs-classic decision for one epic, and
-	// stackLayer the branch the ticket in flight is stacked on. Both exist so the
-	// shape is settled once per epic rather than re-probed mid-run — see
-	// stacked_epic.go.
+	// stackedShape memoizes the stacked-vs-classic decision for one epic,
+	// stackLinked the chain this run last linked on GitHub, and stackLayer the
+	// branch the ticket in flight is stacked on. All three exist so the shape is
+	// settled once per epic rather than re-probed mid-run — see stacked_epic.go.
+	// Each carries the scope it is valid for: stackedShape and stackLinked name
+	// their epic, stackLayer is re-primed per ticket (primeStackLayer).
 	stackedShape stackDecision
+	stackLinked  stackLinkMemo
 	stackLayer   stackLayerMemo
 
 	// lessonSiblings memoizes the epic-sibling set lessons recall resolved for one

@@ -446,8 +446,10 @@ func TestFinalizeStackedEpicMapsStackMergeExitCodes(t *testing.T) {
 		code int
 		want string
 	}{
+		{2, "no longer reads PR #952 as part of a stack"},
 		{3, "could not rebase the stack"},
 		{4, "API rejected it"},
+		{5, "refused the merge as asked for"},
 		{9, "no longer available"},
 		{1, "boom"},
 	}
@@ -542,10 +544,15 @@ func TestStackedEpicResumeAdoptsAPartialChain(t *testing.T) {
 	if got := p.stackLayer.base; got != tip.Branch {
 		t.Errorf("recorded layer base = %q, want %q", got, tip.Branch)
 	}
-	for _, want := range []string{"2 layer(s) adopted", chain[0].Branch, tip.Branch, "PR #" + tip.PR} {
+	for _, want := range []string{"2 layer(s)", chain[0].Branch, tip.Branch, "PR #" + tip.PR} {
 		if !log.contains(want) {
-			t.Errorf("run log = %v, want it to record %q as adopted", log.lines, want)
+			t.Errorf("run log = %v, want it to record %q in the chain", log.lines, want)
 		}
+	}
+	// "adopted" is reserved for a layer this run really did take over from the
+	// remote; the chain line itself names layers a straight-through run just built.
+	if !log.contains("layer " + tip.Branch + " adopted from origin") {
+		t.Errorf("run log = %v, want the remote adoption of %q named", log.lines, tip.Branch)
 	}
 	if len(git.checkedOutRemote) != 1 || git.checkedOutRemote[0] != tip.Branch {
 		t.Errorf("adopted %v from the remote, want only the tip %q", git.checkedOutRemote, tip.Branch)
@@ -564,5 +571,146 @@ func TestStackedEpicSourceRewritesNoHistory(t *testing.T) {
 		if strings.Contains(string(src), forbidden) {
 			t.Errorf("stacked_epic.go contains %q — the stacked shape must never rewrite history or retarget a PR", forbidden)
 		}
+	}
+}
+
+// Checkpoints describing a cycle used to buy the walk one extra step, which
+// re-appended a layer already placed and left the wrong branch as the chain's tip
+// — and the tip is the PR the whole stack merges from.
+func TestStackChainNeverOutgrowsItsLayers(t *testing.T) {
+	type layer struct{ id, branch, base string }
+	// main ← bA ← bB, and a third child claiming bB as its base while carrying bA as
+	// its own branch: the walk that leaves bB arrives back at bA, a cycle.
+	cycle := []layer{
+		{"COD-8301", "bA", "main"},
+		{"COD-8302", "bB", "bA"},
+		{"COD-8303", "bA", "bB"},
+	}
+	// The cycle is walked once and stops at bA either way; a fourth child stacked
+	// somewhere the walk never reaches must not buy it another step.
+	offPath := append(append([]layer{}, cycle...), layer{"COD-8304", "bD", "bC"})
+	want := "COD-8301,COD-8302,COD-8303"
+
+	for _, c := range []struct {
+		name   string
+		layers []layer
+	}{
+		{"a cycle", cycle},
+		{"a cycle beside a layer off the walked path", offPath},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			gh := &stackedGitHub{}
+			gh.stacksEnabled = true
+			tr := &epicTracker{}
+			p := newStackedPipeline(t, newStackedGit(), gh, tr)
+			for _, l := range c.layers {
+				tr.subs = append(tr.subs, tracker.SubIssue{ID: l.id})
+				if err := p.State.Set(l.id, "BRANCH", l.branch); err != nil {
+					t.Fatal(err)
+				}
+				if err := p.State.Set(l.id, "BASE", l.base); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			chain, err := p.stackChain(context.Background())
+			if err != nil {
+				t.Fatalf("stackChain = %v", err)
+			}
+			ids := make([]string, 0, len(chain))
+			for _, l := range chain {
+				ids = append(ids, l.ID)
+			}
+			if got := strings.Join(ids, ","); got != want {
+				t.Errorf("chain = %s, want %s — every layer placed once, and the tip the last one the walk reached", got, want)
+			}
+		})
+	}
+}
+
+// A layer passes the link seam twice — once when its PR opens, once when it
+// completes — with the same chain both times; only a chain that changed is sent.
+func TestStackedEpicLinksEachChainOnce(t *testing.T) {
+	git, gh, log := newStackedGit(), &stackedGitHub{}, &logRenderer{}
+	gh.stacksEnabled, gh.checks = true, greenChecks
+	tr := &epicTracker{title: "Layer"}
+	p := newStackedPipeline(t, git, gh, tr)
+	p.Renderer = log
+
+	children := []string{"COD-8401", "COD-8402"}
+	for _, id := range children {
+		tr.subs = append(tr.subs, tracker.SubIssue{ID: id})
+	}
+	for i, id := range children {
+		gh.createURL = fmt.Sprintf("https://github.test/pr/%d", 960+i)
+		runStackedChild(t, p, gh, id)
+		if err := p.CIAndMerge(context.Background(), id); err != nil {
+			t.Fatalf("CIAndMerge(%s) = %v", id, err)
+		}
+	}
+	if len(gh.linked) != 1 {
+		t.Errorf("linked the stack %d time(s) (%v), want once — the chain only changed once", len(gh.linked), gh.linked)
+	}
+	var lines int
+	for _, line := range log.lines {
+		if strings.Contains(line, "stack linked:") {
+			lines++
+		}
+	}
+	if lines != 1 {
+		t.Errorf("logged %d 'stack linked' line(s) in %v, want one per chain change", lines, log.lines)
+	}
+	// The finalize's re-link is the repair for a chain a child failed to link, so a
+	// chain already on GitHub is not re-sent there either.
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic = %v", err)
+	}
+	if len(gh.linked) != 1 {
+		t.Errorf("linked %d time(s) after the finalize (%v), want the one link", len(gh.linked), gh.linked)
+	}
+}
+
+// A link that FAILED leaves nothing memoized, so the finalize's re-link still
+// repairs the chain the child could not link. The memo has to be written on
+// success, never on the attempt: memoizing the attempt would silently retire the
+// finalize's repair for exactly the chain that needs it.
+func TestStackedEpicRelinksAfterAFailedLink(t *testing.T) {
+	git, gh, log := newStackedGit(), &stackedGitHub{}, &logRenderer{}
+	gh.stacksEnabled, gh.checks = true, greenChecks
+	gh.linkErr = errors.New("gh stack link: HTTP 502")
+	tr := &epicTracker{title: "Layer"}
+	p := newStackedPipeline(t, git, gh, tr)
+	p.Renderer = log
+
+	children := []string{"COD-8501", "COD-8502"}
+	for _, id := range children {
+		tr.subs = append(tr.subs, tracker.SubIssue{ID: id})
+	}
+	// Two children, so the second one's PR really does reach the link seam — with
+	// gh failing every call it makes there.
+	var branches []string
+	for i, id := range children {
+		gh.createURL = fmt.Sprintf("https://github.test/pr/%d", 970+i)
+		branches = append(branches, runStackedChild(t, p, gh, id))
+		if err := p.CIAndMerge(context.Background(), id); err != nil {
+			t.Fatalf("CIAndMerge(%s) = %v", id, err)
+		}
+	}
+	if len(gh.linked) != 0 {
+		t.Fatalf("linked %v, want nothing linked while every gh stack link fails", gh.linked)
+	}
+	if !log.contains("couldn't link " + children[1] + " into the stack") {
+		t.Fatalf("run log = %v, want the failed link warned about — the child never reached the link seam", log.lines)
+	}
+	if len(p.stackLinked.branches) != 0 {
+		t.Errorf("stackLinked = %v after a failed link, want it empty so the finalize still repairs the chain", p.stackLinked)
+	}
+
+	gh.linkErr = nil
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic = %v", err)
+	}
+	if len(gh.linked) != 1 || strings.Join(gh.linked[0], ",") != strings.Join(branches, ",") {
+		t.Errorf("linked %v, want the finalize to repair the unlinked chain once, bottom-first (%v)", gh.linked, branches)
 	}
 }
