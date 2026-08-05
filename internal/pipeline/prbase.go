@@ -15,6 +15,10 @@ import (
 // force push — and one that still misses the pin fails the phase with no PR opened,
 // leaving the work on its branch for a resume. g and base name the repo the PR is
 // opened in, so a Folder repo's child gates against its own remote.
+//
+// base is not always a long-lived branch: in a stacked epic it is the slice branch
+// of the layer below, which trau owns and never moves before the stack merges. The
+// assertion is the same either way.
 func (p *Pipeline) assertPRBaseCurrent(ctx context.Context, g Git, base, pin string) error {
 	carries, err := p.remoteCarries(ctx, g, base, pin)
 	if err != nil {
