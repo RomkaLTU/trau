@@ -266,6 +266,30 @@ type GitHub interface {
 	ClosePR(ctx context.Context, pr string) error
 
 	Merge(ctx context.Context, pr, method string, deleteBranch bool) error
+
+	// InStack reports whether the PR is a layer of a GitHub stack. The legacy merge
+	// endpoint Merge shells to refuses a stacked PR at every position, so the
+	// auto-merge path asks first and parks the ticket rather than merging into that
+	// refusal. The caller treats an error as "not stacked", so a gh that cannot
+	// answer never blocks a merge that would have worked.
+	InStack(ctx context.Context, pr string) (bool, error)
+
+	// StacksEnabled reports whether GitHub's stacked-PRs preview answers for this
+	// repo. EPIC_STACKED_PRS probes it once, at epic start, before the epic commits
+	// to the stacked shape; an error is the same answer as false — run classic.
+	StacksEnabled(ctx context.Context) (bool, error)
+
+	// LinkStack chains branches — bottom first, top last — into one GitHub stack.
+	// Linking is additive and keeps no local tracking state: it records the chain
+	// the caller already built and rewrites nothing about the PRs themselves, which
+	// is what makes it safe for a tool that manages its own branches.
+	LinkStack(ctx context.Context, branches []string) error
+
+	// MergeStack merges a whole stack from its top PR, landing one commit per layer
+	// bottom-first. It is the only way a stacked PR merges — the legacy endpoint
+	// Merge shells to refuses every layer — and a failure carries gh's exit status
+	// as a *StackMergeError so the caller can name what went wrong.
+	MergeStack(ctx context.Context, pr, method string) error
 }
 
 // ErrCIFailed and ErrCITimeout are the two non-green outcomes of pollCI; both map
@@ -750,9 +774,25 @@ type Pipeline struct {
 
 	EpicID string
 
+	// EpicStackedPRs opts epics into the experimental stacked shape (config
+	// EPIC_STACKED_PRS, default off): slices chain as a native GitHub stack and the
+	// whole stack merges once from the top, with no epic branch and no epic PR. It
+	// is the flag, not the verdict — see stackedEpic for the gates it passes first.
+	EpicStackedPRs bool
+
 	// exit collects what this run has to undo when it ends — the checkout it moved,
 	// the WIP it stashed, the epic branch it left behind. ExitCleanup consumes it.
 	exit exitState
+
+	// stackedShape memoizes the stacked-vs-classic decision for one epic,
+	// stackLinked the chain this run last linked on GitHub, and stackLayer the
+	// branch the ticket in flight is stacked on. All three exist so the shape is
+	// settled once per epic rather than re-probed mid-run — see stacked_epic.go.
+	// Each carries the scope it is valid for: stackedShape and stackLinked name
+	// their epic, stackLayer is re-primed per ticket (primeStackLayer).
+	stackedShape stackDecision
+	stackLinked  stackLinkMemo
+	stackLayer   stackLayerMemo
 
 	// lessonSiblings memoizes the epic-sibling set lessons recall resolved for one
 	// ticket, so a run's build and verify pay the hierarchy lookup once. The loop
@@ -929,6 +969,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		return err
 	}
 	p.clearFailureMarks(id)
+	p.primeStackLayer(id)
 	if err := p.selectRunner(ctx, id); err != nil {
 		return err
 	}
@@ -1900,7 +1941,15 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 	}
 	branch = featureBranch(id, title)
 	base := p.baseRef()
-	if p.EpicID != "" {
+	stacked := p.EpicID != "" && p.stackedEpic(ctx)
+	switch {
+	case stacked:
+		cut, err := p.stackedCutRef(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		base = cut
+	case p.EpicID != "":
 		epic, err := p.epicBranchName(ctx)
 		if err != nil {
 			return "", err
@@ -1911,7 +1960,7 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
 		return "", &GiveUpError{ID: id, Reason: "could not create feature branch for " + id}
 	}
-	if p.EpicID != "" {
+	if p.EpicID != "" && !stacked {
 		p.markEpicBranchStacked()
 	}
 	p.logf("  branch %s ← %s", branch, base)
@@ -2012,10 +2061,14 @@ func (p *Pipeline) assertRepoChanged(ctx context.Context, id string) error {
 	return fmt.Errorf("build produced no changes in %s — the agent may have built in the wrong repository or escaped its working directory", p.repoLabel())
 }
 
-// buildBase resolves the branch the feature work diverges from: the epic branch
-// for an epic sub-ticket, otherwise the configured base.
+// buildBase resolves the branch the feature work diverges from: the layer below
+// it in a stacked epic, the epic branch for a classic epic sub-ticket, otherwise
+// the configured base.
 func (p *Pipeline) buildBase(ctx context.Context) (string, error) {
 	if p.EpicID != "" {
+		if p.stackedEpic(ctx) {
+			return p.stackedBase(ctx)
+		}
 		return p.epicBranchName(ctx)
 	}
 	return p.Base, nil
@@ -2705,7 +2758,17 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	var published proofsbranch.Publication
 	if prURL == "" {
 		prBase := p.Base
-		if p.EpicID != "" {
+		stacked := p.EpicID != "" && p.stackedEpic(ctx)
+		switch {
+		case stacked:
+			prBase, err = p.stackedBase(ctx)
+			if err != nil {
+				return fmt.Errorf("commit %s: resolve the layer below: %w", id, err)
+			}
+			if err := p.assertStackedBaseCurrent(ctx, id, prBase); err != nil {
+				return fmt.Errorf("commit %s: %w", id, err)
+			}
+		case p.EpicID != "":
 			prBase, err = p.epicBranchName(ctx)
 			if err != nil {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
@@ -2713,8 +2776,10 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 			if err := p.assertEpicBaseCurrent(ctx, id, prBase); err != nil {
 				return fmt.Errorf("commit %s: %w", id, err)
 			}
-		} else if err := p.assertPRBaseCurrent(ctx, p.Git, prBase, p.prBasePin(id)); err != nil {
-			return fmt.Errorf("commit %s: %w", id, err)
+		default:
+			if err := p.assertPRBaseCurrent(ctx, p.Git, prBase, p.prBasePin(id)); err != nil {
+				return fmt.Errorf("commit %s: %w", id, err)
+			}
 		}
 		var section string
 		section, published = p.proofsSection(ctx, id, p.RepoRoot)
@@ -2723,7 +2788,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
 		}
-		if prBase != p.Base {
+		if prBase != p.Base && !stacked {
 			p.markEpicBranchStacked()
 		}
 	}
@@ -2735,6 +2800,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err := p.State.Set(id, "PR_URL", prURL); err != nil {
 		return fmt.Errorf("commit %s: record PR_URL: %w", id, err)
 	}
+	p.linkStackLayer(ctx, id, branch)
 	if err := p.setPhase(id, state.PROpen); err != nil {
 		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
 	}
@@ -2906,10 +2972,19 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	if !green {
 		return p.giveUp(ctx, id, withRepairs("CI not green", "after", repairs))
 	}
+	// A layer of a stacked epic is finished the moment its PR is green: nothing
+	// merges until the epic's finalize takes the whole stack at once.
+	if p.stackedEpic(ctx) {
+		return p.completeStackedLayer(ctx, id, pr)
+	}
 	if !p.AutoMerge {
 		return p.awaitManualMerge(ctx, id, pr)
 	}
 	if reason := p.foreignWorkInPR(ctx, id, pr); reason != "" {
+		p.logf("  ✗ merge gate: %s", reason)
+		return p.giveUp(ctx, id, reason)
+	}
+	if reason := p.stackedPRRefusal(ctx, id, pr); reason != "" {
 		p.logf("  ✗ merge gate: %s", reason)
 		return p.giveUp(ctx, id, reason)
 	}
@@ -6178,6 +6253,113 @@ func (g ExecGitHub) ClosePR(ctx context.Context, pr string) error {
 	}
 	return nil
 }
+
+// InStack reports whether pr belongs to a GitHub stack. It reads the REST payload
+// rather than `gh pr view --json stack`, because a gh that does not know the field
+// fails the command on every PR, stacked or not.
+func (g ExecGitHub) InStack(ctx context.Context, pr string) (bool, error) {
+	out, err := g.output(ctx, "api", "repos/{owner}/{repo}/pulls/"+pr)
+	if err != nil {
+		return false, fmt.Errorf("gh api pulls/%s: %w", pr, err)
+	}
+	stacked, err := parseStackMembership(out)
+	if err != nil {
+		return false, fmt.Errorf("gh api pulls/%s: %w", pr, err)
+	}
+	return stacked, nil
+}
+
+// parseStackMembership reads stack membership off a `gh api .../pulls/{n}` payload.
+// The top-level "stack" object is present only for a layer of a stack; a missing key
+// — which is also what a repo the preview has not reached returns — and a null one
+// both read as unstacked, since the safe answer to every ambiguity is "merge as
+// before".
+func parseStackMembership(out string) (bool, error) {
+	var payload struct {
+		Stack json.RawMessage `json:"stack"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return false, fmt.Errorf("parse pull request payload: %w", err)
+	}
+	return len(payload.Stack) > 0 && string(payload.Stack) != "null", nil
+}
+
+// StacksEnabled probes the repo's stacked-PR support with one call to the stacks
+// endpoint. A 200 — `[]` on a repo that has no stacks — is the only positive
+// signal, and every failure reads as unsupported on purpose: the 404 the endpoint
+// returns is emitted by the matched route whether the preview is off or the token
+// simply cannot see the repo, so it proves nothing either way, and gh exits 1 on
+// it rather than with a distinguishing code (docs/research/stacked-prs-spike.md).
+func (g ExecGitHub) StacksEnabled(ctx context.Context) (bool, error) {
+	if _, err := g.output(ctx, "api", "repos/{owner}/{repo}/stacks"); err != nil {
+		return false, fmt.Errorf("gh api stacks: %w", err)
+	}
+	return true, nil
+}
+
+// LinkStack runs `gh stack link <bottom> … <top>`. Fewer than two branches is not
+// a stack and needs no call. Linking is additive — it adds a `stack` key to each
+// PR's payload and leaves base, head, title, body and draft state exactly as they
+// were — so re-linking a chain that grew by one layer is the intended usage.
+func (g ExecGitHub) LinkStack(ctx context.Context, branches []string) error {
+	if len(branches) < 2 {
+		return nil
+	}
+	if _, err := g.output(ctx, append([]string{"stack", "link"}, branches...)...); err != nil {
+		return fmt.Errorf("gh stack link: %w", err)
+	}
+	return nil
+}
+
+// MergeStack runs `gh stack merge <pr> --<method> --yes` on the stack's top PR,
+// which merges every layer at once. A failure is returned as a *StackMergeError
+// carrying gh's exit status, since the caller distinguishes a rebase conflict a
+// human must resolve from an API failure and from the preview disappearing.
+func (g ExecGitHub) MergeStack(ctx context.Context, pr, method string) error {
+	args := []string{"stack", "merge", pr, "--" + stackMergeFlag(method), "--yes"}
+	logger.Debugf("gh %s", strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, g.bin(), args...)
+	cmd.Dir = g.Repo
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	e := &StackMergeError{Output: strings.TrimSpace(string(out)), err: err}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		e.Code = ee.ExitCode()
+	}
+	return e
+}
+
+// stackMergeFlag maps MERGE_METHOD onto the flag `gh stack merge` takes. Only
+// --squash was exercised live against the preview, and it is what an unset or
+// unrecognized method falls back to rather than a flag gh may reject.
+func stackMergeFlag(method string) string {
+	switch method {
+	case "merge", "rebase", "squash":
+		return method
+	}
+	return "squash"
+}
+
+// StackMergeError is a failed `gh stack merge`: gh's exit status plus whatever it
+// printed. The exit status is the load-bearing part — it separates a rebase
+// conflict from an API failure from a preview that went away mid-run.
+type StackMergeError struct {
+	Code   int
+	Output string
+	err    error
+}
+
+func (e *StackMergeError) Error() string {
+	if e.Output == "" {
+		return fmt.Sprintf("gh stack merge: %v", e.err)
+	}
+	return fmt.Sprintf("gh stack merge: %v: %s", e.err, e.Output)
+}
+
+func (e *StackMergeError) Unwrap() error { return e.err }
 
 // Merge merges the PR with the given method; deleteBranch adds --delete-branch.
 func (g ExecGitHub) Merge(ctx context.Context, pr, method string, deleteBranch bool) error {

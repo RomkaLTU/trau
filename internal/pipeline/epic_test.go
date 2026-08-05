@@ -1408,6 +1408,17 @@ type epicGitHub struct {
 	closeErr     error
 	bodyEdits    map[string]string
 	editErr      error
+
+	// The stacked-epic seam (EPIC_STACKED_PRS).
+	stacksEnabled    bool
+	stacksErr        error
+	stacksProbes     int
+	linked           [][]string
+	linkErr          error
+	stackMergeCalls  int
+	stackMergedPR    string
+	stackMergeMethod string
+	stackMergeErr    error
 }
 
 func (e *epicGitHub) PRURL(context.Context, string) (string, error) { return "", nil }
@@ -1447,6 +1458,29 @@ func (e *epicGitHub) Merge(_ context.Context, _, method string, deleteBranch boo
 	e.mergeCalls++
 	e.mergeMethod, e.mergeDeleted = method, deleteBranch
 	return nil
+}
+
+func (e *epicGitHub) InStack(context.Context, string) (bool, error) { return false, nil }
+
+// The stacked-epic seam. The zero value answers "no stacked-PR preview here", so
+// every classic epic test keeps the classic flow without saying so.
+func (e *epicGitHub) StacksEnabled(context.Context) (bool, error) {
+	e.stacksProbes++
+	return e.stacksEnabled, e.stacksErr
+}
+
+func (e *epicGitHub) LinkStack(_ context.Context, branches []string) error {
+	if e.linkErr != nil {
+		return e.linkErr
+	}
+	e.linked = append(e.linked, slices.Clone(branches))
+	return nil
+}
+
+func (e *epicGitHub) MergeStack(_ context.Context, pr, method string) error {
+	e.stackMergeCalls++
+	e.stackMergedPR, e.stackMergeMethod = pr, method
+	return e.stackMergeErr
 }
 
 // TestEpicPRTitle: the epic PR header is a conventional 'epic(<id>): <subject>' —

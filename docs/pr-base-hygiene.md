@@ -52,3 +52,39 @@ If a PR's diff needs re-anchoring after the base was pushed, do one of these ins
 Base-toggling (switch the base to another branch and back) works only between branches
 that share history with the head, and is never worth the risk when the two options
 above cost nothing.
+
+## Carve-out: stacked epics (`EPIC_STACKED_PRS`)
+
+An epic running in the opt-in stacked shape puts one PR's base on another PR's head
+branch: child N targets child N−1's branch, and only the bottom PR targets
+`BASE_BRANCH`. Both rules above still hold, unchanged — **trau never force-pushes and
+never retargets a PR** — but the reasoning needs one addition, because in this shape
+GitHub itself will retarget and rebase.
+
+What GitHub does to a stack, observed live (`docs/research/stacked-prs-spike.md`, Q6):
+merging part of a stack retargets every PR above the merge point onto the new base
+**and non-fast-forward rewrites their head branches**. A run holding one of those
+branches would find its recorded head SHA gone from the remote, its next push rejected
+as non-fast-forward, and its fork point unrecognizable. That is exactly the hazard
+this document exists to prevent — except performed by the forge, with no involvement
+from trau at all.
+
+The stacked shape therefore merges **once, at the very end**: nothing lands until
+every layer is green, and then the whole stack merges from its top PR in a single
+all-or-nothing operation. The consequences:
+
+- **GitHub owns retarget and rebase at merge time only.** While the epic is in
+  flight there is no partial merge, so there is no rewrite for trau to absorb.
+- **Every base under an open PR is a branch trau owns.** A slice branch does not
+  move once its layer is complete, so the sibling-squash drift the base gate exists
+  for cannot occur between layers. The gate still runs on every layer: it proves the
+  remote copy of the layer below carries the commit the layer above was cut from,
+  repaired — as everywhere else — by a plain push.
+- **A stack trau cannot finish is handed to a human whole.** A red layer, a closed
+  layer, or a stack merge GitHub refuses parks the epic; trau does not merge around
+  the problem, because merging part of the stack is what triggers the rewrite.
+
+The classic epic flow is unchanged, and it is what runs whenever the flag is off, the
+repo is not on GitHub, the run delivers locally, an epic branch already owns the
+epic's children, or GitHub's stacked-PRs preview does not answer. The shape is decided
+once, at the epic's start.

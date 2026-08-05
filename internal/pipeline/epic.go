@@ -216,6 +216,14 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	p.checkpointEpicReleasing(ctx)
 	p.abortHalfMerge(ctx)
 
+	// A stacked epic has no epic branch and no epic PR to resolve: its layers are
+	// already open PRs chained onto each other, and shipping it is one merge of the
+	// whole stack. Asked before epicBranchName, which would create the very branch
+	// this shape exists to do without.
+	if p.stackedEpic(ctx) {
+		return p.finalizeStackedEpic(ctx)
+	}
+
 	epic, err := p.epicBranchName(ctx)
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: resolve branch: %w", p.EpicID, err)
@@ -337,6 +345,9 @@ func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
 // child against a base older than the branch point — burying the base's own drift in
 // the child's PR as thousands of foreign lines. A remote a push can repair is
 // repaired; one that still misses the fork point fails the phase.
+//
+// Classic epics only. A stacked epic has no epic branch to gate — its children
+// target the slice branch below them — and answers with assertStackedBaseCurrent.
 func (p *Pipeline) assertEpicBaseCurrent(ctx context.Context, id, epic string) error {
 	pin := p.State.Get(id, "BASE_SHA")
 	if pin == "" {
