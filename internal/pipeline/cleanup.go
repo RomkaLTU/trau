@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/activity"
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
@@ -13,7 +14,7 @@ import (
 // cleanup strips AI-slop from the slice's diff before verify. It fails open:
 // only a fatal agent error (pause/give-up) propagates.
 func (p *Pipeline) cleanup(ctx context.Context, id string) error {
-	if !p.Cleanup {
+	if !p.Cleanup || p.skipping(config.SkipCleanup) {
 		return nil
 	}
 	p.setActivity(id, activity.Cleanup, "")

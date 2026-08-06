@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/forge"
 	"github.com/RomkaLTU/trau/internal/forge/bitbucketapi"
@@ -177,6 +178,11 @@ func (p *Pipeline) prSummary(ctx context.Context, id string) string {
 // graded result, the verify checks that ran, and the browser-QA outcome from the
 // verdict's accounting. With no verdict on record it says exactly that.
 func (p *Pipeline) testingLines(ctx context.Context, id string) []string {
+	// An earlier attempt's verdict says nothing about this diff, so the section
+	// states the bypass rather than any verify fact.
+	if p.skipping(config.SkipVerify) {
+		return []string{skippedVerifyLine}
+	}
 	v, graded := p.sliceVerdict(id)
 	if !graded {
 		return []string{"No verify verdict was recorded for this run"}

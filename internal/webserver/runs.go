@@ -49,6 +49,9 @@ type RunView struct {
 	// changed, in ship order. A plain Repo's run has none, and PR/PRURL keep naming
 	// the first of them either way.
 	Ships []RunShip `json:"ships,omitempty"`
+	// Skips names the pipeline work the operator bypassed for this run (ADR 0037) —
+	// absent on the ordinary run that skipped nothing.
+	Skips []string `json:"skips,omitempty"`
 }
 
 // RunShip is one Child repo a Folder repo run shipped to and the pull request the
@@ -322,6 +325,7 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 		UpdatedAt:     tc.UpdatedAt,
 		Handback:      handbackFor(tc),
 		Ships:         shipsFromCheckpoint(tc.Data),
+		Skips:         tc.Skips,
 	}
 }
 
