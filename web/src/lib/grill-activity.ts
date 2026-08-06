@@ -60,3 +60,38 @@ export function storeActivityShown(shown: boolean): void {
 export function useActivityShown(): [boolean, (shown: boolean) => void] {
   return [useSyncExternalStore(subscribe, currentShown), storeActivityShown]
 }
+
+// A row holds about this many characters of detail at text-xs before it runs out of
+// column. The budget is fixed rather than measured: the row is one line either way,
+// and hovering it hands back the whole detail the hub sent.
+export const ACTIVITY_DETAIL_BUDGET = 80
+
+// The head of a detail says what the call is, the tail says what it was about — a
+// filename, a flag, a redirect — so an over-long one is cut in the middle rather than
+// at the end, where the informative part lives.
+export function truncateActivityDetail(
+  detail: string,
+  budget: number = ACTIVITY_DETAIL_BUDGET,
+): string {
+  const chars = [...detail]
+  if (chars.length <= budget) return detail
+  const tail = detailTail(chars, budget)
+  const head = budget - tail - 1
+  if (head < 1) return `…${chars.slice(chars.length - budget + 1).join('')}`
+  return `${chars.slice(0, head).join('')}…${chars.slice(chars.length - tail).join('')}`
+}
+
+const HEAD_MIN = 20
+
+// A path is identified by its last segment, so the tail stretches to hold that segment
+// whole — with the slash in front of it, so the cut still reads as a path. A segment
+// long enough to leave no head is not worth the row it would eat, and falls back to
+// the even split every other detail gets.
+function detailTail(chars: string[], budget: number): number {
+  const half = Math.max(1, Math.floor((budget - 1) / 2))
+  const slash = chars.lastIndexOf('/')
+  if (slash <= 0 || slash === chars.length - 1) return half
+  const segment = chars.length - slash
+  if (segment <= half) return half
+  return segment <= budget - 1 - HEAD_MIN ? segment : half
+}

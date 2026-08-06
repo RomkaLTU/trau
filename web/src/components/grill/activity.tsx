@@ -9,7 +9,7 @@ import {
   type LucideProps,
 } from "lucide-react";
 
-import { useActivityShown } from "@/lib/grill-activity";
+import { truncateActivityDetail, useActivityShown } from "@/lib/grill-activity";
 import { type GrillActivity } from "@/lib/grill";
 import { cn } from "@/lib/utils";
 
@@ -94,8 +94,11 @@ function ActivityRow({ activity }: { activity: GrillActivity }) {
             {rowLabel(activity)}
           </span>
           {activity.detail && (
-            <span className="truncate text-muted-foreground/70">
-              {activity.detail}
+            <span
+              title={activity.detail}
+              className="truncate text-muted-foreground/70"
+            >
+              {truncateActivityDetail(activity.detail)}
             </span>
           )}
         </>
@@ -110,7 +113,10 @@ function ActivityRow({ activity }: { activity: GrillActivity }) {
 // stretch that still fits reads from the left like every other row.
 function ThinkingLine({ text }: { text: string }) {
   return (
-    <span className="flex min-w-0 flex-1 justify-end overflow-hidden">
+    <span
+      title={text}
+      className="flex min-w-0 flex-1 justify-end overflow-hidden"
+    >
       <span className="me-auto whitespace-nowrap italic text-muted-foreground/70">
         {text}
       </span>
