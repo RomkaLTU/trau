@@ -88,6 +88,7 @@ func (fakeGit) WorktreeHolding(context.Context, string) (string, error) {
 }
 func (fakeGit) Clean(context.Context) error                        { return nil }
 func (fakeGit) DiscardTracked(context.Context) error               { return nil }
+func (fakeGit) ResetHard(context.Context, string) error            { return nil }
 func (fakeGit) BranchExists(context.Context, string) (bool, error) { return false, nil }
 func (fakeGit) FindFeatureBranch(context.Context, string) (string, error) {
 	return "", nil
@@ -108,6 +109,9 @@ func (fakeGit) WorktreeStatus(context.Context) (string, error)            { retu
 func (fakeGit) Stash(context.Context, string) error                       { return nil }
 func (fakeGit) StashPop(context.Context) error                            { return nil }
 func (fakeGit) Commits(context.Context, string, string) ([]string, error) { return nil, nil }
+func (fakeGit) RevListNoMerges(context.Context, string, string, ...string) ([]string, error) {
+	return nil, nil
+}
 func (fakeGit) IsAncestor(context.Context, string, string) (bool, error)  { return true, nil }
 func (fakeGit) MergeBase(context.Context, string, string) (string, error) { return "", nil }
 func (fakeGit) ResolvesToCommit(context.Context, string) (bool, error)    { return true, nil }

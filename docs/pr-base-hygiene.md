@@ -35,6 +35,69 @@ best-effort at run start so the drift is usually gone before a branch is even cu
 The merge-time check (`foreignWorkInPR`) stays as defense in depth: it catches a PR
 whose commit count dwarfs the run's own and refuses the merge.
 
+## A diverged base: both copies carry commits the other lacks
+
+The harder symptom is a run that faults at commit/PR with
+
+```text
+pr base origin/epic/MLG-781-… does not carry be9bca7…, so a PR opened against it
+would diff against a stale base … ! [rejected] … (non-fast-forward)
+```
+
+and re-fails identically on every resume. Here the base is not merely behind: local
+and remote have **diverged**. The classic way an epic branch got there:
+
+1. Between children, trau merges the base into the epic branch and pushes the result.
+   That merge is a local commit.
+2. The push does not land — a pre-push hook, the network, or a sibling that
+   squash-merged into the remote epic in the same second. The local epic now carries
+   a commit the remote never took.
+3. A sibling slice squash-merges into the **remote** epic. Squash commits have no
+   local counterpart, so now both sides carry unique commits.
+4. `git pull --ff-only` can never heal that, the next slice is cut from the local
+   epic and pinned to a local-only commit, and the PR-base gate correctly refuses —
+   trau never force-pushes a shared branch.
+
+Trau now closes each of those doors. The between-children sync is transactional: it
+records the epic tip before the merge, and a push that does not land rolls the local
+branch back to that tip, then retries the pull→merge→push once for the race. On every
+exit path the local epic carries no sync merge the remote lacks. And before the next
+slice branch is cut, a refused `pull --ff-only` is classified rather than ignored:
+
+| State | What trau does |
+| --- | --- |
+| Local behind the remote | Nothing new — the pull fast-forwards. |
+| Local ahead of the remote | Nothing new — the sync push repairs it. |
+| Diverged, the local-only commits are **trau's own sync merges** (and the base work those merges pulled over) | Resets the local epic onto the remote tip, resyncs and pushes. Sync merges are recreated and the remote, where siblings land, is authoritative. |
+| Diverged, local-only commits include **real work** | Faults the run **before** the slice branch is cut, names those commits, and prints the steps below. |
+
+### Repairing a diverged base by hand
+
+Trau will not do this for you: dropping unpushed work and rewriting a shared branch
+are both operator decisions.
+
+```bash
+# 1. See who has what. Left column = local-only, right column = remote-only.
+git fetch origin <base> && git rev-list --left-right --oneline <base>...origin/<base>
+
+# 2. Every local-only commit is a disposable sync merge → take the remote copy.
+git checkout <base> && git reset --hard origin/<base>
+
+# 3. Real local-only work → rebase it onto the remote copy, then push.
+git checkout <base> && git rebase origin/<base> && git push origin <base>
+```
+
+Read the left column of step 1 with the merges in mind: an unpushed sync merge drags
+the base's own commits into it, so commits already on `origin/<default branch>` listed
+there are that merge's cargo, not work only this machine has. `git rev-list
+--left-right --oneline <base>...origin/<base> ^origin/<default branch>` is the same
+question with that cargo removed — which is exactly how trau classifies the divergence.
+
+A slice branch that was **already** cut from the diverged base stays wedged after the
+base is repaired: its recorded fork point is a commit the remote never had. Rebase
+that slice branch onto the repaired base, then resume its ticket. That recovery is
+deliberately manual — the two fixes above remove the way slices get wedged.
+
 ## Never retarget a PR's base onto an orphan branch
 
 Retargeting a PR's base is safe **only toward a branch that shares history with the

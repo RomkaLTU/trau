@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -311,31 +312,145 @@ func (p *Pipeline) finalizeEpicLocally(ctx context.Context, epic string) error {
 // squashed form (a guaranteed merge conflict). Then a clean merge of the remote
 // base is pushed so the next child branches off an up-to-date epic. A conflicting
 // merge is aborted and deferred to the authoritative finalize sync (which runs a
-// resolving agent). Best-effort by design — any failure is logged, never blocking
-// the child about to branch off.
-func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
+// resolving agent).
+//
+// The sync is transactional: the merge of the base is a local commit, and a push
+// that does not land leaves the local epic ahead of the remote one — a divergence
+// no later run can reconcile, since pull --ff-only refuses and every child is then
+// pinned to a fork point the remote never gets. So the pre-merge tip is recorded, a
+// failed push rolls the local epic back to it, and the pull→merge→push runs once
+// more for the race where a sibling landed between the pull and the push.
+//
+// Best-effort by design with one exception: an epic that has already diverged with
+// real local-only work is fatal here (see reconcileEpicWithRemote), because cutting
+// a slice from it wedges that slice.
+func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) error {
 	if p.localDelivery(ctx) {
-		return
+		return nil
 	}
 	if err := p.Git.Checkout(ctx, epic, false); err != nil {
 		p.logf("  epic sync skipped (checkout %s: %v)", epic, err)
-		return
+		return nil
 	}
-	if err := p.Git.Pull(ctx, p.Remote, epic); err != nil {
-		p.logf("  epic pull from %s skipped (%v)", p.Remote, err)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := p.Git.Pull(ctx, p.Remote, epic); err != nil {
+			p.logf("  epic pull from %s skipped (%v)", p.Remote, err)
+			if err := p.reconcileEpicWithRemote(ctx, epic); err != nil {
+				return err
+			}
+		}
+		tip, err := p.Git.HeadSHA(ctx)
+		if err != nil || tip == "" {
+			p.logf("  epic sync skipped (read %s tip: %v) — an unpushed merge could not be rolled back", epic, err)
+			return nil
+		}
+		if pushed, done := p.mergeBaseIntoEpic(ctx, epic); pushed || done {
+			return nil
+		}
+		if err := p.Git.ResetHard(ctx, tip); err != nil {
+			p.logf("  ⚠ %s could not be rolled back onto %s (%v) — the local epic may be ahead of %s", epic, tip, err, p.Remote)
+			return nil
+		}
+		p.logf("  ↺ unpushed sync merge rolled back — %s is level with %s/%s again", epic, p.Remote, epic)
 	}
+	return nil
+}
+
+// mergeBaseIntoEpic merges the remote base into the checked-out epic and pushes the
+// result. pushed reports whether the sync landed on the remote; done reports that
+// the merge never committed anything, so the caller has nothing to roll back and no
+// reason to retry — a merge that failed outright, or a conflicted merge, which is
+// aborted here and left to the finalize sync (it runs a resolving agent).
+func (p *Pipeline) mergeBaseIntoEpic(ctx context.Context, epic string) (pushed, done bool) {
 	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, p.Base)
 	switch {
 	case err != nil:
 		p.logf("  epic sync skipped (merge %s: %v)", p.Base, err)
+		return false, true
 	case conflicted:
 		_ = p.Git.MergeAbort(ctx)
 		p.logf("  epic %s conflicts with %s — deferring resolution to epic finalize", epic, p.Base)
-	default:
-		if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
-			p.logf("  push synced epic branch error (continuing): %v", err)
-		}
+		return false, true
 	}
+	if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
+		p.logf("  push synced epic branch error (continuing): %v", err)
+		return false, false
+	}
+	return true, false
+}
+
+// reconcileEpicWithRemote answers what a refused pull --ff-only means, at the one
+// moment the answer is still cheap: before the next slice is cut from the epic.
+//
+//   - Behind, level or ahead: best-effort as before — the sync push that follows
+//     repairs an ahead branch.
+//   - Diverged with merge commits only: everything the local copy alone carries is a
+//     sync merge trau made itself, or the base work that merge brought over, so the
+//     local epic is reset onto the remote tip — where the siblings' squash merges
+//     live — and the sync continues, merging the base again right after.
+//   - Diverged with real local-only work: fatal. Nothing may drop that work and trau
+//     never force-pushes a shared branch, so the run stops here as a resumable fault
+//     instead of building a whole slice that the commit/PR gate must then refuse.
+//
+// A remote that cannot be read is indeterminate, never fatal — the commit/PR gate
+// stays the hard guarantee. Established divergence that cannot be classified or
+// healed is unsafe: proceeding would only move the same failure to the end of the
+// build.
+func (p *Pipeline) reconcileEpicWithRemote(ctx context.Context, epic string) error {
+	tip, err := p.remoteTip(ctx, p.Git, epic)
+	if err != nil {
+		p.logf("  epic divergence check skipped (%v)", err)
+		return nil
+	}
+	if tip == "" {
+		return nil
+	}
+	behind, err := p.Git.IsAncestor(ctx, epic, tip)
+	if err != nil {
+		p.logf("  epic divergence check skipped (%v)", err)
+		return nil
+	}
+	if behind {
+		return nil
+	}
+	ahead, err := p.Git.IsAncestor(ctx, tip, epic)
+	if err != nil {
+		p.logf("  epic divergence check skipped (%v)", err)
+		return nil
+	}
+	if ahead {
+		return nil
+	}
+	// The base's own commits are reachable through a sync merge's second parent, so
+	// they sit in tip..epic whenever the swallowed push was a merge that brought
+	// something in — which is every merge this sync makes, since a merge that changed
+	// nothing is a fast-forward and commits nothing. Excluding the base is therefore
+	// what makes "local-only" mean work rather than the base the merge pulled over.
+	local, err := p.Git.RevListNoMerges(ctx, tip, epic, p.remoteBaseTip(ctx))
+	if err != nil {
+		return errors.New(divergedEpicNote(p.Remote, epic, tip,
+			fmt.Sprintf("Trau could not list the local-only commits: %v.", err)))
+	}
+	if len(local) > 0 {
+		return errors.New(divergedEpicNote(p.Remote, epic, tip,
+			"The local branch carries work the remote does not have:\n  "+strings.Join(local, "\n  ")))
+	}
+	if err := p.Git.ResetHard(ctx, tip); err != nil {
+		return errors.New(divergedEpicNote(p.Remote, epic, tip,
+			fmt.Sprintf("Every local-only commit is a disposable sync merge, but the reset onto the remote tip failed: %v.", err)))
+	}
+	p.logf("  ↺ %s had diverged from %s/%s with sync merges only — reset onto %s", epic, p.Remote, epic, tip)
+	return nil
+}
+
+// divergedEpicNote tells the operator why the run stopped before it cut a slice and
+// how to repair the branch by hand. blocker is one or more lines naming what is in
+// the way of the automatic heal.
+func divergedEpicNote(remote, epic, tip, blocker string) string {
+	return fmt.Sprintf(
+		"epic branch %s has diverged from %s/%s (remote tip %s).\n%s\nA slice cut from this branch would be pinned to a commit %s never carries, so the run stops before the branch is cut.\n%s",
+		epic, remote, epic, tip, blocker, remote, baseRecoverySteps(remote, epic),
+	)
 }
 
 // assertEpicBaseCurrent makes the remote epic branch carry the commit the run was
