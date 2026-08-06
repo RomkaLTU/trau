@@ -53,6 +53,18 @@ not, and every bypass is on the record.**
   the first attempt already declined. The effective set is resolved per unit of
   work — each ticket, and the epic release the same `Pipeline` performs after them —
   so one ticket's stored skips never leak onto the next thing the loop does.
+- **An epic run declares the set once, for the whole epic** (COD-1520). It is one
+  process the operator started with one `--skip`, so it reaches every sub-issue run
+  and the release — the release's CI gate and its merge, classic or stacked. The set
+  is recorded on the epic's own checkpoint as well as each sub-issue's, so a loop
+  killed mid-epic and resumed with no argv still carries it to the children that
+  never started and to a finalize-only resume; the price is that an epic run that
+  skips something carries a checkpoint before the release stamps a phase on it.
+  Resolution reads downward only: a sub-issue with nothing of its own falls back to
+  the epic's set, while the release resolves against the epic alone, so a skip one
+  child read back can never disarm the epic's gates. `verify`, `lintfix` and
+  `cleanup` do not reach the release at all — its conflict-repair sync with the base
+  is delivery work, not QA, and runs whatever was skipped.
 - **Skipping verify advances the checkpoint to `verified`.** The handoff brief, the
   mechanical test gate, the verifier, the repair and bugfix turns, and the
   browser-verify gate are all bypassed together — a brief exists only for a cold

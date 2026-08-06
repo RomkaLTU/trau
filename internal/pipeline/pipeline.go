@@ -811,6 +811,12 @@ type Pipeline struct {
 
 	EpicID string
 
+	// EpicRun says this process drives the whole epic — it picks sub-issues until
+	// they run out and then owns the release — rather than building one sub-issue
+	// that happens to sit under EpicID. Only the former may declare anything for the
+	// epic as a whole, such as a skip set (ADR 0037).
+	EpicRun bool
+
 	// EpicStackedPRs opts epics into the experimental stacked shape (config
 	// EPIC_STACKED_PRS, default off): slices chain as a native GitHub stack and the
 	// whole stack merges once from the top, with no epic branch and no epic PR. It
