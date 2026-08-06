@@ -849,11 +849,46 @@ describe('streaming activity', () => {
     expect(report(resumed, tool(1, 'Grep')).activity.items).toHaveLength(1)
   })
 
-  it('a dropped frame clears the ring rather than leaving a hole in it', () => {
+  it('a dropped frame starts the ring over from itself rather than leaving a hole', () => {
     const holed = report(initial, tool(1, 'Read'), tool(2, 'Grep'), tool(5, 'Edit'))
-    expect(holed.activity.items).toEqual([])
+    expect(holed.activity.items.map((a) => a.name)).toEqual(['Edit'])
     expect(holed.activity.seq).toBe(5)
-    expect(report(holed, tool(6, 'Bash')).activity.items.map((a) => a.name)).toEqual(['Bash'])
+    expect(report(holed, tool(6, 'Bash')).activity.items.map((a) => a.name)).toEqual([
+      'Edit',
+      'Bash',
+    ])
+  })
+
+  // What a stream opening mid-turn is handed: the state frame that opens it clears the
+  // ring, then the hub replays the frames the turn already reported, numbered where it
+  // left off. They must land as a run rather than be discarded for starting past one.
+  it('replayed frames refill the ring the reconnect cleared', () => {
+    const reconnected = grillReducer(report(initial, tool(1, 'Read'), tool(2, 'Grep')), {
+      type: 'state',
+      session: session({ state: 'running' }),
+    })
+    expect(reconnected.activity).toEqual(NO_ACTIVITY)
+
+    const replayed = report(reconnected, tool(1, 'Read'), tool(2, 'Grep'))
+    expect(replayed.activity.items.map((a) => a.name)).toEqual(['Read', 'Grep'])
+    expect(report(replayed, tool(3, 'Edit')).activity.items.map((a) => a.name)).toEqual([
+      'Read',
+      'Grep',
+      'Edit',
+    ])
+  })
+
+  it('a replay landing mid-turn keeps the live frame that follows it', () => {
+    const reconnected = grillReducer(initial, {
+      type: 'state',
+      session: session({ state: 'running' }),
+    })
+    const replayed = report(reconnected, tool(7, 'Bash'), thinking(8, 'weighing it up'))
+    expect(replayed.activity.seq).toBe(8)
+    expect(report(replayed, result(9, true)).activity.items.map((a) => a.ok)).toEqual([
+      true,
+      undefined,
+    ])
   })
 
   it('ignores frames trailing a settled turn', () => {

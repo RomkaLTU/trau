@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -61,6 +62,112 @@ func TestGrillBroadcasterRestartsSeqPerTurn(t *testing.T) {
 	}
 	if got := drainGrillDeltas(ch); !reflect.DeepEqual(got, want) {
 		t.Errorf("deltas = %+v, want %+v", got, want)
+	}
+}
+
+// TestGrillBroadcasterReplaysRecentActivity covers what a stream opening mid-turn is
+// handed: the frames the turn has already reported, in the order it reported them and
+// carrying the seq it numbered them with, so the panel reads them as one run.
+func TestGrillBroadcasterReplaysRecentActivity(t *testing.T) {
+	b := newGrillBroadcaster()
+
+	b.publish(grillActivityFrame(7, "thinking"))
+	b.publish(grillDeltaEvent(7, "Let me "))
+	b.publish(grillActivityFrame(7, "tool"))
+	b.publish(grillActivityFrame(9, "tool"))
+
+	sub, _, replay := b.subscribeSession(7)
+	defer b.unsubscribe(sub)
+
+	want := []GrillActivityView{{Seq: 1, Kind: "thinking"}, {Seq: 2, Kind: "tool"}}
+	if !reflect.DeepEqual(replay, want) {
+		t.Errorf("replay = %+v, want %+v — the session's own frames, in order", replay, want)
+	}
+}
+
+// TestGrillBroadcasterReplayEndsWithTheTurn pins the buffer to the same boundary the
+// counters and the panel's ring clear on: the message or state frame that ends a turn
+// leaves a stream opening afterwards nothing to replay.
+func TestGrillBroadcasterReplayEndsWithTheTurn(t *testing.T) {
+	for _, ending := range []string{"message", "state"} {
+		t.Run(ending, func(t *testing.T) {
+			b := newGrillBroadcaster()
+			b.publish(grillActivityFrame(7, "thinking"))
+			b.publish(grillActivityFrame(7, "tool"))
+			b.publish(liveGrillEvent{SessionID: 7, Event: ending})
+
+			sub, _, replay := b.subscribeSession(7)
+			defer b.unsubscribe(sub)
+			if len(replay) != 0 {
+				t.Errorf("replay after %s = %+v, want nothing", ending, replay)
+			}
+
+			b.publish(grillActivityFrame(7, "tool"))
+			sub2, _, next := b.subscribeSession(7)
+			defer b.unsubscribe(sub2)
+			want := []GrillActivityView{{Seq: 1, Kind: "tool"}}
+			if !reflect.DeepEqual(next, want) {
+				t.Errorf("replay of the next turn = %+v, want %+v", next, want)
+			}
+		})
+	}
+}
+
+// TestGrillBroadcasterReplayIsBounded holds the buffer to the panel's own ring: a
+// tool-heavy turn replays its most recent frames rather than all of them.
+func TestGrillBroadcasterReplayIsBounded(t *testing.T) {
+	b := newGrillBroadcaster()
+	for i := 0; i < grillActivityReplay+10; i++ {
+		b.publish(grillActivityFrame(7, "tool"))
+	}
+
+	sub, _, replay := b.subscribeSession(7)
+	defer b.unsubscribe(sub)
+
+	if len(replay) != grillActivityReplay {
+		t.Fatalf("replay length = %d, want %d", len(replay), grillActivityReplay)
+	}
+	if replay[0].Seq != 11 || replay[len(replay)-1].Seq != grillActivityReplay+10 {
+		t.Errorf("replay spans seq %d..%d, want 11..%d", replay[0].Seq,
+			replay[len(replay)-1].Seq, grillActivityReplay+10)
+	}
+}
+
+// TestGrillBroadcasterReplayReachesLiveFramesOnce pins the seam a stream opens on: a
+// frame already buffered when the subscriber joins arrives in the replay, and every
+// frame after it on the channel, so neither is delivered twice.
+func TestGrillBroadcasterReplayReachesLiveFramesOnce(t *testing.T) {
+	b := newGrillBroadcaster()
+	b.publish(grillActivityFrame(7, "thinking"))
+
+	sub, ch, replay := b.subscribeSession(7)
+	defer b.unsubscribe(sub)
+	b.publish(grillActivityFrame(7, "tool"))
+
+	_, live := drainGrillFrames(ch)
+	got := append(slices.Clone(replay), live...)
+	want := []GrillActivityView{{Seq: 1, Kind: "thinking"}, {Seq: 2, Kind: "tool"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("replay then live = %+v, want %+v", got, want)
+	}
+}
+
+// TestGrillBroadcasterRemoveSessionDropsReplay covers the session that is gone for
+// good: nothing it left behind outlives it.
+func TestGrillBroadcasterRemoveSessionDropsReplay(t *testing.T) {
+	b := newGrillBroadcaster()
+	b.publish(grillActivityFrame(7, "tool"))
+	b.publish(grillDeltaEvent(7, "Let me "))
+	b.removeSession(7)
+
+	sub, _, replay := b.subscribeSession(7)
+	defer b.unsubscribe(sub)
+	if len(replay) != 0 {
+		t.Errorf("replay after remove = %+v, want nothing", replay)
+	}
+	if len(b.recent) != 0 || len(b.seq) != 0 || len(b.activity) != 0 {
+		t.Errorf("broadcaster still holds %d rings, %d delta counts, %d activity counts",
+			len(b.recent), len(b.seq), len(b.activity))
 	}
 }
 
