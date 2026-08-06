@@ -21,7 +21,7 @@ import {
 import { AuthorChip } from "@/components/trau/author-chip";
 import { StartIn } from "@/components/trau/member-repo-picker";
 import { ProviderPinPicker } from "@/components/trau/provider-picker";
-import { useRunSteps } from "@/components/trau/run-steps-dialog";
+import { RunOptions, useRunSteps } from "@/components/trau/run-steps-dialog";
 import { StateGroupChip } from "@/components/trau/state-group-chip";
 import { StatusPill } from "@/components/trau/status-pill";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
@@ -145,10 +145,16 @@ function IssueDrawerBody({
   const queuedItem = (queue.data?.items ?? []).find((it) => it.id === id);
   const liveLoop = useLiveLoops(repo)[0];
 
+  const [addSkips, setAddSkips] = useState<string[]>([]);
+  const [addSkipsOpen, setAddSkipsOpen] = useState(false);
+
   const addToQueue = useMutation({
-    mutationFn: (target: string) => enqueueFresh(target, { id }),
+    mutationFn: (target: string) =>
+      enqueueFresh(target, { id, skips: addSkips }),
     onSuccess: (res, target) => {
       publishQueue(queryClient, target, res);
+      setAddSkips([]);
+      setAddSkipsOpen(false);
       if (target !== repo) toast.success(`Queued ${id} in ${target}`);
     },
   });
@@ -342,6 +348,15 @@ function IssueDrawerBody({
 
       {!editing && (
         <SheetFooter className="flex-row flex-wrap items-center gap-2 border-t">
+          {!issue.archived && !inQueue && (
+            <RunOptions
+              className="w-full"
+              skips={addSkips}
+              onChange={setAddSkips}
+              open={addSkipsOpen}
+              onOpenChange={setAddSkipsOpen}
+            />
+          )}
           {issue.archived ? (
             <Button
               size="sm"
@@ -376,7 +391,7 @@ function IssueDrawerBody({
                 runSteps.request({
                   repo: target,
                   id,
-                  skips: queuedItem?.skips,
+                  skips: inQueue ? queuedItem?.skips : addSkips,
                   confirmLabel: "Run",
                   note: "The queue stays disarmed — nothing after this runs on its own.",
                 })

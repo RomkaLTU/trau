@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Check, Lock } from "lucide-react";
+import { Check, ChevronRight, Lock } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -15,6 +15,7 @@ import {
   PIPELINE_STEPS,
   SKIP_VERIFY,
   canonicalSkips,
+  skipNames,
   toggleSkip,
   type PipelineActivity,
 } from "@/lib/skips";
@@ -97,6 +98,93 @@ function ActivityRow({
   );
 }
 
+export function PipelineStepList({
+  skips,
+  onChange,
+}: {
+  skips: string[];
+  onChange: (skips: string[]) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      {PIPELINE_STEPS.map((step) => (
+        <div key={step.label} className="flex flex-col gap-2">
+          <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            {step.label} Step
+          </span>
+          <div className="flex flex-col gap-2 border-l border-border pl-3">
+            {step.activities.map((activity) => (
+              <ActivityRow
+                key={activity.label}
+                activity={activity}
+                enabled={!activity.skip || !skips.includes(activity.skip)}
+                onChange={(enabled) =>
+                  onChange(toggleSkip(skips, activity.skip ?? "", enabled))
+                }
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// VerifyWarning is what an unticked Verify costs, said the same way wherever the
+// picker is shown.
+function VerifyWarning({ className }: { className?: string }) {
+  return (
+    <p className={cn("font-mono text-xs text-warn", className)}>
+      Nothing checks this slice before it ships — it needs manual QA.
+    </p>
+  );
+}
+
+// RunOptions folds the picker into an add form, collapsed so an add stays one
+// gesture; the chosen set rides with the item it queues. Open is the caller's,
+// so a form that seeds a set already stored on the ticket can show it rather
+// than hide it behind a closed panel.
+export function RunOptions({
+  skips,
+  onChange,
+  open,
+  onOpenChange,
+  className,
+}: {
+  skips: string[];
+  onChange: (skips: string[]) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  className?: string;
+}) {
+  return (
+    <details
+      open={open}
+      onToggle={(e) => onOpenChange(e.currentTarget.open)}
+      className={cn("group flex flex-col", className)}
+    >
+      <summary className="flex list-none items-center gap-1.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
+        <ChevronRight
+          className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+          aria-hidden="true"
+        />
+        <span>Run options</span>
+        {skips.length > 0 && (
+          <span className="text-warn">{skipNames(skips)} skipped</span>
+        )}
+      </summary>
+      <div className="mt-2 flex flex-col gap-2 pl-5">
+        <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+          Every Activity runs unless you untick it. The choice rides with this
+          item only.
+        </p>
+        <PipelineStepList skips={skips} onChange={onChange} />
+        {skips.includes(SKIP_VERIFY) && <VerifyWarning />}
+      </div>
+    </details>
+  );
+}
+
 // RunStepsDialog is the confirmation both run gestures show: the whole pipeline
 // laid out Activity by Activity under its Step, with the five skippable ones as
 // checkboxes. Unticking one bypasses that work for this run and nothing else —
@@ -138,41 +226,13 @@ export function RunStepsDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="min-h-0 max-h-[55dvh] flex-1 overflow-y-auto overscroll-contain px-4 pb-2">
-          <div className="flex flex-col gap-3">
-            {PIPELINE_STEPS.map((step) => (
-              <div key={step.label} className="flex flex-col gap-2">
-                <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-                  {step.label} Step
-                </span>
-                <div className="flex flex-col gap-2 border-l border-border pl-3">
-                  {step.activities.map((activity) => (
-                    <ActivityRow
-                      key={activity.label}
-                      activity={activity}
-                      enabled={
-                        !activity.skip || !skips.includes(activity.skip)
-                      }
-                      onChange={(enabled) =>
-                        setSkips((prev) =>
-                          toggleSkip(prev, activity.skip ?? "", enabled),
-                        )
-                      }
-                    />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          <PipelineStepList skips={skips} onChange={setSkips} />
           {target.note && (
             <p className="mt-3 font-sans text-sm leading-relaxed text-muted-foreground">
               {target.note}
             </p>
           )}
-          {withoutVerify && (
-            <p className="mt-3 font-mono text-xs text-warn">
-              Nothing checks this slice before it ships — it needs manual QA.
-            </p>
-          )}
+          {withoutVerify && <VerifyWarning className="mt-3" />}
         </div>
         <AlertDialogFooter className="shrink-0 border-t border-border px-4 pb-4 pt-2">
           <AlertDialogCancel className="h-8 gap-1.5 px-3 font-mono text-sm">
