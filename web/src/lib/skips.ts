@@ -71,6 +71,18 @@ export function canonicalSkips(keys: Iterable<string>): string[] {
   return SKIP_KEYS.filter((key) => named.has(key))
 }
 
+// skipNames is the one place a set becomes display text, so every surface that
+// names it — the badge, the collapsed summary — reads the same canonical order.
+export function skipNames(skips?: string[]): string {
+  return canonicalSkips(skips ?? []).join(', ')
+}
+
+export function skipLabel(skips?: string[]): string {
+  const names = skipNames(skips)
+  if (names === '') return ''
+  return `skips: ${names}`
+}
+
 // toggleSkip settles one Activity's checkbox: ticked means the run does the
 // work, so it leaves the skip set; unticked adds it.
 export function toggleSkip(

@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -45,7 +45,7 @@ import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
 import { useHandback } from "@/components/trau/handback-dialog";
-import { useRunSteps } from "@/components/trau/run-steps-dialog";
+import { RunOptions, useRunSteps } from "@/components/trau/run-steps-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import type { PaneTab } from "@/components/trau/run-view";
@@ -124,6 +124,7 @@ import {
   STOPPED_HEADLINE,
   STOPPED_HINT,
 } from "@/lib/runlive";
+import { canonicalSkips, skipLabel } from "@/lib/skips";
 import { isAwaitingHuman, stepName, syncState, withSkips } from "@/lib/steps";
 import { runsQueryOptions, type PRStatus } from "@/lib/runs";
 import {
@@ -318,6 +319,19 @@ function ProviderTag({ provider, pin }: { provider?: string; pin?: string }) {
       className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] text-muted-foreground"
     >
       {name}
+    </span>
+  );
+}
+
+function SkipsTag({ skips }: { skips?: string[] }) {
+  const label = skipLabel(skips);
+  if (!label) return null;
+  return (
+    <span
+      title="pipeline work this item's run bypasses"
+      className="shrink-0 rounded-sm border border-warn/40 bg-warn/10 px-1.5 py-0.5 font-mono text-[0.6rem] text-warn"
+    >
+      {label}
     </span>
   );
 }
@@ -539,6 +553,7 @@ function QueueBuilderRow({
         </span>
         <InternalTag source={item.source} />
         <ProviderTag provider={item.provider} pin={item.provider_pin} />
+        <SkipsTag skips={item.skips} />
         {batch ? <BatchChip name={batch} /> : null}
 
         {isEpic ? (
@@ -943,6 +958,8 @@ function LaunchQueueCard({
   const [draft, setDraft] = useState("");
   const [submittedId, setSubmittedId] = useState("");
   const [provider, setProvider] = useState(NO_OVERRIDE);
+  const [addSkips, setAddSkips] = useState<string[]>([]);
+  const [addSkipsOpen, setAddSkipsOpen] = useState(false);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [removeId, setRemoveId] = useState<string | null>(null);
@@ -978,6 +995,8 @@ function LaunchQueueCard({
     setDraft("");
     setSubmittedId("");
     setProvider(NO_OVERRIDE);
+    setAddSkips([]);
+    setAddSkipsOpen(false);
   };
 
   useEffect(() => {
@@ -985,11 +1004,29 @@ function LaunchQueueCard({
     setSelected([]);
   }, [repo]);
 
+  // A ticket the queue already holds opens on the set it carries — expanded, so
+  // the narrower run is visible — and re-adding it never silently widens the run
+  // back out. The seed waits for the queue to answer, else a stored set reads as
+  // empty; it lands once per id, so neither a later poll nor a re-render can
+  // clobber a choice made here.
+  const seededId = useRef<string | null>(null);
+  useEffect(() => {
+    if (seededId.current === submittedId) return;
+    if (submittedId !== "" && !queue.data) return;
+    const stored = canonicalSkips(
+      items.find((it) => it.id === submittedId)?.skips ?? [],
+    );
+    seededId.current = submittedId;
+    setAddSkips(stored);
+    setAddSkipsOpen(stored.length > 0);
+  }, [submittedId, queue.data]);
+
   const add = useMutation({
     mutationFn: () =>
       enqueueFresh(startRepo.target, {
         id: submittedId,
         provider: overrideProvider,
+        skips: addSkips,
       }),
     onSuccess: (res) => {
       setStartQueue(res);
@@ -1055,7 +1092,7 @@ function LaunchQueueCard({
     runSteps.request({
       repo: startRepo.target,
       id: ticket,
-      skips: itemsById.get(ticket)?.skips,
+      skips: addSkips,
       confirmLabel: "Run next",
       note: runNextCopy(ticket, pendingBehind(items, ticket)),
     }),
@@ -1412,6 +1449,12 @@ function LaunchQueueCard({
                     Reverts when the run ends.
                   </p>
                 </div>
+                <RunOptions
+                  skips={addSkips}
+                  onChange={setAddSkips}
+                  open={addSkipsOpen}
+                  onOpenChange={setAddSkipsOpen}
+                />
                 <div className="flex flex-col gap-2">
                   <p className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
                     <ArrowRight

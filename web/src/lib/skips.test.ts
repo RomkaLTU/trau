@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { PIPELINE_STEPS, SKIP_KEYS, canonicalSkips, toggleSkip } from '@/lib/skips'
+import {
+  PIPELINE_STEPS,
+  SKIP_KEYS,
+  canonicalSkips,
+  skipLabel,
+  toggleSkip,
+} from '@/lib/skips'
 import { checkpointSteps, withSkips } from '@/lib/steps'
 
 describe('canonicalSkips', () => {
@@ -13,6 +19,17 @@ describe('canonicalSkips', () => {
 
   it('returns nothing for an empty set', () => {
     expect(canonicalSkips([])).toEqual([])
+  })
+})
+
+describe('skipLabel', () => {
+  it('names the set a queue row carries in canonical order', () => {
+    expect(skipLabel(['ci', 'verify'])).toBe('skips: verify, ci')
+  })
+
+  it('is empty for an item that skips nothing', () => {
+    expect(skipLabel([])).toBe('')
+    expect(skipLabel(undefined)).toBe('')
   })
 })
 
