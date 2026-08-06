@@ -141,39 +141,91 @@ func TestAddCommentPostsADF(t *testing.T) {
 	}
 }
 
-// LinkBlocks POSTs a "Blocks" link with the blocker as the outward issue and the
-// blocked sibling as the inward issue.
-func TestLinkBlocksPostsBlocksLink(t *testing.T) {
-	var (
-		method string
-		path   string
-		req    issueLinkRequest
-	)
+// captureLinkBlocks runs LinkBlocks against a stub Jira and returns the raw body
+// it posted, so a test can assert on the wire payload rather than on the struct.
+func captureLinkBlocks(t *testing.T, blocker, blocked string) (method, path string, body []byte) {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		method, path = r.Method, r.URL.Path
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &req)
+		body, _ = io.ReadAll(r.Body)
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer srv.Close()
 
-	if err := New(srv.URL, "me@acme.com", "tok").LinkBlocks(context.Background(), "PROJ-1", "PROJ-2"); err != nil {
+	if err := New(srv.URL, "me@acme.com", "tok").LinkBlocks(context.Background(), blocker, blocked); err != nil {
 		t.Fatalf("LinkBlocks error: %v", err)
 	}
+	return method, path, body
+}
+
+// LinkBlocks POSTs a "Blocks" link with the blocker as the *inward* issue and the
+// blocked sibling as the outward one. Jira's slots read the opposite way to their
+// descriptions — inwardIssue A / outwardIssue B renders as "A blocks B" — so this
+// asserts on the marshalled payload: naming the slots off by one here inverts
+// every dependency trau writes (COD-1513).
+func TestLinkBlocksPostsBlockerAsInwardIssue(t *testing.T) {
+	method, path, body := captureLinkBlocks(t, "PROJ-1", "PROJ-2")
+
 	if method != http.MethodPost {
 		t.Errorf("method = %q, want POST", method)
 	}
 	if path != "/rest/api/3/issueLink" {
 		t.Errorf("path = %q, want /rest/api/3/issueLink", path)
 	}
-	if req.Type.Name != "Blocks" {
-		t.Errorf("link type = %q, want Blocks", req.Type.Name)
+
+	var payload struct {
+		Type struct {
+			Name string `json:"name"`
+		} `json:"type"`
+		InwardIssue struct {
+			Key string `json:"key"`
+		} `json:"inwardIssue"`
+		OutwardIssue struct {
+			Key string `json:"key"`
+		} `json:"outwardIssue"`
 	}
-	if req.OutwardIssue.Key != "PROJ-1" {
-		t.Errorf("outward (blocker) = %q, want PROJ-1", req.OutwardIssue.Key)
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal posted body %s: %v", body, err)
 	}
-	if req.InwardIssue.Key != "PROJ-2" {
-		t.Errorf("inward (blocked) = %q, want PROJ-2", req.InwardIssue.Key)
+	if payload.Type.Name != "Blocks" {
+		t.Errorf("link type = %q, want Blocks", payload.Type.Name)
+	}
+	if payload.InwardIssue.Key != "PROJ-1" {
+		t.Errorf("inwardIssue = %q, want the blocker PROJ-1; body was %s", payload.InwardIssue.Key, body)
+	}
+	if payload.OutwardIssue.Key != "PROJ-2" {
+		t.Errorf("outwardIssue = %q, want the blocked PROJ-2; body was %s", payload.OutwardIssue.Key, body)
+	}
+}
+
+// An edge wired by LinkBlocks must come back from the read path naming the same
+// blocker. Jira serves the link from both ends: the issue posted in the outward
+// slot sees the inward-slot issue as its own inwardIssue, which is the end
+// blockersFromLinks treats as the blocker. Replaying the captured payload that way
+// closes the write/read loop — a swap on either side fails here.
+func TestLinkBlocksRoundTripsThroughBlockersFromLinks(t *testing.T) {
+	_, _, body := captureLinkBlocks(t, "PROJ-1", "PROJ-2")
+
+	var posted issueLinkRequest
+	if err := json.Unmarshal(body, &posted); err != nil {
+		t.Fatalf("unmarshal posted body %s: %v", body, err)
+	}
+
+	// How Jira renders the new link on the issue that went into the outward slot.
+	served := issueLink{
+		Type:        linkType{Name: posted.Type.Name, Inward: "is blocked by"},
+		InwardIssue: &linkedIssue{Key: posted.InwardIssue.Key},
+	}
+	if posted.OutwardIssue.Key != "PROJ-2" {
+		t.Fatalf("link landed on %q, want it served from the blocked issue PROJ-2", posted.OutwardIssue.Key)
+	}
+
+	got := blockersFromLinks([]issueLink{served})
+	if len(got) != 1 {
+		t.Fatalf("blockersFromLinks = %+v, want exactly one blocker", got)
+	}
+	if got[0].Key != "PROJ-1" {
+		t.Errorf("round-tripped blocker = %q, want PROJ-1 — the write path inverted the edge", got[0].Key)
 	}
 }
 
