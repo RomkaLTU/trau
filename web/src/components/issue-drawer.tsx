@@ -21,6 +21,7 @@ import {
 import { AuthorChip } from "@/components/trau/author-chip";
 import { StartIn } from "@/components/trau/member-repo-picker";
 import { ProviderPinPicker } from "@/components/trau/provider-picker";
+import { RunOptions, useRunSteps } from "@/components/trau/run-steps-dialog";
 import { StateGroupChip } from "@/components/trau/state-group-chip";
 import { StatusPill } from "@/components/trau/status-pill";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
@@ -141,24 +142,35 @@ function IssueDrawerBody({
 
   const queue = useQuery(queueQueryOptions(repo));
   const inQueue = queueActiveIds(queue.data?.items ?? []).has(id);
+  const queuedItem = (queue.data?.items ?? []).find((it) => it.id === id);
   const liveLoop = useLiveLoops(repo)[0];
 
+  const [addSkips, setAddSkips] = useState<string[]>([]);
+  const [addSkipsOpen, setAddSkipsOpen] = useState(false);
+
   const addToQueue = useMutation({
-    mutationFn: (target: string) => enqueueFresh(target, { id }),
+    mutationFn: (target: string) =>
+      enqueueFresh(target, { id, skips: addSkips }),
     onSuccess: (res, target) => {
       publishQueue(queryClient, target, res);
+      setAddSkips([]);
+      setAddSkipsOpen(false);
       if (target !== repo) toast.success(`Queued ${id} in ${target}`);
     },
   });
 
   const run = useMutation({
-    mutationFn: (target: string) => runOnly(target, { id }),
-    onSuccess: (res, target) => {
+    mutationFn: (vars: { target: string; skips: string[] }) =>
+      runOnly(vars.target, { id, skips: vars.skips }),
+    onSuccess: (res, { target }) => {
       publishQueue(queryClient, target, res);
       toast.success(`Running ${id}`);
     },
     onError: (err) => toast.error(err.message),
   });
+  const runSteps = useRunSteps((target, skips) =>
+    run.mutate({ target: target.repo, skips }),
+  );
 
   const assign = useMutation({
     mutationFn: (next: Assignee | null) => assignIssue(repo, id, next),
@@ -336,6 +348,15 @@ function IssueDrawerBody({
 
       {!editing && (
         <SheetFooter className="flex-row flex-wrap items-center gap-2 border-t">
+          {!issue.archived && !inQueue && (
+            <RunOptions
+              className="w-full"
+              skips={addSkips}
+              onChange={setAddSkips}
+              open={addSkipsOpen}
+              onOpenChange={setAddSkipsOpen}
+            />
+          )}
           {issue.archived ? (
             <Button
               size="sm"
@@ -363,7 +384,19 @@ function IssueDrawerBody({
             title={runGate ?? "Run this issue now — the queue stays disarmed"}
             className="flex"
           >
-            <StartIn repo={repo} ticket={id} onStart={run.mutate}>
+            <StartIn
+              repo={repo}
+              ticket={id}
+              onStart={(target) =>
+                runSteps.request({
+                  repo: target,
+                  id,
+                  skips: inQueue ? queuedItem?.skips : addSkips,
+                  confirmLabel: "Run",
+                  note: "The queue stays disarmed — nothing after this runs on its own.",
+                })
+              }
+            >
               {(begin) => (
                 <Button
                   variant="outline"
@@ -444,6 +477,8 @@ function IssueDrawerBody({
           onDismiss={() => setArchiveNote(null)}
         />
       )}
+
+      {runSteps.dialog}
     </>
   );
 }

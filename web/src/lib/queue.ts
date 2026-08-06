@@ -26,6 +26,9 @@ export interface QueueItem {
   // provider_pin is the provider pinned on the underlying issue, which the run
   // uses whenever the item carries no override of its own.
   provider_pin?: string
+  // skips are the canonical keys naming the pipeline work this item's run
+  // bypasses, absent on an item that skips nothing.
+  skips?: string[]
   status: string
   reason?: string
   // blockers are the item's still-unresolved blocked-by edges; blocked is set
@@ -110,6 +113,10 @@ export interface EnqueueRequest {
   kind?: QueueKind
   title?: string
   provider?: string
+  // skips are the canonical keys naming the pipeline work this run bypasses.
+  // The hub refuses an unknown one, and a pending item re-queued with front
+  // adopts the set, so the latest gesture describes the run.
+  skips?: string[]
   // front lands the item in the first pending position instead of the back; a
   // pending item re-queued with front moves to the front instead of conflicting.
   front?: boolean
@@ -389,11 +396,11 @@ export async function startBatch(
 }
 
 // runNext is the one web launch gesture: make the item the queue's next run,
-// then arm the drain. A fresh id front-inserts and a pending one moves to the
-// front; on the conflict an already-queued id answers instead, a paused item is
-// promoted so the arming resumes the ticket named here rather than whichever
-// runnable row sits ahead of it, and a settled leftover is dropped and re-queued
-// so the ticket runs again.
+// then arm the drain. A fresh id front-inserts and a runnable one — pending or
+// paused — moves to the front adopting this gesture's skip set, so the arming
+// resumes the ticket named here rather than whichever runnable row sits ahead of
+// it. On the conflict a settled leftover is dropped and re-queued so the ticket
+// runs again, and an id the queue is already acting on answers as it stands.
 export async function runNext(
   repo: string,
   req: EnqueueRequest,
@@ -408,16 +415,17 @@ export async function runNext(
     if (queueTerminal(queued.status)) {
       await dequeue(repo, req.id)
       await enqueue(repo, { ...req, front: true })
-    } else if (queued.status === 'paused') {
-      await promoteQueueItem(repo, req.id)
     }
   }
   return drain(repo, true, opts)
 }
 
-// runOnly runs one issue on its own without arming the drain: an id the queue is
-// still going to act on runs where it stands, an unqueued one is appended first,
-// and a settled leftover holding the id is dropped and re-queued so it runs again.
+// runOnly runs one issue on its own without arming the drain: an unqueued one is
+// appended first, and a settled leftover holding the id is dropped and re-queued
+// so it runs again. A runnable row already holding the id — pending or paused —
+// is re-landed at the front, which is where the row this call is about to run
+// belongs anyway, so it adopts the skip set this gesture chose instead of running
+// the stale one.
 export async function runOnly(
   repo: string,
   req: EnqueueRequest,
@@ -431,6 +439,8 @@ export async function runOnly(
     if (queueTerminal(queued.status)) {
       await dequeue(repo, req.id)
       await enqueue(repo, req)
+    } else if (queueStatusRunnable(queued.status)) {
+      await enqueue(repo, { ...req, front: true })
     }
   }
   return runQueueItem(repo, req.id)

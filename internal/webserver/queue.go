@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/pipeline"
@@ -22,21 +23,24 @@ import (
 // "epic"; left empty or "auto" the hub resolves it by looking the id up in the
 // tracker, so the Loop card can add a bare id without knowing what it is.
 // Provider is an ephemeral per-run override of the configured routing — it
-// applies only to this item's child and never persists to config. Front lands
-// the item in the first pending position instead of the back, never displacing
-// a running item.
+// applies only to this item's child and never persists to config. Skips is the
+// same shape for pipeline work (ADR 0037): the canonical keys this item's child
+// bypasses, rejected with a 400 when one of them is not a key the loop knows.
+// Front lands the item in the first pending position instead of the back, never
+// displacing a running item.
 type QueueRequest struct {
-	Kind     string `json:"kind"`
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Provider string `json:"provider"`
-	Front    bool   `json:"front"`
+	Kind     string   `json:"kind"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Provider string   `json:"provider"`
+	Skips    []string `json:"skips"`
+	Front    bool     `json:"front"`
 }
 
 // QueueItemView is one queued item as the Queue view reads it: its 1-based
 // position, kind, identifier, title, issue source, per-run provider override,
-// pending status, and — for an epic — the sub-issues captured when it was
-// queued. ProviderPin is the Provider pinned on the underlying issue, which the
+// per-run skip set, pending status, and — for an epic — the sub-issues captured
+// when it was queued. ProviderPin is the Provider pinned on the underlying issue, which the
 // run uses whenever the item carries no override of its own. Blockers are the
 // item's still-unresolved blocked-by edges and Blocked reports whether it has
 // any, so the queue can refuse to run the row on its own and say why. Removing
@@ -51,6 +55,7 @@ type QueueItemView struct {
 	Source      string           `json:"source,omitempty"`
 	Provider    string           `json:"provider,omitempty"`
 	ProviderPin string           `json:"provider_pin,omitempty"`
+	Skips       []string         `json:"skips,omitempty"`
 	Status      string           `json:"status"`
 	Reason      string           `json:"reason,omitempty"`
 	Blockers    []string         `json:"blockers,omitempty"`
@@ -590,8 +595,15 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("kind %q must be %q, %q, or empty to auto-detect", req.Kind, queue.KindTicket, queue.KindEpic)})
 		return
 	}
+	// The vocabulary lives with the flag parser, so a key the CLI accepts and one
+	// the hub stores can never drift apart.
+	skips, err := config.CanonicalSkips(req.Skips)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 
-	item := queue.Item{ID: id, Title: strings.TrimSpace(req.Title), Kind: hint, Provider: strings.TrimSpace(req.Provider)}
+	item := queue.Item{ID: id, Title: strings.TrimSpace(req.Title), Kind: hint, Provider: strings.TrimSpace(req.Provider), Skips: skips}
 
 	iss, internal, err := s.stores.Issues().Internal(root, id)
 	if err != nil {
@@ -660,10 +672,12 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A front enqueue answers 201 like a plain one; re-queuing a pending item
-	// with front is a move-to-front answered 200 with the reordered queue rather
-	// than the 409 a plain re-queue gets. Any other already-queued status —
-	// running, paused, or settled — still conflicts.
+	// A front enqueue answers 201 like a plain one; re-queuing a still-runnable
+	// item with front is a move-to-front answered 200 with the reordered queue
+	// rather than the 409 a plain re-queue gets, and the moved row adopts this
+	// request's provider override and skip set — a paused one included, so a
+	// resume runs the work the operator just ticked. A running or settled row
+	// still conflicts.
 	if req.Front {
 		_, movedToFront, err := s.stores.Queue(root).AddFront(item)
 		if errors.Is(err, queue.ErrAlreadyQueued) {
@@ -851,6 +865,7 @@ func queueItemViews(items []queue.Item, pins map[string]string, blockers map[str
 			Source:      it.Source,
 			Provider:    it.Provider,
 			ProviderPin: pins[it.ID],
+			Skips:       it.Skips,
 			Status:      it.Status,
 			Reason:      it.Reason,
 			Blockers:    blockers[it.ID],

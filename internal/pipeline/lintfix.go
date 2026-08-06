@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/activity"
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
@@ -17,7 +18,7 @@ import (
 // for verify; only a context cancellation, provider pause, or budget give-up
 // propagates.
 func (p *Pipeline) lintFix(ctx context.Context, id string) error {
-	if !p.LintFix {
+	if !p.LintFix || p.skipping(config.SkipLintFix) {
 		return nil
 	}
 	p.setActivity(id, activity.LintFix, "")

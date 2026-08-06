@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -45,6 +45,7 @@ import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
 import { useHandback } from "@/components/trau/handback-dialog";
+import { RunOptions, useRunSteps } from "@/components/trau/run-steps-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import type { PaneTab } from "@/components/trau/run-view";
@@ -123,7 +124,8 @@ import {
   STOPPED_HEADLINE,
   STOPPED_HINT,
 } from "@/lib/runlive";
-import { isAwaitingHuman, stepName, syncState } from "@/lib/steps";
+import { canonicalSkips, skipLabel } from "@/lib/skips";
+import { isAwaitingHuman, stepName, syncState, withSkips } from "@/lib/steps";
 import { runsQueryOptions, type PRStatus } from "@/lib/runs";
 import {
   builderView,
@@ -317,6 +319,19 @@ function ProviderTag({ provider, pin }: { provider?: string; pin?: string }) {
       className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] text-muted-foreground"
     >
       {name}
+    </span>
+  );
+}
+
+function SkipsTag({ skips }: { skips?: string[] }) {
+  const label = skipLabel(skips);
+  if (!label) return null;
+  return (
+    <span
+      title="pipeline work this item's run bypasses"
+      className="shrink-0 rounded-sm border border-warn/40 bg-warn/10 px-1.5 py-0.5 font-mono text-[0.6rem] text-warn"
+    >
+      {label}
     </span>
   );
 }
@@ -538,6 +553,7 @@ function QueueBuilderRow({
         </span>
         <InternalTag source={item.source} />
         <ProviderTag provider={item.provider} pin={item.provider_pin} />
+        <SkipsTag skips={item.skips} />
         {batch ? <BatchChip name={batch} /> : null}
 
         {isEpic ? (
@@ -942,6 +958,8 @@ function LaunchQueueCard({
   const [draft, setDraft] = useState("");
   const [submittedId, setSubmittedId] = useState("");
   const [provider, setProvider] = useState(NO_OVERRIDE);
+  const [addSkips, setAddSkips] = useState<string[]>([]);
+  const [addSkipsOpen, setAddSkipsOpen] = useState(false);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [removeId, setRemoveId] = useState<string | null>(null);
@@ -977,6 +995,8 @@ function LaunchQueueCard({
     setDraft("");
     setSubmittedId("");
     setProvider(NO_OVERRIDE);
+    setAddSkips([]);
+    setAddSkipsOpen(false);
   };
 
   useEffect(() => {
@@ -984,11 +1004,29 @@ function LaunchQueueCard({
     setSelected([]);
   }, [repo]);
 
+  // A ticket the queue already holds opens on the set it carries — expanded, so
+  // the narrower run is visible — and re-adding it never silently widens the run
+  // back out. The seed waits for the queue to answer, else a stored set reads as
+  // empty; it lands once per id, so neither a later poll nor a re-render can
+  // clobber a choice made here.
+  const seededId = useRef<string | null>(null);
+  useEffect(() => {
+    if (seededId.current === submittedId) return;
+    if (submittedId !== "" && !queue.data) return;
+    const stored = canonicalSkips(
+      items.find((it) => it.id === submittedId)?.skips ?? [],
+    );
+    seededId.current = submittedId;
+    setAddSkips(stored);
+    setAddSkipsOpen(stored.length > 0);
+  }, [submittedId, queue.data]);
+
   const add = useMutation({
     mutationFn: () =>
       enqueueFresh(startRepo.target, {
         id: submittedId,
         provider: overrideProvider,
+        skips: addSkips,
       }),
     onSuccess: (res) => {
       setStartQueue(res);
@@ -998,12 +1036,14 @@ function LaunchQueueCard({
 
   // Run next is one gesture: land the ticket in the first pending slot, then arm
   // the drain. Landing is this page's timeline — the queue response flips the
-  // view to running, never a live-page navigation.
+  // view to running, never a live-page navigation. The skip set is the launch's
+  // own variable, so nothing but the picker that confirmed it can decide what
+  // this run bypasses.
   const runNext = useMutation({
-    mutationFn: () =>
+    mutationFn: (skips: string[]) =>
       runNextRequest(
         startRepo.target,
-        { id: submittedId, provider: overrideProvider },
+        { id: submittedId, provider: overrideProvider, skips },
         { no_resume: skipResume && skipResumeShown, on_fault: onFault },
       ),
     onSuccess: (res) => {
@@ -1011,7 +1051,6 @@ function LaunchQueueCard({
       resetAdd();
     },
   });
-  const handback = useHandback(repo, () => runNext.mutate());
 
   const addAll = useMutation({
     mutationFn: async () => {
@@ -1044,6 +1083,20 @@ function LaunchQueueCard({
   };
   const itemsById = new Map(items.map((it) => [it.id, it]));
   const removeTarget = removeId ? itemsById.get(removeId) : undefined;
+
+  // Run next chains its two confirmations in the order the run reads them: the
+  // hand-back settles what the last run left behind, then the step picker says
+  // what this one does, and its answer is what launches.
+  const runSteps = useRunSteps((_target, skips) => runNext.mutate(skips));
+  const handback = useHandback(repo, (ticket) =>
+    runSteps.request({
+      repo: startRepo.target,
+      id: ticket,
+      skips: addSkips,
+      confirmLabel: "Run next",
+      note: runNextCopy(ticket, pendingBehind(items, ticket)),
+    }),
+  );
 
   const runOne = useMutation({
     mutationFn: (id: string) => runQueueItem(repo, id),
@@ -1396,6 +1449,12 @@ function LaunchQueueCard({
                     Reverts when the run ends.
                   </p>
                 </div>
+                <RunOptions
+                  skips={addSkips}
+                  onChange={setAddSkips}
+                  open={addSkipsOpen}
+                  onOpenChange={setAddSkipsOpen}
+                />
                 <div className="flex flex-col gap-2">
                   <p className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
                     <ArrowRight
@@ -1635,6 +1694,7 @@ function LaunchQueueCard({
         />
       ) : null}
 
+      {runSteps.dialog}
       {handback.dialog}
     </div>
   );
@@ -1877,19 +1937,24 @@ function FinishedSection({
 }
 
 // LiveProgress is a live row's progress line: a base sync in flight names itself
-// and its attempt counter, every other phase walks the generic stepper.
+// and its attempt counter, every other phase walks the generic stepper, restated
+// against the work the queued item bypassed so this page and the run detail say
+// the same thing about a skipped Step.
 function LiveProgress({
   phase,
   activity,
   detail,
+  skips,
 }: {
   phase: string;
   activity?: string;
   detail?: string;
+  skips?: string[];
 }) {
   const sync = syncState(activity, detail);
   if (sync) return <SyncStateLine sync={sync} />;
-  return <PhaseStepper {...runSteps("live", phase, activity, detail)} />;
+  const { steps, subLabel } = runSteps("live", phase, activity, detail);
+  return <PhaseStepper steps={withSkips(steps, skips)} subLabel={subLabel} />;
 }
 
 function RunningRow({
@@ -1944,6 +2009,7 @@ function RunningRow({
           phase={phase ?? ""}
           activity={live?.activity}
           detail={live?.detail}
+          skips={item?.skips}
         />
       ) : (
         <p className="font-sans text-sm text-muted-foreground">
@@ -2016,11 +2082,13 @@ const RELEASE_TONE: Partial<Record<RunState, string>> = {
 // halted by one — still holds the row, wearing that state instead of live ticks.
 function FinalizeRow({
   finalize,
+  item,
   instance,
   now,
   onPeek,
 }: {
   finalize: FinalizeEntry;
+  item?: QueueItem;
   instance?: Instance;
   now: number;
   onPeek: (id: string) => void;
@@ -2084,6 +2152,7 @@ function FinalizeRow({
           phase={finalize.phase}
           activity={finalize.activity}
           detail={finalize.detail}
+          skips={item?.skips}
         />
       )}
       {live?.state_since ? (
@@ -2395,6 +2464,7 @@ function RunningQueueView({
             ) : timeline.finalize ? (
               <FinalizeRow
                 finalize={timeline.finalize}
+                item={itemsById.get(timeline.finalize.epicId)}
                 instance={instance}
                 now={now}
                 onPeek={onPeek}

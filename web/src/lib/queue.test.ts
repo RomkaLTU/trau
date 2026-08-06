@@ -134,32 +134,22 @@ describe('runNext', () => {
     expect(res.draining).toBe(true)
   })
 
-  it('promotes a queued paused item to the front, then arms the drain', async () => {
+  it('re-lands a paused item at the front on the chosen skips, then arms the drain', async () => {
     mockFetch
-      .mockResolvedValueOnce(response(409, { error: 'COD-2 is already in the queue' }))
-      .mockResolvedValueOnce(
-        response(
-          200,
-          queueResponse({
-            items: [
-              item({ id: 'COD-1', status: 'pending' }),
-              item({ id: 'COD-2', status: 'paused' }),
-            ],
-          }),
-        ),
-      )
       .mockResolvedValueOnce(response(200, queueResponse()))
       .mockResolvedValueOnce(response(200, queueResponse({ draining: true })))
 
-    const res = await runNext('trau', { id: 'COD-2' })
+    const res = await runNext('trau', { id: 'COD-2', skips: ['verify'] })
 
     expect(mockFetch).toHaveBeenNthCalledWith(
-      3,
-      '/api/v1/repos/trau/queue/COD-2/move',
-      expect.objectContaining({ body: JSON.stringify({ to: 'front' }) }),
+      1,
+      '/api/v1/repos/trau/queue',
+      expect.objectContaining({
+        body: JSON.stringify({ id: 'COD-2', skips: ['verify'], front: true }),
+      }),
     )
     expect(mockFetch).toHaveBeenNthCalledWith(
-      4,
+      2,
       '/api/v1/repos/trau/queue/drain',
       expect.objectContaining({ body: JSON.stringify({ draining: true }) }),
     )
@@ -231,19 +221,26 @@ describe('runOnly', () => {
     expect(res.items[0].status).toBe('running')
   })
 
-  it('runs an item the queue already holds where it stands', async () => {
+  it('re-lands a paused item the queue already holds on the chosen skips', async () => {
     mockFetch
       .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
       .mockResolvedValueOnce(
         response(200, queueResponse({ items: [item({ status: 'paused' })] })),
       )
       .mockResolvedValueOnce(response(200, queueResponse()))
+      .mockResolvedValueOnce(response(200, queueResponse()))
 
-    await runOnly('trau', { id: 'COD-1' })
+    await runOnly('trau', { id: 'COD-1', skips: ['verify'] })
 
-    expect(mockFetch).toHaveBeenCalledTimes(3)
     expect(mockFetch).toHaveBeenNthCalledWith(
       3,
+      '/api/v1/repos/trau/queue',
+      expect.objectContaining({
+        body: JSON.stringify({ id: 'COD-1', skips: ['verify'], front: true }),
+      }),
+    )
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      4,
       '/api/v1/repos/trau/queue/COD-1/run',
       { method: 'POST' },
     )

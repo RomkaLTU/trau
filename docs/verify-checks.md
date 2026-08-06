@@ -1,7 +1,9 @@
 # Verify checks (`.trau/checks`)
 
-Trau's pipeline is fixed (build → handoff → **verify** → commit → PR → CI → merge),
-but the *verify* phase is customizable: a target repo can declare named checks that
+Trau's pipeline is fixed (build → handoff → **verify** → commit → PR → CI → merge)
+apart from the work a single run may bypass on the operator's say-so — lint-fix,
+cleanup, verify, the CI gate, the merge (ADR 0037) — and the *verify* phase is
+customizable: a target repo can declare named checks that
 the cold, adversarial verifier must run and pass before a slice can merge. This lets
 a project pin its own quality bar — "run my contract tests", "no `dd()` left in the
 diff", "the OpenAPI spec still validates" — without forking the loop.

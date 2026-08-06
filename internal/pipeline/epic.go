@@ -182,8 +182,8 @@ func epicPRTitle(id, title string) string {
 // land while siblings are still open, but the parent must not be shipped to main
 // until the tracker confirms the whole child set is complete. Once it is, the epic
 // branch is synced with the base (drift conflicts resolved by an agent), the epic
-// PR is opened/adopted, its CI is gated with a bounded repair loop, and — when
-// AUTO_MERGE is set — it is squash-merged to the base before the Linear epic closes.
+// PR is opened/adopted, its CI is gated with a bounded repair loop, and — when the
+// run may merge — it is squash-merged to the base before the Linear epic closes.
 // While any child still reads open it declines with an *EpicUnfinalizedError, and
 // a release it ran out of moves on ends in an *EpicHandOffError, so the caller
 // parks the epic either way instead of mistaking the outcome for a delivery.
@@ -215,6 +215,12 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		return &EpicUnfinalizedError{EpicID: p.EpicID, Open: open}
 	}
 	p.checkpointEpicReleasing(ctx)
+	// The release is its own unit of work, so it re-resolves the skip set against
+	// the epic rather than inheriting whatever the last sub-issue resolved — a skip
+	// a child read back from its own checkpoint must never disarm the epic's CI or
+	// merge gate. Resolved here rather than at entry so a finalize that declines
+	// (children still open) leaves the epic's row exactly as it found it.
+	p.loadSkips(p.EpicID)
 	p.abortHalfMerge(ctx)
 
 	// A stacked epic has no epic branch and no epic PR to resolve: its layers are
@@ -272,15 +278,15 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 
 // finalizeEpicLocally ships a complete epic on a remote-less repo: with no PR to
 // open and no CI to gate, the epic branch is squash-merged into the base right here
-// and the tracker epic closes on that. AUTO_MERGE=0 still means the operator lands
-// the epic themselves, so it stays open on its branch until they do — there is no
-// PR to poll, so this cannot block on the merge the way the remote path does. A
-// merge git refuses leaves the epic branch untouched for a human, exactly as an
-// unresolvable drift conflict does on the remote path.
+// and the tracker epic closes on that. A run that may not merge still leaves the
+// epic to the operator, so it stays open on its branch until they land it — there
+// is no PR to poll, so this cannot block on the merge the way the remote path
+// does. A merge git refuses leaves the epic branch untouched for a human, exactly
+// as an unresolvable drift conflict does on the remote path.
 func (p *Pipeline) finalizeEpicLocally(ctx context.Context, epic string) error {
-	if !p.AutoMerge {
-		p.logf("  ⏳ epic %s is complete on %s — merge it into %s yourself (AUTO_MERGE=0)", p.EpicID, epic, p.Base)
-		return p.handOffEpic("AUTO_MERGE=0 — "+epic+" is yours to merge into "+p.Base, "")
+	if !p.autoMerge() {
+		p.logf("  ⏳ epic %s is complete on %s — merge it into %s yourself (%s)", p.EpicID, epic, p.Base, p.manualMergeReason())
+		return p.handOffEpic(p.manualMergeReason()+" — "+epic+" is yours to merge into "+p.Base, "")
 	}
 	if err := p.Git.Checkout(ctx, p.Base, false); err != nil {
 		return fmt.Errorf("finalize epic %s: checkout %s: %w", p.EpicID, p.Base, err)
@@ -537,8 +543,8 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		}
 	}
 
-	if !p.AutoMerge {
-		p.markEpicAwaitingHuman()
+	if !p.autoMerge() {
+		p.markEpicPRAwaitingHuman(prURL)
 		merged, err := p.waitForManualMerge(ctx, p.EpicID, pr, prURL)
 		if err != nil {
 			return false, err
@@ -609,18 +615,27 @@ func (p *Pipeline) markEpicAwaitingHuman() {
 	}
 }
 
-// handOffEpic ends the finalize on a release only a human can land. Beyond the
-// parked marker it records the PR on the epic's checkpoint — the card links it,
-// and the queue's reconcile sweep later reads that same PR to settle the item
-// once the human merges — notifies the operator, and returns the typed hand-off
-// the caller settles awaiting-merge on instead of recording a delivery.
-func (p *Pipeline) handOffEpic(why, prURL string) error {
+// markEpicPRAwaitingHuman parks the release on a human and records the PR they
+// have to land: the card links it, and the queue's reconcile sweep later reads
+// that same PR to settle the item once the merge happens. Every way the epic ends
+// up waiting on a person goes through here, so a run parked mid-wait leaves the
+// same readable end state a killed one does.
+func (p *Pipeline) markEpicPRAwaitingHuman(prURL string) {
 	p.markEpicAwaitingHuman()
-	if prURL != "" {
-		_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
-		_ = p.State.Set(p.EpicID, "PR_URL", prURL)
-		p.setPRStatus(p.EpicID, prStatusAwaitingMerge)
+	if prURL == "" {
+		return
 	}
+	_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
+	_ = p.State.Set(p.EpicID, "PR_URL", prURL)
+	p.setPRStatus(p.EpicID, prStatusAwaitingMerge)
+}
+
+// handOffEpic ends the finalize on a release only a human can land: it parks the
+// epic on that human with the PR recorded, notifies the operator, and returns the
+// typed hand-off the caller settles awaiting-merge on instead of recording a
+// delivery.
+func (p *Pipeline) handOffEpic(why, prURL string) error {
+	p.markEpicPRAwaitingHuman(prURL)
 	p.emitEpicAwaitingMerge(why, prURL)
 	return &EpicHandOffError{EpicID: p.EpicID, PRURL: prURL, Reason: why}
 }

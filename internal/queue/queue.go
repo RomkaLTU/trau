@@ -90,14 +90,17 @@ const (
 // otherwise the tracker provider — resolved once at enqueue so the queue still
 // reports it when the store no longer holds the issue. Provider is an ephemeral
 // per-run override of the configured routing — it applies only to this item's
-// child and never persists to config; empty means the config default. Batch is
-// the batch the item belongs to, empty for none; an item belongs to at most one.
+// child and never persists to config; empty means the config default. Skips is
+// the same shape for pipeline work (ADR 0037): the canonical keys this item's
+// child bypasses, empty for a run that skips nothing. Batch is the batch the
+// item belongs to, empty for none; an item belongs to at most one.
 type Item struct {
 	Kind      Kind       `json:"kind"`
 	ID        string     `json:"id"`
 	Title     string     `json:"title,omitempty"`
 	Source    string     `json:"source,omitempty"`
 	Provider  string     `json:"provider,omitempty"`
+	Skips     []string   `json:"skips,omitempty"`
 	Status    string     `json:"status"`
 	Reason    string     `json:"reason,omitempty"`
 	PID       int        `json:"pid,omitempty"`

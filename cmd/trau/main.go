@@ -542,6 +542,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	p.SelectRunner = newRunnerSelector(cfg, opts.Provider, repoName(repoRoot),
 		hubclient.New(hubBaseURL(cfg), cfg.ServeToken), runner, buildRunner)
+	p.Skips = opts.Skips
 	stampRouting(ctx, cfg, sink)
 	// A folder of repositories has no repository at its root to hold an epic's
 	// integration branch: running the epic is refused, and a sub-issue forced here
@@ -555,6 +556,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		epicID, parentSuffix = "", ""
 	}
 	p.EpicID = epicID
+	// A forced id means this process builds that one sub-issue on the epic branch;
+	// without one it drives the epic itself, children then release.
+	p.EpicRun = epicID != "" && forcedID == ""
 	if epicID != "" {
 		if subs, serr := pm.SubIssues(ctx, epicID); serr == nil && len(subs) > 0 {
 			con.Event(event.Event{Kind: "tickets", Fields: map[string]any{"total": len(subs)}})
@@ -2876,6 +2880,7 @@ func (a *appActions) ensure() error {
 		return err
 	}
 	a.pipe = pipe
+	a.pipe.Skips = a.opts.Skips
 	a.pipe.SelectRunner = newRunnerSelector(a.cfg, a.providerOverride(), repoName(repoRoot),
 		hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), runner, buildRunner)
 	a.pipe.OnPhase = func(id, phase string) { a.reg.SetState(registry.StateWorking, id, phase) }
@@ -3057,6 +3062,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		return
 	}
 	a.pipe.EpicID = epic
+	a.pipe.EpicRun = epic != ""
 	a.eng.scope = scopeFor(a.cfg, epic)
 	a.eng.resumeKeep = nil
 	if epic != "" {
@@ -3168,7 +3174,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 	// run on this shared pipeline — so the decision tracks this ticket alone. A folder
 	// repo has no root repository to hold an epic branch, so its sub-issues are always
 	// built off the base.
-	a.pipe.EpicID = ""
+	a.pipe.EpicID, a.pipe.EpicRun = "", false
 	if a.cfg.EpicFlow && !a.pipe.FolderRepo {
 		if parent := parentEpic(ctx, a.tracker, id); parent != "" {
 			r.Logf("%s is a sub-issue of epic %s → building on the epic branch", id, parent)
