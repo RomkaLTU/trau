@@ -52,21 +52,28 @@ type GrillSessionView struct {
 	ModelOptions     []string `json:"model_options,omitempty"`
 	AutoAccept       bool     `json:"auto_accept"`
 	Applying         bool     `json:"applying,omitempty"`
-	ParkedReason     string   `json:"parked_reason,omitempty"`
-	ApplyWarnings    []string `json:"apply_warnings,omitempty"`
-	CreatedAt        string   `json:"created_at"`
-	UpdatedAt        string   `json:"updated_at"`
+	// Stopped separates the park the user made themselves from the one an idle window
+	// made for them: their next message steers the agent rather than answering it, which
+	// a client cannot tell from the reason text alone.
+	Stopped       bool     `json:"stopped,omitempty"`
+	ParkedReason  string   `json:"parked_reason,omitempty"`
+	ApplyWarnings []string `json:"apply_warnings,omitempty"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
 }
 
 // GrillMessageView is one message in a session's conversation. Payload is the
 // message's JSON body embedded as-is (a question's text/options, an answer's text,
-// an outcome's disposition and proposal).
+// an outcome's disposition and proposal). RoundAnswers carries the answers a round
+// question has collected so far — they live beside the message rather than in it, so
+// a round the user is part way through reads back whole on a reload.
 type GrillMessageView struct {
-	ID        string          `json:"id"`
-	Role      string          `json:"role"`
-	Kind      string          `json:"kind"`
-	Payload   json.RawMessage `json:"payload"`
-	CreatedAt string          `json:"created_at"`
+	ID           string                 `json:"id"`
+	Role         string                 `json:"role"`
+	Kind         string                 `json:"kind"`
+	Payload      json.RawMessage        `json:"payload"`
+	RoundAnswers []GrillRoundAnswerView `json:"round_answers,omitempty"`
+	CreatedAt    string                 `json:"created_at"`
 }
 
 // GrillDeltaView is one chunk of the grilling agent's reply as it is written. Seq
@@ -163,9 +170,13 @@ type GrillCreateRequest struct {
 	AutoAccept bool   `json:"auto_accept"`
 }
 
-// GrillAnswerRequest is the body of POST /grill/{sid}/answer.
+// GrillAnswerRequest is the body of POST /grill/{sid}/answer. Text answers a single
+// question; Answers answers a round, each entry naming the question it settles by its
+// position in the round. A submission that leaves questions open is kept and the round
+// stays open on the rest.
 type GrillAnswerRequest struct {
-	Text string `json:"text"`
+	Text    string                  `json:"text"`
+	Answers []GrillRoundAnswerInput `json:"answers"`
 }
 
 // GrillModelRequest is the body of POST /grill/{sid}/model.
@@ -184,10 +195,11 @@ type GrillTitleRequest struct {
 }
 
 // GrillAnswerResponse acknowledges an answer with the resulting session state and
-// the stored message.
+// the stored message. A round submission that leaves questions open stores no message
+// of its own — the answers land on the round it is part of — so the message is absent.
 type GrillAnswerResponse struct {
-	Session GrillSessionView `json:"session"`
-	Message GrillMessageView `json:"message"`
+	Session GrillSessionView  `json:"session"`
+	Message *GrillMessageView `json:"message,omitempty"`
 }
 
 // handleRepoGrill lists a repo's grilling sessions (GET) and opens a new one
@@ -409,7 +421,7 @@ func (s *Server) getGrillSession(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, GrillDetailResponse{
 		Session:  s.grillSessionView("", sess),
-		Messages: grillMessageViews(msgs),
+		Messages: s.grillMessageViews(msgs),
 	})
 }
 
@@ -512,9 +524,29 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
+	if len(req.Answers) > 0 {
+		// A round is answered against the questions the session is blocked on, so a
+		// turn back in flight has nothing to take the submission against.
+		if interjecting {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "session is not waiting on a round"})
+			return
+		}
+		s.answerGrillRound(w, r, sess, req.Answers)
+		return
+	}
 	text := strings.TrimSpace(req.Text)
 	if text == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "answer text is required"})
+		return
+	}
+	// One line cannot settle a round: taken as the session's answer it would close every
+	// question of it, the unanswered ones with nothing. The round's own form is the way
+	// in until it is complete — except once the user has stopped the agent, where their
+	// next message steers the conversation rather than answering anything, exactly as it
+	// does for a single pending question. Refusing it there would leave them with a
+	// stopped session and no way to redirect it.
+	if _, _, open := s.grillOpenRound(sess.ID); open && !interjecting && !grillStopped(sess) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is waiting on a round of questions"})
 		return
 	}
 	if interjecting {
@@ -523,38 +555,45 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "store interjection: " + err.Error()})
 			return
 		}
+		view := grillMessageView(msg)
 		writeJSON(w, http.StatusOK, GrillAnswerResponse{
 			Session: s.grillSessionView("", sess),
-			Message: grillMessageView(msg),
+			Message: &view,
 		})
 		return
 	}
-	msg, resumed, err := s.grillSubmitAnswer(r.Context(), sess, text, false)
+	msg, resumed, err := s.grillSubmitAnswer(r.Context(), sess, text, false, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	view := grillMessageView(msg)
 	writeJSON(w, http.StatusOK, GrillAnswerResponse{
 		Session: s.grillSessionView("", resumed),
-		Message: grillMessageView(msg),
+		Message: &view,
 	})
 }
 
 // grillSubmitAnswer stores text as the session's answer and puts it back to running,
 // spawning the resume turn a session whose child has gone needs. auto marks an answer
-// the hub took from the agent's own recommendation rather than from the user; the
-// answer that picks a stopped session back up is marked as steering, so the resume
-// turn reaches the agent as a redirect.
+// the hub took from the agent's own recommendation rather than from the user, and round
+// one that closes a whole round rather than a single question; the answer that picks a
+// stopped session back up is marked as steering, so the resume turn reaches the agent
+// as a redirect.
 func (s *Server) grillSubmitAnswer(
 	ctx context.Context,
 	sess hubstore.GrillSession,
 	text string,
-	auto bool,
+	auto, round bool,
 ) (hubstore.GrillMessage, hubstore.GrillSession, error) {
+	payload := grillAnswerPayload(text, auto, grillStopped(sess))
+	if round {
+		payload = grillRoundAnswerPayload(text, auto)
+	}
 	msg, _, err := s.stores.Grill().AppendMessage(sess.ID, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleUser,
 		Kind:    hubstore.GrillKindAnswer,
-		Payload: grillAnswerPayload(text, auto, grillStopped(sess)),
+		Payload: payload,
 	})
 	if err != nil {
 		return hubstore.GrillMessage{}, sess, fmt.Errorf("store answer: %w", err)
@@ -850,11 +889,14 @@ func (s *Server) grillAcceptPending(ctx context.Context, sess hubstore.GrillSess
 	if !ok {
 		return sess
 	}
+	if questions, isRound := grillRoundQuestions(question.Payload); isRound {
+		return s.grillAcceptPendingRound(ctx, sess, question.ID, questions)
+	}
 	recommended := grillMessageRecommended(question.Payload)
 	if recommended == "" {
 		return sess
 	}
-	_, resumed, err := s.grillSubmitAnswer(ctx, sess, recommended, true)
+	_, resumed, err := s.grillSubmitAnswer(ctx, sess, recommended, true, false)
 	if err != nil {
 		logger.Verbosef("grill %d: auto-accept pending answer: %v", sess.ID, err)
 		return sess
@@ -891,7 +933,7 @@ func (s *Server) handleGrillStream(w http.ResponseWriter, r *http.Request) {
 	msgs, err := s.stores.Grill().Messages(sid, after)
 	if err == nil {
 		for _, m := range msgs {
-			if writeGrillFrame(w, "message", strconv.FormatInt(m.ID, 10), grillMessageView(m)) != nil {
+			if writeGrillFrame(w, "message", strconv.FormatInt(m.ID, 10), s.grillLoadedMessageView(m)) != nil {
 				return
 			}
 			after = m.ID
@@ -1081,6 +1123,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		ModelOptions:     grillModelOptionsFor(sess.Provider),
 		AutoAccept:       sess.AutoAccept,
 		Applying:         s.grillApplyInFlight(sess.ID),
+		Stopped:          grillStopped(sess),
 		ParkedReason:     sess.ParkedReason,
 		ApplyWarnings:    sess.ApplyWarnings,
 		CreatedAt:        sess.CreatedAt,
@@ -1302,12 +1345,34 @@ func grillMessageView(msg hubstore.GrillMessage) GrillMessageView {
 	}
 }
 
-func grillMessageViews(msgs []hubstore.GrillMessage) []GrillMessageView {
+// grillMessageViews maps a whole conversation, attaching each round's answers so a
+// client loading a session part way through one draws the answers it already has.
+func (s *Server) grillMessageViews(msgs []hubstore.GrillMessage) []GrillMessageView {
 	out := make([]GrillMessageView, len(msgs))
 	for i, m := range msgs {
-		out[i] = grillMessageView(m)
+		out[i] = s.grillLoadedMessageView(m)
 	}
 	return out
+}
+
+// grillLoadedMessageView is grillMessageView for a read that comes off the store, where
+// a round question's answers can be read beside it. The live publish path has no round
+// answers to attach — a round is posed empty and fills in over its own frames.
+func (s *Server) grillLoadedMessageView(msg hubstore.GrillMessage) GrillMessageView {
+	view := grillMessageView(msg)
+	if msg.Kind != hubstore.GrillKindQuestion {
+		return view
+	}
+	if _, isRound := grillRoundQuestions(msg.Payload); !isRound {
+		return view
+	}
+	answers, err := s.stores.Grill().RoundAnswers(msg.ID)
+	if err != nil {
+		logger.Verbosef("grill %d: read round answers: %v", msg.SessionID, err)
+		return view
+	}
+	view.RoundAnswers = grillRoundAnswerViews(answers)
+	return view
 }
 
 // writeGrillFrame writes one SSE frame. A message frame carries the message id so a

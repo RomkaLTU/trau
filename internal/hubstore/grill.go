@@ -129,6 +129,15 @@ type NewGrillMessage struct {
 	Payload string
 }
 
+// GrillRoundAnswer is one question's answer inside a round: the position the question
+// holds in the round's ordered list, the answer itself, and whether the hub took it
+// from the agent's own recommendation rather than from the user.
+type GrillRoundAnswer struct {
+	Index int
+	Text  string
+	Auto  bool
+}
+
 // Grill is the hub's authoritative store of web grilling sessions and their
 // messages (ADR 0008). Children reach it only over MCP/HTTP; the tables — not run
 // files — are the source of truth. retention bounds how many settled sessions per
@@ -392,6 +401,57 @@ func (g *Grill) AppendMessage(sessionID int64, nm NewGrillMessage) (GrillMessage
 		return GrillMessage{}, false, err
 	}
 	return GrillMessage{ID: id, SessionID: sessionID, Role: nm.Role, Kind: nm.Kind, Payload: payload, CreatedAt: now}, true, nil
+}
+
+// SaveRoundAnswers records answers for the round posed by messageID. A position that
+// already carries an answer keeps it: a round the user comes back to must never
+// re-answer what auto-accept or an earlier submission already settled, which is what
+// lets a session park mid-round and resume on the remainder alone.
+func (g *Grill) SaveRoundAnswers(messageID int64, answers []GrillRoundAnswer) error {
+	if len(answers) == 0 {
+		return nil
+	}
+	now := formatGrillTime(time.Now())
+	tx, err := g.db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, a := range answers {
+		if _, err := tx.Exec(
+			`INSERT INTO grill_round_answers(message_id, idx, text, auto, created_at)
+			 VALUES(?, ?, ?, ?, ?) ON CONFLICT(message_id, idx) DO NOTHING`,
+			messageID, a.Index, a.Text, boolToInt(a.Auto), now,
+		); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
+	return tx.Commit()
+}
+
+// RoundAnswers returns the answers stored for the round posed by messageID, ordered by
+// the position each question holds in the round.
+func (g *Grill) RoundAnswers(messageID int64) (out []GrillRoundAnswer, err error) {
+	q, err := g.db.Query(
+		`SELECT idx, text, auto FROM grill_round_answers WHERE message_id = ? ORDER BY idx`,
+		messageID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, q.Close()) }()
+	out = []GrillRoundAnswer{}
+	for q.Next() {
+		var (
+			a    GrillRoundAnswer
+			auto int
+		)
+		if err := q.Scan(&a.Index, &a.Text, &auto); err != nil {
+			return nil, err
+		}
+		a.Auto = auto != 0
+		out = append(out, a)
+	}
+	return out, q.Err()
 }
 
 // MarkBlockRelation records that a split apply has written the blocker→blocked

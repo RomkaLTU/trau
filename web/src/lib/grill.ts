@@ -31,7 +31,9 @@ export type GrillMode = 'interview' | 'research' | 'fix'
 // ever asked. report_title is the title a research outcome gave its report, which the
 // Research page names the session by; a session finished without one keeps the seed.
 // applying marks an apply the hub is still writing, so a reload and a second tab read
-// it from the hub rather than from a mutation they never ran.
+// it from the hub rather than from a mutation they never ran. stopped separates the
+// park the user made themselves from the one an idle window made for them: their next
+// message steers the agent rather than answering whatever it left open.
 export interface GrillSession {
   id: string
   repo: string
@@ -48,18 +50,22 @@ export interface GrillSession {
   model_options?: string[]
   auto_accept?: boolean
   applying?: boolean
+  stopped?: boolean
   parked_reason?: string
   created_at: string
   updated_at: string
 }
 
 // GrillMessage is one turn in the conversation. payload is the kind's JSON body
-// embedded as-is: a QuestionPayload, an AnswerPayload, or an OutcomePayload.
+// embedded as-is: a QuestionPayload, a RoundPayload, an AnswerPayload, or an
+// OutcomePayload. round_answers rides beside a round question rather than inside it:
+// the answers fill in one at a time and the message itself never changes.
 export interface GrillMessage {
   id: string
   role: GrillRole
   kind: GrillKind
   payload: unknown
+  round_answers?: RoundAnswer[]
   created_at: string
 }
 
@@ -123,9 +129,12 @@ export interface GrillListResponse {
   sessions: GrillSession[]
 }
 
+// GrillAnswerResponse acknowledges an answer. message is absent for a round submission
+// that left questions open: those answers land on the round they belong to rather than
+// as a turn of their own.
 export interface GrillAnswerResponse {
   session: GrillSession
-  message: GrillMessage
+  message?: GrillMessage
 }
 
 export type GrillStepStatus = 'ok' | 'failed'
@@ -191,12 +200,36 @@ export interface QuestionPayload {
   allow_free_text: boolean
 }
 
+// RoundQuestion is one question of a round — a set of independent questions the agent
+// asks in one exchange and the user answers together. It carries exactly what a single
+// question does, so one card renders either.
+export type RoundQuestion = QuestionPayload
+
+// RoundPayload is a round question message's body: text renders the whole round as one
+// numbered string for the readers that only know single questions, and round holds the
+// questions themselves.
+export interface RoundPayload {
+  text: string
+  round: RoundQuestion[]
+}
+
+// RoundAnswer is one settled question of a round, named by the position the question
+// holds in it. auto marks one auto-accept took from the agent's own recommendation, so
+// only the questions needing the user's taste were ever asked.
+export interface RoundAnswer {
+  index: number
+  text: string
+  auto?: boolean
+}
+
 // AnswerPayload is an answer turn's body, and an interjection's. auto marks one the
 // hub took from the agent's own recommendation on an auto-accept session rather than
-// from the user.
+// from the user; round marks the one that closes a whole round, whose answers the
+// round's own cards already show.
 export interface AnswerPayload {
   text: string
   auto?: boolean
+  round?: boolean
 }
 
 // SubIssueProposal is one proposed slice of a split: a fully-specified child with
@@ -552,6 +585,22 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
   return res.json()
 }
 
+// answerGrillRound submits a round's answers, each naming the question it settles by
+// position. A submission that leaves questions open is kept: the round stays open on
+// the rest, which is what lets the user step away part way through one.
+export async function answerGrillRound(
+  sid: string,
+  answers: RoundAnswer[],
+): Promise<GrillAnswerResponse> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ answers: answers.map(({ index, text }) => ({ index, text })) }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'answer failed'))
+  return res.json()
+}
+
 // applyGrill writes a finished session's proposed outcome to the tracker. A rewrite,
 // split, or create carries its (possibly edited) description in the body; a split or
 // create-epic also carries the edited sub-issues, and a create carries the edited
@@ -752,10 +801,21 @@ export function upsertMessage(list: GrillMessage[], msg: GrillMessage): GrillMes
   if (at !== -1) {
     if (list[at] === msg) return list
     const next = list.slice()
-    next[at] = msg
+    next[at] = keepRoundAnswers(list[at], msg)
     return next
   }
   return [...list, msg].sort(messageOrder)
+}
+
+// keepRoundAnswers holds a round's answers against a copy of the message that has
+// fewer. A round only ever gains answers, so the longer set is always the newer one:
+// the frame that poses a round carries none, and a hydrate racing the stream can carry
+// a set the stream has already grown past.
+function keepRoundAnswers(held: GrillMessage, incoming: GrillMessage): GrillMessage {
+  const before = held.round_answers ?? []
+  const after = incoming.round_answers ?? []
+  if (before.length <= after.length) return incoming
+  return { ...incoming, round_answers: before }
 }
 
 export function mergeMessages(list: GrillMessage[], incoming: GrillMessage[]): GrillMessage[] {
@@ -773,6 +833,33 @@ export function questionPayload(msg: GrillMessage): QuestionPayload {
     why: typeof p.why === 'string' ? p.why : undefined,
     allow_free_text: p.allow_free_text !== false,
   }
+}
+
+// roundQuestions reads a question message as a round, or null when it is the single
+// question ask_user poses. Each question is parsed on questionPayload's own defensive
+// terms, so one card renders either kind.
+export function roundQuestions(msg: GrillMessage): RoundQuestion[] | null {
+  const p = (msg.payload ?? {}) as Partial<RoundPayload>
+  if (!Array.isArray(p.round) || p.round.length === 0) return null
+  return p.round.map((q) => questionPayload({ ...msg, payload: q }))
+}
+
+// roundAnswers reads the answers a round has collected so far, ordered by the position
+// of the question each one settles.
+export function roundAnswers(msg: GrillMessage): RoundAnswer[] {
+  const raw = Array.isArray(msg.round_answers) ? msg.round_answers : []
+  return raw
+    .filter((a) => Number.isInteger(a?.index) && typeof a?.text === 'string')
+    .map((a) => ({ index: a.index, text: a.text, auto: a.auto === true }))
+    .sort((a, b) => a.index - b.index)
+}
+
+// isRoundAnswer reports whether an answer message closed a round rather than a single
+// question. The round's own cards already show every answer it carries, so the thread
+// leaves it out instead of repeating the whole set as a bubble.
+export function isRoundAnswer(msg: GrillMessage): boolean {
+  const p = (msg.payload ?? {}) as Partial<AnswerPayload>
+  return p.round === true
 }
 
 export function answerText(msg: GrillMessage): string {
@@ -828,16 +915,21 @@ function parseSubIssue(raw: unknown): SubIssueProposal {
   }
 }
 
-// pendingQuestion is the question awaiting an answer: the last question with no
-// answer after it. A parked crash or no-outcome turn leaves no pending question, so
-// the panel falls back to a plain resume composer.
+// pendingQuestion is the question awaiting an answer: the last question with nothing
+// of the user's after it. An interjection retires it as an answer does — the hub reads
+// one as the user moving the conversation on and never poses that question again, so a
+// round left open behind an interjection must not hold the composer down forever. A
+// parked crash or no-outcome turn leaves no pending question, so the panel falls back
+// to a plain resume composer.
 export function pendingQuestion(messages: GrillMessage[]): GrillMessage | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].kind === 'question') {
-      const answered = messages.some(
-        (m) => m.kind === 'answer' && Number(m.id) > Number(messages[i].id),
+      const settled = messages.some(
+        (m) =>
+          (m.kind === 'answer' || m.kind === 'interjection') &&
+          Number(m.id) > Number(messages[i].id),
       )
-      return answered ? null : messages[i]
+      return settled ? null : messages[i]
     }
   }
   return null
@@ -849,11 +941,21 @@ export interface GrillProgress {
 }
 
 // grillProgress is how far the grilling has got: the questions asked, and how many
-// the user has answered. A question left pending is the only one outstanding — the
-// session cannot ask the next one until the current one is answered.
+// the user has answered. A pending turn is the only one outstanding — the session
+// cannot ask the next one until it is answered — and a round counts every question it
+// poses, the ones it is still short of included.
 export function grillProgress(messages: GrillMessage[]): GrillProgress {
-  const total = messages.reduce((n, m) => (m.kind === 'question' ? n + 1 : n), 0)
-  return { answered: pendingQuestion(messages) ? total - 1 : total, total }
+  const pending = pendingQuestion(messages)
+  let answered = 0
+  let total = 0
+  for (const m of messages) {
+    if (m.kind !== 'question') continue
+    const round = roundQuestions(m)
+    total += round ? round.length : 1
+    if (m.id !== pending?.id) answered += round ? round.length : 1
+    else if (round) answered += roundAnswers(m).length
+  }
+  return { answered, total }
 }
 
 export function latestOutcome(messages: GrillMessage[]): GrillMessage | null {
@@ -911,9 +1013,18 @@ export interface GrillLive {
   activity: LiveActivity
 }
 
+// GrillRoundFrame is a round's answer set as the hub pushes it, so a second tab on the
+// same session watches each answer land. It names the round it belongs to by message
+// id and carries no frame id: round progress is not transcript.
+export interface GrillRoundFrame {
+  message_id: string
+  answers: RoundAnswer[]
+}
+
 export type GrillAction =
   | { type: 'hydrate'; detail: GrillDetail }
   | { type: 'message'; message: GrillMessage }
+  | { type: 'round'; round: GrillRoundFrame }
   | { type: 'state'; session: GrillSession }
   | { type: 'delta'; delta: GrillDelta }
   | { type: 'activity'; activity: GrillActivity }
@@ -947,6 +1058,15 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
         streaming: interjected ? state.streaming : NO_REPLY,
         activity: interjected ? state.activity : NO_ACTIVITY,
       }
+    }
+    // A round frame answers questions inside a message the thread already holds, and
+    // settles nothing on its own: whatever the turn is streaming keeps streaming.
+    case 'round': {
+      const at = state.messages.findIndex((m) => m.id === action.round.message_id)
+      if (at === -1) return state
+      const messages = state.messages.slice()
+      messages[at] = { ...messages[at], round_answers: action.round.answers }
+      return { ...state, messages }
     }
     // Every state frame either settles the running turn or opens the next one, so it
     // ends whatever was streaming and rebases the seq for the turn ahead.
