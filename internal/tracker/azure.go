@@ -30,6 +30,9 @@ type AzureDevOps struct {
 	QuarantineLabel string
 	SplitLabel      string
 	StatusOverrides map[Stage]string
+	// boardStates maps the team's Kanban columns onto trau's status groups, empty
+	// when the repo sets no AZURE_BOARD_STATES and grouping stays category-derived.
+	boardStates azureBoardStates
 }
 
 func (a *AzureDevOps) api() *azureapi.Client {
@@ -269,11 +272,16 @@ func (a *AzureDevOps) Title(ctx context.Context, id string) (string, error) {
 }
 
 // IssueStatus reports the normalized lifecycle bucket of a work item, used by
-// epic finalization and stale-checkpoint reconcile.
+// epic finalization and stale-checkpoint reconcile. A repo whose board columns are
+// mapped reports what the board shows, so reconcile and the board never disagree
+// about the same ticket (ADR 0036).
 func (a *AzureDevOps) IssueStatus(ctx context.Context, id string) (IssueStatus, error) {
 	item, err := a.workItem(ctx, id)
 	if err != nil {
 		return StatusUnknown, err
+	}
+	if group, ok := a.boardStates.group(item.BoardColumn, item.State, item.Reason); ok {
+		return azureIssueStatus(group), nil
 	}
 	return mapAzureStatus(a.stateCategory(ctx, item), item.Reason), nil
 }
@@ -584,16 +592,43 @@ func (a *AzureDevOps) uploadQAImages(ctx context.Context, id string, images []QA
 // failure the slice could not self-heal, even after comprehensive bugfix passes.
 func (a *AzureDevOps) FileBug(ctx context.Context, id, verdictPath string) (string, error) {
 	summary, description := bugContent(id, verdictPath)
-	n, err := a.api().CreateWorkItem(ctx, a.Project, azureapi.NewWorkItem{
-		Type:        "Bug",
-		Title:       summary,
-		Description: description,
-		Tags:        []string{"HITL"},
+	api := a.api()
+	created, err := api.CreateWorkItem(ctx, a.Project, azureapi.NewWorkItem{
+		Type:     "Bug",
+		Title:    summary,
+		Body:     azureapi.SplitBody(description, azureHasAcceptance(azureapi.LevelRequirement)),
+		Tags:     []string{"HITL"},
+		Assignee: azureSelfAssign(ctx, api),
 	})
 	if err != nil {
 		return "", err
 	}
-	return azureIdentifier(n), nil
+	azureRankTop(ctx, api, a.Project, created)
+	return azureIdentifier(created.ID), nil
+}
+
+// azureSelfAssign resolves the identity a create is assigned to: whoever the
+// personal access token belongs to. It is the one assignment the provider can make
+// — identity search still needs the Graph host and a scope trau does not request
+// (ADR 0031 §9, amended by ADR 0036) — and losing it costs the work item its
+// assignee, never the create.
+func azureSelfAssign(ctx context.Context, client *azureapi.Client) string {
+	owner, err := client.Owner(ctx)
+	if err != nil {
+		logger.Printf("azure: filing unassigned; could not resolve the token's owner: %v", err)
+		return ""
+	}
+	return owner.Assignee()
+}
+
+// azureRankTop moves a filed work item to the top of the board column it landed
+// in. The position is presentation: losing it costs the item its place in the
+// column and nothing else, so a failure is reported rather than returned to a
+// caller whose work item already exists.
+func azureRankTop(ctx context.Context, client *azureapi.Client, project string, created azureapi.Created) {
+	if err := client.RankTop(ctx, project, created.BoardColumn, created.ID); err != nil {
+		logger.Printf("azure: work item %d filed without a top-of-column rank: %v", created.ID, err)
+	}
 }
 
 // EnsureLabels is a no-op on Azure DevOps: tags are freeform strings created

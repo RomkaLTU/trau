@@ -25,6 +25,10 @@ func azureWriteServer(t *testing.T) (Writer, *[]recordedPatch) {
 		if serveAzureWork(w, r) {
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/_apis/connectionData") {
+			_, _ = w.Write([]byte(azureConnectionData))
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		var ops []recordedOp
 		_ = json.Unmarshal(body, &ops)
@@ -91,8 +95,11 @@ func TestAzureWriterFilesRequirementWithTaskChildren(t *testing.T) {
 	if want := "/Contoso/_apis/wit/workitems/$User Story"; parent.path != want {
 		t.Errorf("parent filed at %q, want %q", parent.path, want)
 	}
-	if parent.value("System.Title") != "Sync the board" || parent.value("System.Tags") != "ready-for-agent" {
+	if parent.value("System.Title") != "Sync the board" || parent.value("System.Tags") != "ready-for-agent; trau" {
 		t.Errorf("parent ops = %+v", parent.ops)
+	}
+	if got := parent.value("System.AssignedTo"); got != "ada@contoso.test" {
+		t.Errorf("parent assignee = %v, want the personal access token's owner", got)
 	}
 	if got := parent.relation(relHierarchyReverse); got != "4" {
 		t.Errorf("parent hangs off %q, want the picked Feature 4", got)

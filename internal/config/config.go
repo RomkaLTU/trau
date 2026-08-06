@@ -68,11 +68,16 @@ type Config struct {
 	BitbucketAPIToken     string
 	AzureAreaPath         string
 	AzureTeams            []string
-	ReadyLabel            string
-	QuarantineLabel       string
-	QueuedLabel           string
-	SplitLabel            string
-	Project               string
+	// AzureBoardStates maps the team's Kanban board columns onto trau's status
+	// groups, as comma-separated "<board column>=<group>" pairs. Set, it is the
+	// authoritative and exhaustive grouping for an Azure DevOps board; empty leaves
+	// grouping to the state categories the project itself reports (ADR 0036).
+	AzureBoardStates string
+	ReadyLabel       string
+	QuarantineLabel  string
+	QueuedLabel      string
+	SplitLabel       string
+	Project          string
 	// StatusTodo, StatusInProgress, StatusInReview and StatusDone pin a lifecycle
 	// stage to an exact tracker status name. Empty leaves the stage to resolve
 	// against the workflow the tracker reports.
@@ -814,6 +819,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("AZURE_ORG_URL", &c.AzureOrgURL)
 	str("AZURE_PAT", &c.AzurePAT)
 	str("AZURE_AREA_PATH", &c.AzureAreaPath)
+	str("AZURE_BOARD_STATES", &c.AzureBoardStates)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
 	str("STATUS_TODO", &c.StatusTodo)
@@ -1848,6 +1854,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
 		{Key: "AZURE_AREA_PATH", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Area Path the hub's Azure DevOps sync is narrowed to, including everything under it (e.g. Acme\\Platform); empty syncs the whole team project"},
 		{Key: "AZURE_TEAMS", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated Azure DevOps team names whose board areas scope this repo (e.g. Platform,Payments); empty syncs the whole team project"},
+		{Key: "AZURE_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated \"<board column>=<group>\" pairs mapping the team's Kanban columns onto backlog | unstarted | started | done | canceled (e.g. New=backlog,Ready to Develop=unstarted,Done=done); set, it is exhaustive and an unlisted column groups as unknown; empty groups by the state categories the project reports"},
 		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | azure | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "azure", "github", "internal"}},
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
@@ -2126,6 +2133,7 @@ var trackerConfigKeys = []string{
 	"AZURE_PAT",
 	"AZURE_AREA_PATH",
 	"AZURE_TEAMS",
+	"AZURE_BOARD_STATES",
 }
 
 // TrackerConfigKeys returns the keys that describe a repo's tracker.
@@ -2411,6 +2419,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.AzureAreaPath
 	case "AZURE_TEAMS":
 		return strings.Join(cfg.AzureTeams, ",")
+	case "AZURE_BOARD_STATES":
+		return cfg.AzureBoardStates
 	case "READY_LABEL":
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":

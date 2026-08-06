@@ -68,6 +68,10 @@ type Config struct {
 	// from the team's own board settings. Empty leaves the read to AreaPath alone.
 	// Unused by every other provider.
 	BoardTeams []string
+	// BoardStates is the raw AZURE_BOARD_STATES spec mapping the team's Kanban
+	// columns onto trau's status groups. Empty leaves grouping to the categories the
+	// project reports. Unused by every other provider.
+	BoardStates string
 	// EpicType names the Jira issue type an epic-shaped draft is filed as,
 	// overriding the lookup of the project's own hierarchy-level-1 type. Unused by
 	// the Linear, GitHub and internal providers.
@@ -407,6 +411,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			QuarantineLabel: cfg.QuarantineLabel,
 			SplitLabel:      cfg.SplitLabel,
 			StatusOverrides: cfg.StatusOverrides,
+			boardStates:     parseAzureBoardStates(cfg.BoardStates),
 		}, nil
 	case "github":
 		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil
