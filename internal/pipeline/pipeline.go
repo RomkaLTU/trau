@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -3985,6 +3986,10 @@ func (p *Pipeline) recoverStep(ctx context.Context, id, phase, prompt string, ch
 			if isAuthFailure(err) {
 				return out, p.pauseAuth(id, phase, err)
 			}
+			if isInvalidArgv(err) {
+				p.logAgentErr(phase, err)
+				return out, invalidArgvFault(phase, err)
+			}
 			lastErr = err
 			if ctx.Err() != nil {
 				p.logAgentErr(phase, err)
@@ -4118,6 +4123,21 @@ func (p *Pipeline) clearFailureMarks(id string) {
 // an auth wall does: the fix is a human at the provider CLI once (COD-1326).
 func isAuthFailure(err error) bool {
 	return agent.IsAuthRequired(err) || agent.IsBlockedOnPrompt(err)
+}
+
+// isInvalidArgv reports whether err is the kernel refusing the spawn itself:
+// os.StartProcess answers EINVAL when any argv element holds a byte it cannot
+// carry — in practice a raw NUL that reached the composed prompt. Nothing ran, so
+// there is no transcript and no partial work.
+func isInvalidArgv(err error) bool { return errors.Is(err, syscall.EINVAL) }
+
+// invalidArgvFault turns a refused spawn into a permanent step failure: the prompt
+// is immutable across the retry loop and the provider fallback chain, so every
+// remaining attempt would hand the same rejected vector to the same syscall. The
+// message names the probable cause, because the offending byte is in repo or tool
+// content the operator has to go and find.
+func invalidArgvFault(phase string, err error) error {
+	return fmt.Errorf("agent step %q could not be spawned: the argument vector was rejected as invalid, most likely a raw control byte (NUL) in the composed prompt content — retrying and provider fallback cannot change it: %w", phase, err)
 }
 
 // guardBudget enforces the configured spend ceilings before an agent call. It

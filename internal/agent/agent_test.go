@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
@@ -199,6 +200,135 @@ func TestCodexArgsPassModelAndEffort(t *testing.T) {
 	bare := (&Codex{Bin: "codex"}).args("p", "/tmp/m")
 	if flagValue(bare, "--model") != "" || flagValue(bare, "-c") != "" {
 		t.Errorf("bare codex args should carry no model/effort flags: %v", bare)
+	}
+}
+
+// TestCodexArgsCarryNoRawNUL pins the argv half of the spawn guard: a composed
+// prompt that picked up a raw NUL reaches `codex exec` as a vector fork/exec will
+// accept, with the escape text standing in so the agent still sees what the source
+// material held.
+func TestCodexArgsCarryNoRawNUL(t *testing.T) {
+	c := &Codex{Bin: "codex", Preamble: "preamble"}
+	args := c.args(c.fullPrompt("the fixture holds a \x00 byte", "build"), "/tmp/msg.json")
+
+	assertSpawnableArgv(t, args)
+	last := args[len(args)-1]
+	if !strings.Contains(last, sanitize.NULEscape) {
+		t.Errorf("prompt arg lost the evidence of the scrubbed NUL: %q", last)
+	}
+	if !strings.Contains(last, "preamble") || !strings.Contains(last, "the fixture holds a ") {
+		t.Errorf("prompt arg no longer carries the composed prompt: %q", last)
+	}
+}
+
+// TestKimiArgsCarryNoRawNUL covers the other headless backend, whose prompt rides
+// the -p flag rather than a bare final argument.
+func TestKimiArgsCarryNoRawNUL(t *testing.T) {
+	c := &Kimi{Bin: "kimi", Preamble: "preamble"}
+	args := c.args(c.fullPrompt("the fixture holds a \x00 byte", "verify"))
+
+	assertSpawnableArgv(t, args)
+	if got := flagValue(args, "-p"); !strings.Contains(got, sanitize.NULEscape) {
+		t.Errorf("-p prompt lost the evidence of the scrubbed NUL: %q", got)
+	}
+}
+
+// TestInteractiveArgvCarriesNoRawNUL runs the PTY backends through their real Run
+// path with a spawn-refusing terminalStarter, so the assertion is on the argv the
+// production code would have handed the terminal.
+func TestInteractiveArgvCarriesNoRawNUL(t *testing.T) {
+	spawnRefused := errors.New("spawn refused")
+	prompt := "the fixture holds a \x00 byte"
+
+	cases := []struct {
+		name string
+		run  func(start terminalStarter) error
+	}{
+		{"claude", func(start terminalStarter) error {
+			c := &ClaudeInteractive{Bin: "claude", Preamble: "preamble", ResultDir: t.TempDir(), start: start}
+			_, err := c.Run(context.Background(), prompt, "build")
+			return err
+		}},
+		{"codex", func(start terminalStarter) error {
+			c := &CodexInteractive{Bin: "codex", Preamble: "preamble", ResultDir: t.TempDir(), start: start}
+			_, err := c.Run(context.Background(), prompt, "build")
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var argv []string
+			err := tc.run(func(_ context.Context, _, _ string, args []string, _, _ int) (terminalSession, error) {
+				argv = args
+				return nil, spawnRefused
+			})
+			if !errors.Is(err, spawnRefused) {
+				t.Fatalf("err = %v, want the spawn error", err)
+			}
+			assertSpawnableArgv(t, argv)
+			if !strings.Contains(strings.Join(argv, " "), sanitize.NULEscape) {
+				t.Errorf("argv lost the evidence of the scrubbed NUL: %v", argv)
+			}
+		})
+	}
+}
+
+// TestScrubPromptWarnsOncePerPrompt pins the operator's trail: however many NULs a
+// prompt carried, the phase is named exactly once, and a clean prompt is silent.
+func TestScrubPromptWarnsOncePerPrompt(t *testing.T) {
+	var events bytes.Buffer
+	log := event.New(&events)
+
+	if got := scrubPrompt(log, "verify", "clean prompt"); got != "clean prompt" {
+		t.Errorf("clean prompt was altered: %q", got)
+	}
+	if n := len(promptSanitizedEvents(t, &events)); n != 0 {
+		t.Fatalf("a clean prompt logged %d warning(s), want none", n)
+	}
+
+	scrubPrompt(log, "verify", "a\x00b\x00c")
+	warned := promptSanitizedEvents(t, &events)
+	if len(warned) != 1 {
+		t.Fatalf("got %d warnings for one prompt, want exactly 1", len(warned))
+	}
+	if warned[0].Phase != "verify" {
+		t.Errorf("warning phase = %q, want verify", warned[0].Phase)
+	}
+
+	if got := scrubPrompt(nil, "verify", "a\x00b"); strings.ContainsRune(got, 0) {
+		t.Errorf("a nil log must still scrub: %q", got)
+	}
+}
+
+func promptSanitizedEvents(t *testing.T, stream *bytes.Buffer) []event.Event {
+	t.Helper()
+	var out []event.Event
+	for _, line := range strings.Split(strings.TrimSpace(stream.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev event.Event
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("event stream carries a non-JSON line %q: %v", line, err)
+		}
+		if ev.Kind == event.KindPromptSanitized {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// assertSpawnableArgv fails when any element holds the one byte os.StartProcess
+// refuses.
+func assertSpawnableArgv(t *testing.T, args []string) {
+	t.Helper()
+	if len(args) == 0 {
+		t.Fatal("no argv captured")
+	}
+	for i, a := range args {
+		if strings.ContainsRune(a, 0) {
+			t.Errorf("argv[%d] holds a raw NUL, fork/exec would reject it: %q", i, a)
+		}
 	}
 }
 

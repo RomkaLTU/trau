@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/agent"
@@ -118,6 +120,62 @@ func TestRecoverStepBlockedOnPromptPausesWithoutRetry(t *testing.T) {
 		if r.calls != 1 {
 			t.Fatalf("%v: a blocking dialog must not be retried; got %d calls", sentinel, r.calls)
 		}
+	}
+}
+
+// TestRecoverStepInvalidArgvFailsFast pins the fast-fail: a spawn the kernel refused
+// with EINVAL must fault the step on the first hit, since the prompt is immutable
+// across the retry loop and the fallback chain. The fault must name the probable
+// cause and must not read as a blameless pause.
+func TestRecoverStepInvalidArgvFailsFast(t *testing.T) {
+	spawnErr := fmt.Errorf("claude interactive run (build): %w",
+		&os.PathError{Op: "fork/exec", Path: "/usr/local/bin/claude", Err: syscall.EINVAL})
+	primary := &countingRunner{results: []error{spawnErr}, name: "claude"}
+	fb := &countingRunner{results: []error{nil}, name: "codex"}
+	p := newTestPipeline(t, primary, &fakeTracker{})
+	p.AgentRetries = 3
+	p.AgentBackoff = 0
+	p.Fallback = func(string) []agent.Runner { return []agent.Runner{fb} }
+
+	_, err := p.agentStep(context.Background(), "COD-1515", "build", "prompt")
+	if err == nil {
+		t.Fatal("want a fault for a refused spawn")
+	}
+	if IsPaused(err) {
+		t.Fatalf("an invalid argv is not blameless: %v", err)
+	}
+	if primary.calls != 1 {
+		t.Fatalf("primary: want 1 attempt, got %d", primary.calls)
+	}
+	if fb.calls != 0 {
+		t.Fatalf("fallback ran %d time(s); the same prompt fails identically there", fb.calls)
+	}
+	if !errors.Is(err, syscall.EINVAL) {
+		t.Errorf("err must keep the EINVAL chain, got %v", err)
+	}
+	for _, want := range []string{"build", "argument vector", "NUL", "composed prompt"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("fault message is missing %q: %v", want, err)
+		}
+	}
+}
+
+// TestRecoverStepNonEINVALKeepsRetrying pins the blast radius of the fast-fail: an
+// ordinary crash from the same backend is still transient and still walks the
+// retry loop and the fallback chain.
+func TestRecoverStepNonEINVALKeepsRetrying(t *testing.T) {
+	crash := fmt.Errorf("claude interactive run (build): %w",
+		&os.PathError{Op: "fork/exec", Path: "/usr/local/bin/claude", Err: syscall.ENOENT})
+	primary := &countingRunner{results: []error{crash}, name: "claude"}
+	p := newTestPipeline(t, primary, &fakeTracker{})
+	p.AgentRetries = 2
+	p.AgentBackoff = 0
+
+	if _, err := p.agentStep(context.Background(), "COD-1515", "build", "prompt"); err == nil {
+		t.Fatal("want an error after exhausting the retries")
+	}
+	if primary.calls != 3 {
+		t.Fatalf("want 3 attempts (2 retries), got %d", primary.calls)
 	}
 }
 

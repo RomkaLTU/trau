@@ -20,6 +20,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/sanitize"
 )
 
 // grillTurnTimeout bounds one grilling turn end to end, including the time the
@@ -211,6 +212,10 @@ func (r *grillRunner) buildTurn(ctx context.Context, sess hubstore.GrillSession,
 		prompt = r.answerPrompt(ctx, repo, sess)
 	} else {
 		prompt = r.firstPrompt(ctx, repo, sess)
+	}
+	prompt, scrubbed := sanitize.PromptText(prompt)
+	if scrubbed {
+		logger.Printf("grill %d: composed prompt contained a raw NUL byte — replaced with its visible escape", sess.ID)
 	}
 	return adapter.turnSpec(sess.ID, repo, cfg, sess.Mode, model, resume, prompt)
 }

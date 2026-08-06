@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/sanitize"
 )
 
 // kimiComposerSession is a live kimi terminal: its first read delivers the startup
@@ -199,6 +200,49 @@ func TestKimiInteractivePastesPromptAfterComposerReady(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the prompt was never typed after the composer announced itself")
+	}
+}
+
+// TestKimiInteractivePastedPromptCarriesNoRawNUL extends the spawn guard to the one
+// backend that delivers its prompt as keystrokes rather than argv: the PTY spawn
+// cannot fail on the byte here, but a raw NUL typed into a TTY is still hazardous.
+func TestKimiInteractivePastedPromptCarriesNoRawNUL(t *testing.T) {
+	sess := newQuietKimiSession(kimiComposerReady)
+	defer sess.stop()
+
+	pasted := make(chan string, 1)
+	sess.onPaste = func(typed string) {
+		select {
+		case pasted <- typed:
+		default:
+		}
+	}
+
+	c := &KimiInteractive{
+		Bin:          "kimi",
+		Preamble:     "preamble",
+		ResultDir:    t.TempDir(),
+		ComposerWait: time.Hour,
+		settle:       time.Millisecond,
+		usageWait:    time.Millisecond,
+		start: func(context.Context, string, string, []string, int, int) (terminalSession, error) {
+			return sess, nil
+		},
+	}
+
+	go func() { _, _ = c.Run(context.Background(), "the fixture holds a \x00 byte", "build") }()
+	sess.announce()
+
+	select {
+	case typed := <-pasted:
+		if strings.ContainsRune(typed, 0) {
+			t.Errorf("a raw NUL was typed into the terminal: %q", typed)
+		}
+		if !strings.Contains(typed, sanitize.NULEscape) {
+			t.Errorf("pasted prompt lost the evidence of the scrubbed NUL: %q", typed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the prompt was never typed")
 	}
 }
 

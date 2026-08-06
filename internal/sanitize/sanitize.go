@@ -3,10 +3,15 @@
 // Tool output (hook runners, linters, progress bars) carries ANSI color codes, \r
 // redraws, and embedded newlines that escape a feed row and repaint over other
 // panels, or split one state value across several lines that then reparse as bogus
-// keys. It is a leaf package (stdlib only) so any layer can depend on it.
+// keys. It also guards the one sink that rejects its input outright: a child
+// process's argument vector, which fork/exec refuses whole when any element holds
+// a NUL. It is a leaf package (stdlib only) so any layer can depend on it.
 package sanitize
 
-import "regexp"
+import (
+	"regexp"
+	"strings"
+)
 
 var reANSI = regexp.MustCompile("\x1b\\[[0-9;:?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)?")
 
@@ -41,6 +46,24 @@ func FeedLine(s string) string { return truncate(oneLine(s), feedMax) }
 // control chars, bounded so a runaway blob can't bloat the checkpoint file. Full
 // raw output belongs in a run log, not the resumable state.
 func StateValue(s string) string { return truncate(oneLine(s), stateMax) }
+
+// NULEscape is what PromptText leaves where a NUL was: the escape sequence an
+// agent would have written in source instead of the raw byte.
+const NULEscape = `\u0000`
+
+// PromptText makes s safe to hand a child process as a single argv element and
+// reports whether anything had to change. Only NUL (0x00) is touched: it is the
+// one byte os.StartProcess rejects. The rest of the C0 range is legal in argv and
+// is often the evidence the agent needs (ANSI-colored gate output, \n and \t
+// structure), so reControlRun's whole-range strip is deliberately not reused here.
+// A scrubbed byte leaves its visible escape behind, so the agent still sees that
+// the source material held a NUL.
+func PromptText(s string) (string, bool) {
+	if !strings.Contains(s, "\x00") {
+		return s, false
+	}
+	return strings.ReplaceAll(s, "\x00", NULEscape), true
+}
 
 func truncate(s string, max int) string {
 	r := []rune(s)

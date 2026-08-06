@@ -61,6 +61,49 @@ func TestFeedLineTruncatesKeepingHeadAndTail(t *testing.T) {
 	}
 }
 
+// TestPromptTextScrubsOnlyNUL pins the argv contract: the one byte fork/exec
+// rejects is replaced by its visible escape, and every other control byte a
+// prompt legitimately carries — newlines, tabs, ANSI-colored gate output — is
+// left exactly as the source produced it.
+func TestPromptTextScrubsOnlyNUL(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		changed bool
+	}{
+		{"clean text passes through", "build COD-1", "build COD-1", false},
+		{"one NUL becomes the escape", "a\x00b", "a" + NULEscape + "b", true},
+		{"every NUL is replaced", "\x00a\x00\x00", NULEscape + "a" + NULEscape + NULEscape, true},
+		{"newlines and tabs survive", "line\n\tindented\r\n", "line\n\tindented\r\n", false},
+		{"ANSI evidence survives", "\x1b[31mFAIL\x1b[0m", "\x1b[31mFAIL\x1b[0m", false},
+		{"a NUL beside kept control bytes", "gate:\n\x1b[31mFAIL\x1b[0m\t\x00end", "gate:\n\x1b[31mFAIL\x1b[0m\t" + NULEscape + "end", true},
+		{"empty", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := PromptText(tc.in)
+			if got != tc.want {
+				t.Errorf("PromptText(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if changed != tc.changed {
+				t.Errorf("PromptText(%q) changed = %v, want %v", tc.in, changed, tc.changed)
+			}
+			if strings.ContainsRune(got, 0) {
+				t.Errorf("PromptText(%q) left a NUL in the result: %q", tc.in, got)
+			}
+		})
+	}
+}
+
+// TestPromptTextEscapeIsWritable guards the replacement text itself: it must be
+// the escape an agent would have typed in source, not another raw byte.
+func TestPromptTextEscapeIsWritable(t *testing.T) {
+	if strings.ContainsRune(NULEscape, 0) {
+		t.Fatalf("NULEscape is not an escape, it holds a raw byte: %q", NULEscape)
+	}
+}
+
 func TestStateValueIsSingleLine(t *testing.T) {
 	// The dangerous case: output that itself contains a KEY=value line must not
 	// survive as a second line that reparses as a state key.
