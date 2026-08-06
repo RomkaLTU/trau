@@ -556,6 +556,36 @@ func TestBacklogPageOrdersTodoAndBacklogByCreation(t *testing.T) {
 	}
 }
 
+// An Azure DevOps board reads in the order the team dragged it into: inside each
+// state-group section, Stack Rank ascending, an unranked row last, and the newest
+// work-item number first among them. The newest-family-first order the other
+// trackers sort by is dropped, because it would fight the team's own ranking.
+func TestBacklogPageOrdersAzureBoardByStackRank(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/azure"
+	rank := func(v float64) *float64 { return &v }
+	if _, _, err := s.Upsert(repo, "azure", []Issue{
+		{Identifier: "6690", StatusGroup: "started", StackRank: rank(300), CreatedAt: "2026-07-01T00:00:00Z"},
+		{Identifier: "6691", StatusGroup: "unstarted", StackRank: rank(200), CreatedAt: "2026-07-05T00:00:00Z"},
+		{Identifier: "6692", StatusGroup: "unstarted", StackRank: rank(100), CreatedAt: "2026-07-02T00:00:00Z"},
+		{Identifier: "6693", StatusGroup: "unstarted", CreatedAt: "2026-07-06T00:00:00Z"},
+		{Identifier: "6694", StatusGroup: "unstarted", CreatedAt: "2026-07-03T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+
+	got, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{"6690", "6692", "6691", "6694", "6693"}
+	if !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("order = %v, want %v\n"+
+			"expected: sections first, then Stack Rank ascending, then the unranked rows "+
+			"last in descending work-item number", idsOf(got), want)
+	}
+}
+
 // What the Azure create's Feature picker reads: the repo's own live work items on
 // one backlog level, so it can never offer a Feature from a board this repo does
 // not mirror.

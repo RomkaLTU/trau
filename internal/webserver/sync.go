@@ -585,6 +585,7 @@ func toStoredIssues(pulled []tracker.SyncedIssue) []hubstore.Issue {
 			AssigneeName: iss.AssigneeName,
 			Type:         iss.Type,
 			Level:        iss.Level,
+			StackRank:    iss.StackRank,
 		}
 		for _, c := range iss.Comments {
 			stored.Comments = append(stored.Comments, hubstore.Comment{

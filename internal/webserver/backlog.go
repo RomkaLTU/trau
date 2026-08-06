@@ -484,7 +484,8 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 // Reader needs. STATUS_TODO travels with them because on Azure DevOps it decides
 // more than which state a write targets: the same pin names the column the board
 // groups as unstarted, so a hub read that dropped it would group the board
-// differently from the loop that writes to it.
+// differently from the loop that writes to it. AZURE_BOARD_STATES travels for the
+// same reason — it is the whole grouping when a repo sets one (ADR 0036).
 func readerConfig(cfg config.Config, provider string) tracker.Config {
 	tc := tracker.Config{
 		Team:            cfg.TrackerKey(),
@@ -505,6 +506,7 @@ func readerConfig(cfg config.Config, provider string) tracker.Config {
 		tc.BaseURL = cfg.AzureOrgURL
 		tc.AreaPath = cfg.AzureAreaPath
 		tc.BoardTeams = cfg.AzureTeams
+		tc.BoardStates = cfg.AzureBoardStates
 	}
 	return tc
 }

@@ -41,7 +41,7 @@ func TestUpdateTagsSkipsWriteWhenNothingChanges(t *testing.T) {
 		if r.Method == http.MethodPatch {
 			patches++
 		}
-		_, _ = w.Write([]byte(`{"id":1,"fields":{"System.Tags":"ready-for-agent"}}`))
+		_, _ = w.Write([]byte(`{"id":1,"fields":{"System.Tags":"ready-for-agent; trau"}}`))
 	}))
 	defer srv.Close()
 
@@ -79,8 +79,8 @@ func TestUpdateTagsWritesMergedField(t *testing.T) {
 	if gotOps[0].Path != "/fields/System.Tags" {
 		t.Errorf("path = %q, want /fields/System.Tags", gotOps[0].Path)
 	}
-	if gotOps[0].Value != "backend; needs-human" {
-		t.Errorf("value = %v, want %q", gotOps[0].Value, "backend; needs-human")
+	if gotOps[0].Value != "backend; needs-human; trau" {
+		t.Errorf("value = %v, want %q", gotOps[0].Value, "backend; needs-human; trau")
 	}
 }
 
@@ -90,10 +90,12 @@ func TestSetStateWritesStateAndCommentInOnePatch(t *testing.T) {
 	var gotOps []patchOp
 	var patches int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		patches++
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &gotOps)
-		_, _ = w.Write([]byte(`{"id":1}`))
+		if r.Method == http.MethodPatch {
+			patches++
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &gotOps)
+		}
+		_, _ = w.Write([]byte(`{"id":1,"fields":{"System.Tags":"trau"}}`))
 	}))
 	defer srv.Close()
 
@@ -121,9 +123,11 @@ func TestSetStateWritesStateAndCommentInOnePatch(t *testing.T) {
 func TestSetStateWithoutCommentWritesOnlyTheState(t *testing.T) {
 	var gotOps []patchOp
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &gotOps)
-		_, _ = w.Write([]byte(`{"id":1}`))
+		if r.Method == http.MethodPatch {
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &gotOps)
+		}
+		_, _ = w.Write([]byte(`{"id":1,"fields":{"System.Tags":"trau"}}`))
 	}))
 	defer srv.Close()
 
@@ -154,18 +158,18 @@ func TestCreateWorkItemPostsToDollarType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := New(srv.URL, "pat").CreateWorkItem(context.Background(), "Contoso", NewWorkItem{
-		Type:        "Bug",
-		Title:       "QA blocked",
-		Description: "It broke",
-		Tags:        []string{"HITL"},
-		Parent:      42,
+	created, err := New(srv.URL, "pat").CreateWorkItem(context.Background(), "Contoso", NewWorkItem{
+		Type:   "Bug",
+		Title:  "QA blocked",
+		Body:   SplitBody("It broke", false),
+		Tags:   []string{"HITL"},
+		Parent: 42,
 	})
 	if err != nil {
 		t.Fatalf("CreateWorkItem returned error: %v", err)
 	}
-	if id != 500 {
-		t.Errorf("id = %d, want 500", id)
+	if created.ID != 500 {
+		t.Errorf("id = %d, want 500", created.ID)
 	}
 	if gotPath != "/Contoso/_apis/wit/workitems/$Bug" {
 		t.Errorf("path = %q, want /Contoso/_apis/wit/workitems/$Bug", gotPath)
@@ -173,13 +177,120 @@ func TestCreateWorkItemPostsToDollarType(t *testing.T) {
 	if gotContentType != "application/json-patch+json" {
 		t.Errorf("Content-Type = %q, want application/json-patch+json", gotContentType)
 	}
-	wantPaths := []string{"/fields/System.Title", "/fields/System.Description", "/fields/System.Tags", "/relations/-"}
+	wantPaths := []string{
+		"/fields/System.Title",
+		"/fields/System.Description",
+		"/multilineFieldsFormat/System.Description",
+		"/fields/System.Tags",
+		"/relations/-",
+	}
 	got := make([]string, len(gotOps))
 	for i, op := range gotOps {
 		got[i] = op.Path
 	}
 	if !slices.Equal(got, wantPaths) {
 		t.Errorf("op paths = %v, want %v", got, wantPaths)
+	}
+}
+
+// Description and acceptance criteria land in Azure DevOps as real markdown: each
+// field carries the format op the API records a multiline field's format through,
+// and the single body trau holds splits on the same heading the reader emits.
+func TestSetBodyWritesMarkdownAndSplitsAcceptanceCriteria(t *testing.T) {
+	var gotOps []patchOp
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &gotOps)
+		}
+		_, _ = w.Write([]byte(`{"id":1,"fields":{"System.Tags":"trau"}}`))
+	}))
+	defer srv.Close()
+
+	const markdown = "Mirror the **work items**.\n\n## Acceptance criteria\n\n- one pull per tick\n"
+	body := SplitBody(markdown, true)
+	if err := New(srv.URL, "pat").SetBody(context.Background(), "Contoso", 1, body); err != nil {
+		t.Fatalf("SetBody returned error: %v", err)
+	}
+	want := []patchOp{
+		{Op: "add", Path: "/fields/System.Description", Value: "Mirror the **work items**."},
+		{Op: "add", Path: "/multilineFieldsFormat/System.Description", Value: "Markdown"},
+		{Op: "add", Path: "/fields/Microsoft.VSTS.Common.AcceptanceCriteria", Value: "- one pull per tick"},
+		{Op: "add", Path: "/multilineFieldsFormat/Microsoft.VSTS.Common.AcceptanceCriteria", Value: "Markdown"},
+	}
+	if !slices.Equal(gotOps, want) {
+		t.Errorf("ops = %+v, want %+v", gotOps, want)
+	}
+	if task := SplitBody(markdown, false); task.Description != strings.TrimSpace(markdown) || task.Acceptance != "" {
+		t.Errorf("Task body = %+v, want the whole body including the heading in the description", task)
+	}
+}
+
+// A read-edit-write cycle must give the two fields back unchanged: the reader
+// leaves a field trau wrote as the markdown it is instead of converting it as HTML
+// — which would swallow the angle brackets — and the split cuts under the heading
+// the reader appended the criteria under, not under one the description carries
+// itself.
+func TestBodyRoundTripsTheMarkdownFieldsTheReaderReturns(t *testing.T) {
+	const stored = `{
+		"id": 7,
+		"fields": {
+			"System.Description": "Use List<String> for the ids.\n\n## Acceptance criteria\n\n- the description's own list",
+			"Microsoft.VSTS.Common.AcceptanceCriteria": "- one pull per tick\n- see <https://example.test/spec>"
+		},
+		"multilineFieldsFormat": {
+			"System.Description": "Markdown",
+			"Microsoft.VSTS.Common.AcceptanceCriteria": "Markdown"
+		}
+	}`
+	var item workItemResponse
+	if err := json.Unmarshal([]byte(stored), &item); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	got := SplitBody(item.describe(), true)
+	if got.Description != item.Fields.Description {
+		t.Errorf("description = %q, want %q", got.Description, item.Fields.Description)
+	}
+	if got.Acceptance != item.Fields.AcceptanceCriteria {
+		t.Errorf("acceptance = %q, want %q", got.Acceptance, item.Fields.AcceptanceCriteria)
+	}
+}
+
+// A create lands at the top of its board column: the column is read in rank order
+// and the new item takes a whole gap above the lowest rank in it.
+func TestRankTopRanksAboveTheColumnsLowestRank(t *testing.T) {
+	var gotWIQL string
+	var gotOps []patchOp
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/wiql"):
+			body, _ := io.ReadAll(r.Body)
+			var req struct{ Query string }
+			_ = json.Unmarshal(body, &req)
+			gotWIQL = req.Query
+			_, _ = w.Write([]byte(`{"workItems":[{"id":500},{"id":11},{"id":12}]}`))
+		case r.URL.Query().Get("ids") != "":
+			_, _ = w.Write([]byte(`{"value":[
+				{"id":11,"fields":{"System.Title":"Unranked"}},
+				{"id":12,"fields":{"System.Title":"Top","Microsoft.VSTS.Common.StackRank":5000}}]}`))
+		default:
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &gotOps)
+			_, _ = w.Write([]byte(`{"id":500}`))
+		}
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "pat").RankTop(context.Background(), "Contoso", "Ready to Develop", 500); err != nil {
+		t.Fatalf("RankTop returned error: %v", err)
+	}
+	if !strings.Contains(gotWIQL, "[System.BoardColumn] = 'Ready to Develop'") {
+		t.Errorf("WIQL = %q, want it scoped to the board column", gotWIQL)
+	}
+	want := []patchOp{{Op: "add", Path: "/fields/Microsoft.VSTS.Common.StackRank", Value: float64(4000)}}
+	if !slices.Equal(gotOps, want) {
+		t.Errorf("ops = %+v, want %+v", gotOps, want)
 	}
 }
 
@@ -268,9 +379,11 @@ func TestUploadAttachmentPostsRawBytes(t *testing.T) {
 func TestAddCommentWithImagesEmbedsImgTags(t *testing.T) {
 	var gotOps []patchOp
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &gotOps)
-		_, _ = w.Write([]byte(`{"id":1}`))
+		if r.Method == http.MethodPatch {
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &gotOps)
+		}
+		_, _ = w.Write([]byte(`{"id":1,"fields":{"System.Tags":"trau"}}`))
 	}))
 	defer srv.Close()
 

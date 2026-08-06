@@ -54,23 +54,51 @@ func wiqlTimestamp(since string) (string, bool) {
 	return t.UTC().Format("2006-01-02T15:04:05Z"), true
 }
 
-// ConnectionData resolves who the personal access token belongs to, as a stable
-// id and display name. It is organization-scoped, so it answers for a repo whose
-// team project is still unresolved.
-func (c *Client) ConnectionData(ctx context.Context) (id, name string, err error) {
+// Owner is who a personal access token belongs to: the stable identity id, the
+// display name a board shows, and the account name — an email under Entra ID —
+// Azure DevOps resolves an identity write against.
+type Owner struct {
+	ID      string
+	Name    string
+	Account string
+}
+
+// Assignee renders the owner as the value a System.AssignedTo write carries. The
+// account name is what Azure DevOps resolves most reliably, so it wins; the display
+// name stands in for a connection that reports none.
+func (o Owner) Assignee() string {
+	if account := strings.TrimSpace(o.Account); account != "" {
+		return account
+	}
+	return strings.TrimSpace(o.Name)
+}
+
+// Owner resolves who the personal access token belongs to, read from
+// /_apis/connectionData. It is organization-scoped, so it answers for a repo whose
+// team project is still unresolved, and it needs neither the Graph host nor a scope
+// beyond the ones the tracker already holds — which is what makes assigning a create
+// to the token's own owner possible where identity search is not (ADR 0031 §9,
+// amended by ADR 0036).
+func (c *Client) Owner(ctx context.Context) (Owner, error) {
 	if !c.enabled() {
-		return "", "", ErrNotEnabled
+		return Owner{}, ErrNotEnabled
 	}
 	var dst struct {
 		AuthenticatedUser struct {
 			ID                  string `json:"id"`
 			ProviderDisplayName string `json:"providerDisplayName"`
+			Properties          struct {
+				Account struct {
+					Value string `json:"$value"`
+				} `json:"Account"`
+			} `json:"properties"`
 		} `json:"authenticatedUser"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/_apis/connectionData", nil, &dst); err != nil {
-		return "", "", err
+		return Owner{}, err
 	}
-	return dst.AuthenticatedUser.ID, dst.AuthenticatedUser.ProviderDisplayName, nil
+	user := dst.AuthenticatedUser
+	return Owner{ID: user.ID, Name: user.ProviderDisplayName, Account: user.Properties.Account.Value}, nil
 }
 
 // WorkItemURL is the board link to a work item. A batch read answers with the

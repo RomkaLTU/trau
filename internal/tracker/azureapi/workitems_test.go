@@ -74,19 +74,22 @@ func TestToWorkItemDefaultsMissingPriorityLast(t *testing.T) {
 	}
 }
 
-func TestRankOrdersByPriorityThenID(t *testing.T) {
+// The loop picks in the order the board shows: Stack Rank ascending, an unranked
+// item last, and the newest work-item number first among equals.
+func TestRankOrdersByStackRankThenNewestID(t *testing.T) {
+	stack := func(v float64) *float64 { return &v }
 	items := []WorkItem{
-		{ID: 30, Priority: 2},
-		{ID: 10, Priority: priorityUnset},
-		{ID: 20, Priority: 1},
-		{ID: 5, Priority: 2},
+		{ID: 10},
+		{ID: 5, StackRank: stack(200)},
+		{ID: 30, StackRank: stack(100)},
+		{ID: 40, StackRank: stack(100)},
 	}
 	rank(items)
 	got := make([]int, len(items))
 	for i, item := range items {
 		got[i] = item.ID
 	}
-	if want := []int{20, 5, 30, 10}; !slices.Equal(got, want) {
+	if want := []int{40, 30, 5, 10}; !slices.Equal(got, want) {
 		t.Errorf("ranked ids = %v, want %v", got, want)
 	}
 }
@@ -126,7 +129,9 @@ func TestDescribePrefersDescriptionThenReproSteps(t *testing.T) {
 		{"all empty", "", "", "", ""},
 	}
 	for _, tc := range cases {
-		if got := describe(tc.description, tc.repro, tc.acceptance); got != tc.want {
+		var item workItemResponse
+		item.Fields.Description, item.Fields.ReproSteps, item.Fields.AcceptanceCriteria = tc.description, tc.repro, tc.acceptance
+		if got := item.describe(); got != tc.want {
 			t.Errorf("%s: describe = %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -147,9 +152,9 @@ func TestEligibleQueriesTagsRanksAndResolvesBlockers(t *testing.T) {
 			_, _ = w.Write([]byte(`{"workItems":[{"id":11},{"id":12}]}`))
 		case r.URL.Query().Get("ids") == "11,12":
 			_, _ = w.Write([]byte(`{"value":[
-				{"id":11,"fields":{"System.Title":"Blocked","System.State":"New","Microsoft.VSTS.Common.Priority":1},
+				{"id":11,"fields":{"System.Title":"Blocked","System.State":"New","Microsoft.VSTS.Common.StackRank":100},
 				 "relations":[{"rel":"System.LinkTypes.Dependency-Reverse","url":"` + relBase + `99"}]},
-				{"id":12,"fields":{"System.Title":"Clear","System.State":"New","Microsoft.VSTS.Common.Priority":3}}
+				{"id":12,"fields":{"System.Title":"Clear","System.State":"New","Microsoft.VSTS.Common.StackRank":200}}
 			]}`))
 		case r.URL.Query().Get("ids") == "99":
 			_, _ = w.Write([]byte(`{"value":[{"id":99,"fields":{"System.Title":"Blocker","System.State":"Active"}}]}`))
@@ -173,7 +178,7 @@ func TestEligibleQueriesTagsRanksAndResolvesBlockers(t *testing.T) {
 		t.Fatalf("got %d candidates, want 2", len(candidates))
 	}
 	if candidates[0].ID != 11 || candidates[1].ID != 12 {
-		t.Errorf("candidate order = %d,%d, want 11,12 (priority 1 before 3)", candidates[0].ID, candidates[1].ID)
+		t.Errorf("candidate order = %d,%d, want 11,12 (Stack Rank 100 before 200)", candidates[0].ID, candidates[1].ID)
 	}
 	if candidates[0].BlockersResolved {
 		t.Error("candidate 11 has an Active blocker, want BlockersResolved false")

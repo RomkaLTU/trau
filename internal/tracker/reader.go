@@ -197,13 +197,14 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 			return nil, ErrReaderUnavailable
 		}
 		return &azureReader{
-			client:     azureapi.New(cfg.BaseURL, cfg.APIKey),
-			org:        cfg.BaseURL,
-			project:    cfg.Team,
-			areaPath:   cfg.AreaPath,
-			teams:      cfg.BoardTeams,
-			readyLabel: cfg.ReadyLabel,
-			statusTodo: cfg.StatusOverrides[StageTodo],
+			client:      azureapi.New(cfg.BaseURL, cfg.APIKey),
+			org:         cfg.BaseURL,
+			project:     cfg.Team,
+			areaPath:    cfg.AreaPath,
+			teams:       cfg.BoardTeams,
+			readyLabel:  cfg.ReadyLabel,
+			statusTodo:  cfg.StatusOverrides[StageTodo],
+			boardStates: parseAzureBoardStates(cfg.BoardStates),
 		}, nil
 	case "github":
 		return nil, ErrReaderUnavailable
@@ -338,6 +339,9 @@ type azureReader struct {
 	teams      []string
 	readyLabel string
 	statusTodo string // STATUS_TODO, which also decides which Proposed state groups as unstarted
+	// boardStates maps the team's Kanban columns onto trau's status groups, empty
+	// when the repo sets no AZURE_BOARD_STATES and grouping stays category-derived.
+	boardStates azureBoardStates
 }
 
 func (r *azureReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
@@ -358,12 +362,22 @@ func (r *azureReader) backlogItem(ctx context.Context, item *azureapi.WorkItem) 
 		ID:          azureIdentifier(item.ID),
 		Title:       item.Title,
 		Status:      item.State,
-		Group:       mapAzureGroup(r.states(ctx, item), r.statusTodo, item.State, item.Reason),
+		Group:       r.group(ctx, item),
 		Labels:      item.Tags,
 		Parent:      azureParentIdentifier(item.Parent),
 		HasChildren: item.HasChildren(),
 		Ready:       containsLabel(item.Tags, r.readyLabel),
 	}
+}
+
+// group resolves the status group a work item files under: the repo's board-column
+// mapping when it answers, and the categories the work item's own type declares
+// when it does not (ADR 0036).
+func (r *azureReader) group(ctx context.Context, item *azureapi.WorkItem) StatusGroup {
+	if group, ok := r.boardStates.group(item.BoardColumn, item.State, item.Reason); ok {
+		return group
+	}
+	return mapAzureGroup(r.states(ctx, item), r.statusTodo, item.State, item.Reason)
 }
 
 // states reads the states the work item's own type declares, so grouping follows

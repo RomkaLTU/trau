@@ -23,6 +23,16 @@ const (
 	relAttachedFile = "AttachedFile"
 )
 
+// The rich-text fields the tracker reads and writes. Each name is both the
+// /fields path a write patches and the key the work item reports that field's
+// storage format under, which is what lets a read tell a markdown field from an
+// HTML one.
+const (
+	fieldDescription = "System.Description"
+	fieldReproSteps  = "Microsoft.VSTS.TCM.ReproSteps"
+	fieldAcceptance  = "Microsoft.VSTS.Common.AcceptanceCriteria"
+)
+
 // priorityUnset ranks a work item whose type carries no priority field behind
 // every explicit 1–4.
 const priorityUnset = 5
@@ -37,6 +47,15 @@ type WorkItem struct {
 	// State is the raw System.State value, whose vocabulary depends on the
 	// project's process; Category buckets it process-agnostically.
 	State string
+	// BoardColumn is System.BoardColumn, the Kanban column the team's board shows
+	// the work item in. The columns are a longer list than the states behind them,
+	// which is why a board-column mapping groups more truthfully than a state one
+	// (ADR 0036). It is empty for a work item the board places nowhere — one outside
+	// the team's area path, or a Task living on the sprint taskboard.
+	BoardColumn string
+	// StackRank is Microsoft.VSTS.Common.StackRank, the order a team drags its board
+	// into, nil for a work item carrying none.
+	StackRank *float64
 	// Reason is System.Reason, the qualifier behind a state change ("Cut",
 	// "Duplicate") that separates a canceled work item from a completed one.
 	Reason  string
@@ -214,16 +233,23 @@ func allResolved(blockedBy []int, states map[int]bool) bool {
 	return true
 }
 
-// rank orders candidates the way the loop wants to start them: highest priority
-// first, lowest id as the tie-breaker. Azure DevOps cannot order on a field a
-// work-item type may not define, so the ranking happens here rather than in the
-// ORDER BY clause.
+// rank orders candidates the way the board shows them: the team's own Stack Rank
+// ascending, an unranked item last, then the newest work-item number first — so the
+// loop picks the ticket sitting at the top of the column the team reads from (ADR
+// 0036). Azure DevOps cannot order on a field a work-item type may not define, so
+// the ranking happens here rather than in the ORDER BY clause.
 func rank(items []WorkItem) {
 	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Priority != items[j].Priority {
-			return items[i].Priority < items[j].Priority
+		a, b := items[i].StackRank, items[j].StackRank
+		switch {
+		case a == nil || b == nil:
+			if (a == nil) != (b == nil) {
+				return a != nil
+			}
+		case *a != *b:
+			return *a < *b
 		}
-		return items[i].ID < items[j].ID
+		return items[i].ID > items[j].ID
 	})
 }
 
@@ -305,26 +331,32 @@ func (c *Client) States(ctx context.Context, project, itemType string) ([]State,
 type workItemResponse struct {
 	ID     int `json:"id"`
 	Fields struct {
-		Title              string `json:"System.Title"`
-		State              string `json:"System.State"`
-		Reason             string `json:"System.Reason"`
-		Type               string `json:"System.WorkItemType"`
-		Project            string `json:"System.TeamProject"`
-		Tags               string `json:"System.Tags"`
-		AreaPath           string `json:"System.AreaPath"`
-		Description        string `json:"System.Description"`
-		ReproSteps         string `json:"Microsoft.VSTS.TCM.ReproSteps"`
-		AcceptanceCriteria string `json:"Microsoft.VSTS.Common.AcceptanceCriteria"`
-		Priority           *int   `json:"Microsoft.VSTS.Common.Priority"`
-		CreatedDate        string `json:"System.CreatedDate"`
-		ChangedDate        string `json:"System.ChangedDate"`
-		CommentCount       int    `json:"System.CommentCount"`
+		Title              string   `json:"System.Title"`
+		State              string   `json:"System.State"`
+		BoardColumn        string   `json:"System.BoardColumn"`
+		Reason             string   `json:"System.Reason"`
+		Type               string   `json:"System.WorkItemType"`
+		Project            string   `json:"System.TeamProject"`
+		Tags               string   `json:"System.Tags"`
+		AreaPath           string   `json:"System.AreaPath"`
+		Description        string   `json:"System.Description"`
+		ReproSteps         string   `json:"Microsoft.VSTS.TCM.ReproSteps"`
+		AcceptanceCriteria string   `json:"Microsoft.VSTS.Common.AcceptanceCriteria"`
+		Priority           *int     `json:"Microsoft.VSTS.Common.Priority"`
+		StackRank          *float64 `json:"Microsoft.VSTS.Common.StackRank"`
+		CreatedDate        string   `json:"System.CreatedDate"`
+		ChangedDate        string   `json:"System.ChangedDate"`
+		CommentCount       int      `json:"System.CommentCount"`
 		AssignedTo         struct {
 			ID          string `json:"id"`
 			DisplayName string `json:"displayName"`
 		} `json:"System.AssignedTo"`
 	} `json:"fields"`
-	Relations []struct {
+	// MultilineFieldsFormat reports how each rich-text field is stored, keyed by
+	// field name — the same map a write's format op patches. A field trau has
+	// written reads back as "Markdown"; one absent from the map is still HTML.
+	MultilineFieldsFormat map[string]string `json:"multilineFieldsFormat"`
+	Relations             []struct {
 		Rel string `json:"rel"`
 		URL string `json:"url"`
 	} `json:"relations"`
@@ -337,8 +369,10 @@ func (r *workItemResponse) toWorkItem() WorkItem {
 	item := WorkItem{
 		ID:             r.ID,
 		Title:          r.Fields.Title,
-		Description:    describe(r.Fields.Description, r.Fields.ReproSteps, r.Fields.AcceptanceCriteria),
+		Description:    r.describe(),
 		State:          r.Fields.State,
+		BoardColumn:    r.Fields.BoardColumn,
+		StackRank:      r.Fields.StackRank,
 		Reason:         r.Fields.Reason,
 		Type:           r.Fields.Type,
 		Project:        r.Fields.Project,
@@ -371,23 +405,41 @@ func (r *workItemResponse) toWorkItem() WorkItem {
 	return item
 }
 
+// acceptanceHeading separates a work item's description from its acceptance
+// criteria in the single markdown body trau carries. The reader emits it and a
+// write splits the body back apart on it, which is what makes a read-edit-write
+// cycle round-trip the two fields (ADR 0036).
+const acceptanceHeading = "## Acceptance criteria"
+
 // describe assembles the markdown body the build prompt receives. Most
 // work-item types keep their body in System.Description; a Bug keeps it in
 // ReproSteps instead, so whichever is populated wins, and the acceptance
 // criteria are appended as their own section.
-func describe(description, reproSteps, acceptance string) string {
-	body := htmlToMarkdown(description)
+func (r *workItemResponse) describe() string {
+	body := r.markdown(fieldDescription, r.Fields.Description)
 	if body == "" {
-		body = htmlToMarkdown(reproSteps)
+		body = r.markdown(fieldReproSteps, r.Fields.ReproSteps)
 	}
-	criteria := htmlToMarkdown(acceptance)
+	criteria := r.markdown(fieldAcceptance, r.Fields.AcceptanceCriteria)
 	if criteria == "" {
 		return body
 	}
 	if body == "" {
-		return "## Acceptance criteria\n\n" + criteria
+		return acceptanceHeading + "\n\n" + criteria
 	}
-	return body + "\n\n## Acceptance criteria\n\n" + criteria
+	return body + "\n\n" + acceptanceHeading + "\n\n" + criteria
+}
+
+// markdown renders one rich-text field as the markdown trau carries. A field trau
+// has written is markdown already — the format op SetBody stamps on it says so — and
+// converting that as HTML would swallow every angle-bracket run in it, which the
+// next write would then store (ADR 0036). Every other field is still the HTML
+// fragment ADR 0024 describes.
+func (r *workItemResponse) markdown(field, value string) string {
+	if !strings.EqualFold(r.MultilineFieldsFormat[field], markdownFormat) {
+		return htmlToMarkdown(value)
+	}
+	return strings.TrimSpace(strings.ReplaceAll(value, "\r\n", "\n"))
 }
 
 // relationID extracts the work-item id a relation URL ends in. Relations to
