@@ -502,6 +502,50 @@ func TestGrillStopMidRoundTakesSteeringText(t *testing.T) {
 	}
 }
 
+// A stall mid-round takes the bare resume too, and the round is what the turn picks
+// back up on: the answers already given survive it, and the prompt the runner composes
+// re-poses only what is still open.
+func TestGrillResumeMidRoundStallReposesRemainder(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	spawned := make(chan hubstore.GrillSession, 2)
+	srv.startGrill = func(_ context.Context, sess hubstore.GrillSession) { spawned <- sess }
+
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	<-spawned
+	poseGrillQuestion(t, stores, sid, grillRoundPayload([]grillRoundQuestion{
+		{Text: "Which page is in scope?", AllowFreeText: true},
+		{Text: "Which auth flow?", AllowFreeText: true},
+	}), hubstore.GrillWaiting)
+	round, _ := strconv.ParseInt(grillRoundMessage(t, ts, sess.ID).ID, 10, 64)
+	if err := stores.Grill().SaveRoundAnswers(round, []hubstore.GrillRoundAnswer{{Index: 0, Text: "login"}}); err != nil {
+		t.Fatalf("save round answers: %v", err)
+	}
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillStalled, "usage limit reached"); err != nil {
+		t.Fatalf("stall session: %v", err)
+	}
+
+	if v := postResume(t, ts, sess.ID, http.StatusOK); v.State != hubstore.GrillRunning {
+		t.Fatalf("view = %+v, want running", v)
+	}
+	select {
+	case <-spawned:
+	default:
+		t.Fatal("resuming a mid-round stall spawned no turn")
+	}
+	prompt, ok := srv.grillRoundResumePrompt(sid)
+	if !ok {
+		t.Fatal("no round resume prompt for a session resumed mid-round")
+	}
+	if !strings.Contains(prompt, "login") || !strings.Contains(prompt, "Still unanswered:") ||
+		!strings.Contains(prompt, "Which auth flow?") {
+		t.Fatalf("round resume prompt = %q, want the answer given and the remainder", prompt)
+	}
+	if got := answeredIndexes(grillRoundMessage(t, ts, sess.ID).RoundAnswers); !slices.Equal(got, []int{0}) {
+		t.Fatalf("answered questions after resume = %+v, want the one the user gave", got)
+	}
+}
+
 // A round answered a second time keeps the answer it has: the submission that races a
 // question already settled by auto-accept must not overwrite it.
 func TestGrillRoundAnswerKeepsTheAnswerAlreadyGiven(t *testing.T) {

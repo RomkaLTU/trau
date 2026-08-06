@@ -26,7 +26,6 @@ import {
   isGrillable,
   isOver,
   isSettled,
-  lastAnswer,
   mergeMessages,
   NO_ACTIVITY,
   NO_REPLY,
@@ -35,6 +34,7 @@ import {
   publishGrillSession,
   questionPayload,
   researchGrillSessionsQueryOptions,
+  resumeGrill,
   setGrillAutoAccept,
   startGrillSession,
   stopGrill,
@@ -1018,10 +1018,10 @@ describe('composer gating', () => {
     expect(canCompose('finished')).toBe(false)
   })
 
-  it('shuts the box on a stalled session — its Resume button carries the answer', () => {
+  it('keeps the box open on a stalled session, beside its Resume button', () => {
     expect(isAwaitingAnswer('stalled')).toBe(true)
-    expect(canCompose('stalled')).toBe(false)
-    expect(composerPlaceholder('stalled')).toBe('Session stalled — resume to keep answering…')
+    expect(canCompose('stalled')).toBe(true)
+    expect(composerPlaceholder('stalled')).toBe('Type your answer…')
   })
 
   it('takes typing mid-turn as steering rather than as an answer', () => {
@@ -1029,16 +1029,6 @@ describe('composer gating', () => {
     expect(composerPlaceholder('running')).toBe(
       'Steer the agent — it will see this at its next step…',
     )
-  })
-})
-
-describe('lastAnswer', () => {
-  it('is the most recent answer — the resume pre-fill', () => {
-    expect(lastAnswer([answer('1', 'first'), question('2'), answer('3', 'second')])).toBe('second')
-  })
-
-  it('is empty when the session stalled before any answer', () => {
-    expect(lastAnswer([question('1')])).toBe('')
   })
 })
 
@@ -1079,7 +1069,7 @@ describe('grillBanner', () => {
   it('still leads with the stall when no reason was stored', () => {
     const b = grillBanner(session({ state: 'stalled', parked_reason: '' }))
     expect(b?.headline).toBe('Session stalled')
-    expect(b?.hint).toMatch(/resume/i)
+    expect(b?.hint).toBe('Clear it, then resume — the interview picks up where it stopped.')
   })
 
   it('reports the applied outcome', () => {
@@ -1301,6 +1291,40 @@ describe('stopGrill', () => {
     )
 
     await expect(stopGrill('4')).rejects.toThrow('no turn is running')
+  })
+})
+
+describe('resumeGrill', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('restarts the stalled session and hands back the running view', async () => {
+    const running = session({ id: '4', state: 'running' })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => running } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await resumeGrill('4')).toEqual(running)
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/grill/4/resume')
+    expect(init.method).toBe('POST')
+    expect(init.body).toBeUndefined()
+  })
+
+  it('raises the hub refusal when the session is not stalled', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: async () => ({ error: 'session is not stalled' }),
+      } as Response),
+    )
+
+    await expect(resumeGrill('4')).rejects.toThrow('session is not stalled')
   })
 })
 

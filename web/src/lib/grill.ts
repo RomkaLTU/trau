@@ -290,10 +290,11 @@ export function isAwaitingAnswer(state: GrillState): boolean {
 
 // canCompose reports whether the composer takes typing in state. running takes it as
 // an interjection the agent reads at its next step, so a turn never has to be waited
-// out. stalled awaits an answer but resumes through its banner's pre-filled Resume
-// button, so the box stays shut until the session is moving again.
+// out. stalled takes it as the answer it was still owed: the hub accepts one on a
+// stalled session and resumes off it, so typing is a way out of the stall beside the
+// Resume button.
 export function canCompose(state: GrillState): boolean {
-  return state === 'running' || state === 'waiting' || state === 'parked'
+  return state === 'running' || state === 'waiting' || state === 'parked' || state === 'stalled'
 }
 
 // composerPlaceholder is the composer's prompt — what the message will do in a state
@@ -302,23 +303,13 @@ export function composerPlaceholder(state: GrillState): string {
   switch (state) {
     case 'running':
       return 'Steer the agent — it will see this at its next step…'
-    case 'stalled':
-      return 'Session stalled — resume to keep answering…'
     case 'waiting':
     case 'parked':
+    case 'stalled':
       return 'Type your answer…'
     default:
       return 'This session has ended.'
   }
-}
-
-// lastAnswer is the text of the user's most recent answer, the resume mechanic's
-// pre-fill: a stalled session retries the turn it died on without retyping it.
-export function lastAnswer(messages: GrillMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].kind === 'answer') return answerText(messages[i])
-  }
-  return ''
 }
 
 function base(repo: string): string {
@@ -706,6 +697,17 @@ export async function stopGrill(sid: string): Promise<GrillSession> {
     method: 'POST',
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'stop failed'))
+  return res.json()
+}
+
+// resumeGrill restarts the turn a stalled session died on. The hub composes that
+// turn's prompt from the session itself, so nothing is sent with the request and
+// nothing new lands in the transcript.
+export async function resumeGrill(sid: string): Promise<GrillSession> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/resume`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'resume failed'))
   return res.json()
 }
 
@@ -1246,7 +1248,7 @@ export function grillBanner(session: GrillSession): GrillBanner | null {
       return {
         tone: 'stalled',
         headline: 'Session stalled',
-        hint: reason || 'Clear it, then resume — your last answer is re-sent as-is.',
+        hint: reason || 'Clear it, then resume — the interview picks up where it stopped.',
         showResume: true,
       }
     case 'finished':
