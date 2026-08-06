@@ -322,6 +322,38 @@ func TestAttachFilesAddsAttachedFileRelations(t *testing.T) {
 	}
 }
 
+// The dependency edge is written onto the *blocked* work item as a Predecessor
+// relation naming the blocker — the same end toWorkItem reads back as BlockedBy.
+// Patching the blocker instead would invert every dependency (COD-1513).
+func TestLinkPredecessorPatchesTheBlockedItemWithTheBlocker(t *testing.T) {
+	var gotOps []patchOp
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotOps)
+		_, _ = w.Write([]byte(`{"id":2}`))
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "pat").LinkPredecessor(context.Background(), "Contoso", 2, 1); err != nil {
+		t.Fatalf("LinkPredecessor returned error: %v", err)
+	}
+	if gotPath != "/Contoso/_apis/wit/workitems/2" {
+		t.Errorf("path = %q, want the blocked work item 2", gotPath)
+	}
+	if len(gotOps) != 1 || gotOps[0].Path != "/relations/-" {
+		t.Fatalf("ops = %+v, want one relation add", gotOps)
+	}
+	rel, _ := gotOps[0].Value.(map[string]any)
+	if rel["rel"] != relPredecessor {
+		t.Errorf("rel = %v, want %s", rel["rel"], relPredecessor)
+	}
+	if !strings.HasSuffix(rel["url"].(string), "/workItems/1") {
+		t.Errorf("relation url = %v, want it pointing at the blocker 1", rel["url"])
+	}
+}
+
 // No screenshot, no relation write: the note is a comment on its own.
 func TestAttachFilesWithoutFilesMakesNoRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

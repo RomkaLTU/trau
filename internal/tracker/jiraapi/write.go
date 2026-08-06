@@ -217,10 +217,12 @@ func (c *Client) postIssue(ctx context.Context, fields createFields) (string, er
 	return resp.Key, nil
 }
 
-// LinkBlocks records a "Blocks" link where blocker blocks blocked. The link runs
-// outward ("blocks") from the blocker to the sibling it holds up, so the blocker is
-// posted as the outward issue and the blocked one as the inward issue. Success is
-// a 201.
+// LinkBlocks records a "Blocks" link where blocker blocks blocked. Jira's two
+// slots read the opposite way to the link-type descriptions that name them: a link
+// posted as inwardIssue A / outwardIssue B renders as "A blocks B" on A and "is
+// blocked by A" on B. So the blocker goes in the inward slot and the sibling it
+// holds up in the outward one — the direction blockersFromLinks reads back, which
+// takes the inwardIssue end as the blocker. Success is a 201.
 func (c *Client) LinkBlocks(ctx context.Context, blocker, blocked string) error {
 	if !c.enabled() {
 		return ErrNotEnabled
@@ -232,8 +234,8 @@ func (c *Client) LinkBlocks(ctx context.Context, blocker, blocked string) error 
 	}
 	body, err := json.Marshal(issueLinkRequest{
 		Type:         linkTypeRef{Name: "Blocks"},
-		OutwardIssue: keyRef{Key: blocker},
-		InwardIssue:  keyRef{Key: blocked},
+		InwardIssue:  keyRef{Key: blocker},
+		OutwardIssue: keyRef{Key: blocked},
 	})
 	if err != nil {
 		return err
