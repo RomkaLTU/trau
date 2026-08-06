@@ -36,6 +36,8 @@ func TestUnmergeablePR(t *testing.T) {
 	}
 }
 
+const mergeGitEpicTip = "9ab34c119ab34c119ab34c119ab34c119ab34c11"
+
 // mergeGit records the git traffic of the conflict-recovery path in order, so
 // tests can assert both what happened and the sequence it happened in.
 type mergeGit struct {
@@ -52,6 +54,10 @@ func (g *mergeGit) Pull(_ context.Context, remote, branch string) error {
 	g.op("pull %s %s", remote, branch)
 	return nil
 }
+
+// HeadSHA names the rollback point the epic sync records; without one the sync
+// skips the merge entirely.
+func (g *mergeGit) HeadSHA(context.Context) (string, error) { return mergeGitEpicTip, nil }
 func (g *mergeGit) Checkout(_ context.Context, ref string, _ bool) error {
 	g.op("checkout %s", ref)
 	return nil
@@ -273,7 +279,9 @@ func TestSyncEpicBestPullsRemoteEpicFirst(t *testing.T) {
 	git := &mergeGit{}
 	p := &Pipeline{Git: git, Remote: "origin", Base: "main"}
 
-	p.syncEpicBest(context.Background(), "epic/COD-90697-y")
+	if err := p.syncEpicBest(context.Background(), "epic/COD-90697-y"); err != nil {
+		t.Fatalf("syncEpicBest = %v, want nil", err)
+	}
 
 	want := []string{"checkout epic/COD-90697-y", "pull origin epic/COD-90697-y", "mergeRemote origin main", "push origin epic/COD-90697-y"}
 	if got := strings.Join(git.ops, "; "); got != strings.Join(want, "; ") {

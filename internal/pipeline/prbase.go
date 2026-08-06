@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // assertPRBaseCurrent makes the remote copy of base carry pin — the commit a PR
@@ -42,14 +43,30 @@ func (p *Pipeline) assertPRBaseCurrent(ctx context.Context, g Git, base, pin str
 	return nil
 }
 
-// staleBaseNote says what the remote base is missing and the two ways an operator
-// unblocks the run, since neither is something trau may do on its own: a force push
-// would rewrite the base's history, and a protected branch is a deliberate policy.
+// staleBaseNote says what the remote base is missing and how an operator unblocks
+// the run, since none of it is something trau may do on its own: a force push would
+// rewrite the base's history, and a protected branch is a deliberate policy. The
+// note reads the same whether the base is a long-lived branch, an epic branch, or
+// the slice branch below a stacked layer.
 func staleBaseNote(remote, base, pin string) string {
 	return fmt.Sprintf(
-		"pr base %s/%s does not carry %s, so a PR opened against it would diff against a stale base — push %s to %s yourself, or resolve the divergence, then retry",
-		remote, base, pin, base, remote,
+		"pr base %s/%s does not carry %s, so a PR opened against it would diff against a stale base — push %s to %s yourself, or resolve the divergence, then retry.\n%s",
+		remote, base, pin, base, remote, baseRecoverySteps(remote, base),
 	)
+}
+
+// baseRecoverySteps is the runbook for a base branch trau cannot repair itself.
+// The last step exists because healing the base does not free a slice already cut
+// from it — that slice's fork point stays a commit the remote never had (see
+// docs/pr-base-hygiene.md).
+func baseRecoverySteps(remote, base string) string {
+	return strings.Join([]string{
+		"Recovery steps:",
+		fmt.Sprintf("  1. Inspect the divergence: git fetch %s %s && git rev-list --left-right --oneline %s...%s/%s", remote, base, base, remote, base),
+		fmt.Sprintf("  2. If each local-only commit is a disposable sync merge, drop them: git checkout %s && git reset --hard %s/%s", base, remote, base),
+		fmt.Sprintf("  3. If the local-only commits are real work, rebase them onto %s/%s, then push %s to %s.", remote, base, base, remote),
+		fmt.Sprintf("  4. A slice branch already cut from the diverged %s stays wedged, because its recorded fork point is a local-only commit. Rebase that slice branch onto the repaired base, then resume its ticket.", base),
+	}, "\n")
 }
 
 // prBasePin names the commit the remote base must carry for a slice PR: the fork

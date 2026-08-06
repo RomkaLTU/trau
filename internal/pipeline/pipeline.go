@@ -97,6 +97,12 @@ type Git interface {
 	// a dirty tree to the next run's clean-base check.
 	DiscardTracked(ctx context.Context) error
 
+	// ResetHard moves the checked-out branch to rev and makes the working tree
+	// match it (git reset --hard). It discards commits, so the pipeline uses it
+	// only to undo commits it made itself and never pushed, and to drop local
+	// commits it has proved the remote does not need.
+	ResetHard(ctx context.Context, rev string) error
+
 	BranchExists(ctx context.Context, branch string) (bool, error)
 
 	FindFeatureBranch(ctx context.Context, id string) (string, error)
@@ -139,6 +145,18 @@ type Git interface {
 
 	// Commits returns the short SHAs on branch but not base (base..branch).
 	Commits(ctx context.Context, base, branch string) ([]string, error)
+
+	// RevListNoMerges returns one "<short sha> <subject>" line per non-merge commit
+	// reachable from head but from neither base nor any exclude rev
+	// (git rev-list --no-merges --oneline base..head ^exclude...). It answers the
+	// question a diverged branch turns on: whether the commits only it carries are
+	// real work, or merges trau made itself and can recreate. The excludes are what
+	// make that answer trustworthy — the walk crosses a merge's second parent, so
+	// the branch merged in contributes its own commits to base..head. Empty exclude
+	// revs are ignored, so a ref that could not be resolved narrows the answer
+	// rather than failing the call. An empty result is the "nothing but merges"
+	// answer, not a failure.
+	RevListNoMerges(ctx context.Context, base, head string, exclude ...string) ([]string, error)
 
 	// IsAncestor reports whether ancestor is reachable from rev
 	// (git merge-base --is-ancestor). A commit on another line of history is an
@@ -1966,7 +1984,9 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 		if err != nil {
 			return "", err
 		}
-		p.syncEpicBest(ctx, epic)
+		if err := p.syncEpicBest(ctx, epic); err != nil {
+			return "", fmt.Errorf("build %s: %w", id, err)
+		}
 		base = epic
 	}
 	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
@@ -5598,6 +5618,12 @@ func (g ExecGit) DiscardTracked(ctx context.Context) error {
 	return g.run(ctx, "checkout", "--", ".")
 }
 
+// ResetHard moves the checked-out branch to rev and makes the working tree match
+// (git reset --hard <rev>).
+func (g ExecGit) ResetHard(ctx context.Context, rev string) error {
+	return g.run(ctx, "reset", "--hard", rev)
+}
+
 // BranchExists reports whether refs/heads/<branch> resolves. git rev-parse --verify
 // exits non-zero when the ref is absent, which reads as (false, nil) — a missing
 // branch is an expected answer, not an error (only the exit status is checked).
@@ -5844,6 +5870,28 @@ func (g ExecGit) Commits(ctx context.Context, base, branch string) ([]string, er
 		}
 	}
 	return shas, nil
+}
+
+// RevListNoMerges lists the non-merge commits on head but on none of base and the
+// exclude revs, newest first, as "<short sha> <subject>".
+func (g ExecGit) RevListNoMerges(ctx context.Context, base, head string, exclude ...string) ([]string, error) {
+	args := []string{"-C", g.Repo, "rev-list", "--no-merges", "--oneline", base + ".." + head}
+	for _, rev := range exclude {
+		if rev != "" {
+			args = append(args, "^"+rev)
+		}
+	}
+	out, err := exec.CommandContext(ctx, g.bin(), args...).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git rev-list %s..%s: %w", base, head, err)
+	}
+	var commits []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			commits = append(commits, s)
+		}
+	}
+	return commits, nil
 }
 
 // IsAncestor reports whether ancestor is reachable from rev. git answers with its
