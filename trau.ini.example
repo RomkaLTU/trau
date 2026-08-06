@@ -450,6 +450,19 @@ AZURE_AREA_PATH=             # e.g. Contoso\Platform
 # both narrow — and needs no extra PAT scope.
 AZURE_TEAMS=                 # e.g. Platform,Payments
 #
+# AZURE_BOARD_STATES maps the team's Kanban columns onto the groups trau's board and
+# its reconcile read use: backlog | unstarted | started | done | canceled. Key off
+# the column (System.BoardColumn), not the state — a team's columns are the list it
+# reads its board by, and a longer one than the states behind them, so two columns
+# routinely share a state. Set, the mapping is authoritative and EXHAUSTIVE: a column
+# it does not name groups as unknown. A work item the board places nowhere — outside
+# the team's area path, or a Task on the sprint taskboard — matches its state name
+# against the same pairs, and failing that keeps the grouping the project's own state
+# categories give it. Empty (the default) leaves every row on that category grouping.
+# It drives grouping only; a status WRITE still resolves a state, because Azure DevOps
+# refuses to write System.BoardColumn over the API.
+AZURE_BOARD_STATES=          # e.g. New=backlog,Ready to Develop=unstarted,Ready to test=started,Done=done
+#
 # The hub mirrors an Azure DevOps board into its own store like Linear and Jira:
 # a WIQL query returns the ids that changed since the last pull, a batched read
 # fills in the details, and the board, Inbox, search and queue-by-id confirm all
@@ -460,6 +473,12 @@ AZURE_TEAMS=                 # e.g. Platform,Payments
 # them by number and ISSUE_PREFIX does not apply: work item 6694 is 6694 on the
 # board, `trau 6694` on the CLI and feature/6694-slug as the branch, and the PR
 # trailer carries "AB#6694" so Azure Boards auto-links the work item.
+#
+# The mirror orders each board section by the team's own Stack Rank rather than by
+# creation date, so the board and the loop's pick both read top-down the way the team
+# dragged the column. Everything trau writes back lands in the fields and the format
+# Azure DevOps expects: markdown descriptions and acceptance criteria, a `trau` tag on
+# every change, and a create assigned to the PAT's owner at the top of its column.
 #
 #   # ~/work/contoso-app/.trau.ini
 #   TRACKER_PROVIDER=azure

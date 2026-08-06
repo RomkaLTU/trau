@@ -169,6 +169,14 @@ _Avoid_: finalizing (the code name — `FinalizeEpic`), shipping, deploying, pub
 An Epic whose slices chain as a native GitHub stack instead of fanning into one epic branch: each child's branch is cut from the previous child's branch, the bottom PR targets the base, and there is no epic branch and no epic PR. Opt-in and off by default (`EPIC_STACKED_PRS`), and it engages only where it can — GitHub, a real remote, the stacked-PRs preview answering — with the shape decided once at the Epic's start and the classic epic flow running the whole Epic otherwise. Nothing merges mid-flight: a child is complete when its PR is open, linked into the stack and green, and the Releasing phase gates every layer and then merges the whole stack once, from the top PR. That is what keeps GitHub from rewriting layers trau still holds — a partial stack merge retargets and force-rewrites every layer above it.
 _Avoid_: stacked PRs (bare — a human can stack any PR; this is the Epic-level mode), stacking (what a classic epic's children already do on the epic branch), stack epic
 
+**Board column**:
+The Kanban column an Azure DevOps team's board shows a work item in (`System.BoardColumn`). It is what the team reads its board by, and a longer list than the states behind it — two columns routinely share one state — so a repo's `AZURE_BOARD_STATES` mapping groups by the column, not the state. A work item the board places nowhere (outside the team's area path, or a Task on the sprint taskboard) has none, and falls back to its state (ADR 0036).
+_Avoid_: state (that's `System.State`, the write target), status, swimlane, backlog level (that's the Epic/Feature/requirement/Task rung), section (that's the board's status group)
+
+**Stack Rank**:
+The order an Azure DevOps team dragged a board column into (`Microsoft.VSTS.Common.StackRank`). It is the order the board renders inside each of its sections and the order the loop picks in; a work item carrying none sorts last (ADR 0036).
+_Avoid_: priority (that's `Microsoft.VSTS.Common.Priority`, a separate 1–4 field), rank (bare), order, backlog order
+
 **Failure class**:
 Why a checkpoint stopped short — one of three, distinct from the phase (how far it got): **Paused** (blameless — a provider/rate/auth wall; work-in-progress intact, the fix is to Resume), **Faulted** (an unexpected error mid-run; WIP preserved and resumable), and **Gave up** (a verified dead end, surfaced as **Quarantined** — a human must decide).
 _Avoid_: error, status (that's the phase), failed (bare)

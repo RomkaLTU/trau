@@ -50,9 +50,12 @@ type Issue struct {
 	// Type and Level are the tracker's own work-item type name and the normalized
 	// backlog level it sits on (epic | feature | requirement | task). Azure DevOps
 	// only: every other provider leaves both empty.
-	Type     string
-	Level    string
-	Comments []Comment
+	Type  string
+	Level string
+	// StackRank is the board's own drag order, which an Azure DevOps board sorts by.
+	// Azure DevOps only, and nil for a work item carrying none — those sort last.
+	StackRank *float64
+	Comments  []Comment
 
 	// ChildrenSettled and ChildrenTotal are populated by BacklogPage for epic
 	// rows only (HasChildren): the epic's settled (done + canceled) and total
@@ -161,8 +164,8 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 				repo, source, identifier, title, description, status, status_group,
 				priority, labels, parent, has_children, due_date, external_id, url,
 				created_at, updated_at, synced_at, assignee_id, assignee_name,
-				work_item_type, backlog_level)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?)
+				work_item_type, backlog_level, stack_rank)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?)
 			 ON CONFLICT(repo, identifier) DO UPDATE SET
 				source = excluded.source, title = excluded.title,
 				description = excluded.description, status = excluded.status,
@@ -173,14 +176,15 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 				created_at = excluded.created_at, updated_at = excluded.updated_at,
 				synced_at = excluded.synced_at, deleted_at = '',
 				assignee_id = excluded.assignee_id, assignee_name = excluded.assignee_name,
-				work_item_type = excluded.work_item_type, backlog_level = excluded.backlog_level
+				work_item_type = excluded.work_item_type, backlog_level = excluded.backlog_level,
+				stack_rank = excluded.stack_rank
 			 WHERE issues.source <> 'internal'
 			 RETURNING id`,
 			repo, source, iss.Identifier, iss.Title, iss.Description, iss.Status,
 			iss.StatusGroup, iss.Priority, string(labels), iss.Parent,
 			boolToInt(iss.HasChildren), iss.DueDate, iss.ExternalID, iss.URL,
 			iss.CreatedAt, iss.UpdatedAt, syncedAt, iss.AssigneeID, iss.AssigneeName,
-			iss.Type, iss.Level,
+			iss.Type, iss.Level, iss.StackRank,
 		).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
@@ -211,7 +215,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 const issueColumns = `id, source, identifier, title, description, status, status_group,
 	priority, labels, parent, has_children, due_date, external_id, url,
 	created_at, updated_at, deleted_at, archived_at, assignee_id, assignee_name,
-	provider, work_item_type, backlog_level`
+	provider, work_item_type, backlog_level, stack_rank`
 
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
@@ -263,7 +267,7 @@ func (s *Issues) AtLevel(repo, level string) (issues []Issue, err error) {
 	rows, err := s.db.Query(
 		`SELECT `+issueColumns+` FROM issues
 		 WHERE repo = ? AND backlog_level = ? AND deleted_at = '' AND archived_at = ''
-		 ORDER BY `+numericIdentOrder("identifier"),
+		 ORDER BY `+numericIdentOrder("identifier", false),
 		repo, level,
 	)
 	if err != nil {
@@ -335,10 +339,15 @@ const archivedSubtree = `identifier IN (
 // numericIdentOrder renders the ORDER BY terms that sort an identifier expression
 // numerically — the "COD-" prefix, then the trailing number as an integer, then
 // the raw value — so COD-9 precedes COD-100 rather than sorting lexicographically.
-func numericIdentOrder(expr string) string {
+// desc reverses every term, for a board that ranks the newest ticket number first.
+func numericIdentOrder(expr string, desc bool) string {
+	var dir string
+	if desc {
+		dir = " DESC"
+	}
 	return fmt.Sprintf(
-		"substr(%[1]s, 1, instr(%[1]s, '-')), CAST(substr(%[1]s, instr(%[1]s, '-') + 1) AS INTEGER), %[1]s",
-		expr,
+		"substr(%[1]s, 1, instr(%[1]s, '-'))%[2]s, CAST(substr(%[1]s, instr(%[1]s, '-') + 1) AS INTEGER)%[2]s, %[1]s%[2]s",
+		expr, dir,
 	)
 }
 
@@ -371,15 +380,10 @@ END`
 // so backlog rows scan carrying the group they file under.
 var backlogColumns = strings.Replace(issueColumns, "status_group", backlogGroup, 1)
 
-// backlogOrderBy sorts the board by workflow progress — active work first, then
+// groupSections orders the board's state-group sections — active work first, then
 // not-yet-started, backlog, and finally the closed groups — keyed on the board
-// group, so a promoted epic sorts with the started rows. The Todo and Backlog
-// groups order families newest-created first, so a just-filed issue lands on top
-// regardless of its identifier prefix; the other groups order by numeric-aware
-// family key. Either way a family stays contiguous within a group: the epic ahead
-// of its same-group sub-issues, then the rows' own numeric-aware identifiers.
-var backlogOrderBy = `ORDER BY
-	CASE ` + backlogGroup + `
+// group, so a promoted epic sorts with the started rows.
+const groupSections = `CASE ` + backlogGroup + `
 		WHEN 'started' THEN 0
 		WHEN 'unstarted' THEN 1
 		WHEN 'backlog' THEN 2
@@ -387,11 +391,33 @@ var backlogOrderBy = `ORDER BY
 		WHEN 'done' THEN 4
 		WHEN 'canceled' THEN 5
 		ELSE 6
-	END,
+	END`
+
+// backlogOrderBy sorts the board within each state-group section. The Todo and
+// Backlog groups order families newest-created first, so a just-filed issue lands
+// on top regardless of its identifier prefix; the other groups order by
+// numeric-aware family key. Either way a family stays contiguous within a group:
+// the epic ahead of its same-group sub-issues, then the rows' own numeric-aware
+// identifiers.
+var backlogOrderBy = `ORDER BY
+	` + groupSections + `,
 	CASE WHEN ` + backlogGroup + ` IN ('unstarted', 'backlog') THEN ` + familyCreated + ` END DESC,
-	` + numericIdentOrder(familyKey) + `,
+	` + numericIdentOrder(familyKey, false) + `,
 	CASE WHEN parent = '' THEN 0 ELSE 1 END,
-	` + numericIdentOrder("identifier")
+	` + numericIdentOrder("identifier", false)
+
+// azureBacklogOrderBy is the order an Azure DevOps mirror reads in: the same
+// state-group sections, then the board's own Stack Rank ascending and the newest
+// work-item number first. An Azure team orders a column by dragging it, so that
+// rank *is* the order the team reads and the loop picks in — which is why the
+// newest-family-first term the other trackers sort by is dropped here rather than
+// fighting it, and why a row carrying no rank sorts last instead of first (ADR
+// 0036).
+var azureBacklogOrderBy = `ORDER BY
+	` + groupSections + `,
+	stack_rank IS NULL,
+	stack_rank,
+	` + numericIdentOrder("identifier", true)
 
 // Backlog returns a repo's stored issues for the board in display order and
 // without comments — the whole board, equivalent to an empty BacklogFilter.
@@ -474,7 +500,11 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		return nil, 0, nil, err
 	}
 
-	query := `SELECT ` + backlogColumns + ` FROM issues WHERE ` + clause + ` ` + backlogOrderBy
+	order, err := s.boardOrderBy(repo)
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	query := `SELECT ` + backlogColumns + ` FROM issues WHERE ` + clause + ` ` + order
 	if filter.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, filter.Limit)
@@ -500,6 +530,27 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		return nil, 0, nil, err
 	}
 	return issues, total, counts, nil
+}
+
+// boardOrderBy picks the display order a repo's board reads in. An Azure DevOps
+// mirror sorts by the board's own Stack Rank; every other tracker keeps the
+// newest-family-first order. The decision is per repo rather than per row so an
+// internal issue filed against an Azure repo sorts with that board's unranked rows
+// instead of splitting the section in two — a repo is an Azure one when its
+// mirrored issues were filed under the azure tracker source.
+func (s *Issues) boardOrderBy(repo string) (string, error) {
+	var azure bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS(SELECT 1 FROM issues WHERE repo = ? AND source = 'azure')`,
+		repo,
+	).Scan(&azure)
+	if err != nil {
+		return "", err
+	}
+	if azure {
+		return azureBacklogOrderBy, nil
+	}
+	return backlogOrderBy, nil
 }
 
 // attachChildCounts fills ChildrenSettled/ChildrenTotal on the epic rows of a
@@ -740,6 +791,7 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 			labels                 string
 			hasCh                  int
 			assigneeID, assigneeNm sql.NullString
+			stackRank              sql.NullFloat64
 			iss                    = Issue{Repo: repo}
 		)
 		if err := rows.Scan(
@@ -747,9 +799,12 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
 			&iss.DeletedAt, &iss.ArchivedAt, &assigneeID, &assigneeNm, &iss.Provider,
-			&iss.Type, &iss.Level,
+			&iss.Type, &iss.Level, &stackRank,
 		); err != nil {
 			return nil, nil, err
+		}
+		if stackRank.Valid {
+			iss.StackRank = &stackRank.Float64
 		}
 		iss.HasChildren = hasCh != 0
 		iss.Labels = decodeLabels(labels)

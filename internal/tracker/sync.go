@@ -63,9 +63,13 @@ type SyncedIssue struct {
 	// Type and Level are the tracker's own work-item type name and the normalized
 	// backlog level the project places it on. Azure DevOps only: every other
 	// provider leaves both empty.
-	Type     string
-	Level    string
-	Comments []SyncedComment
+	Type  string
+	Level string
+	// StackRank is the board's own drag order (Microsoft.VSTS.Common.StackRank),
+	// which the board sorts an Azure DevOps mirror by. Azure DevOps only, and nil
+	// for a work item carrying none.
+	StackRank *float64
+	Comments  []SyncedComment
 	// Attachments are the files the issue references — the tracker's own file
 	// list plus the images its markdown embeds. Metadata only: a pull never
 	// downloads bytes.
@@ -271,7 +275,11 @@ func (r *azureReader) ProjectIdentifiers(ctx context.Context, binding ProjectBin
 }
 
 func (r *azureReader) Identity(ctx context.Context) (id, name string, err error) {
-	return r.client.ConnectionData(ctx)
+	owner, err := r.client.Owner(ctx)
+	if err != nil {
+		return "", "", err
+	}
+	return owner.ID, owner.Name, nil
 }
 
 // projectOf prefers the team project cached on the binding, falling back to the
@@ -285,11 +293,11 @@ func (r *azureReader) projectOf(b ProjectBinding) string {
 
 // scopeKey names the read a repo's board scope produces, so two repos asking the
 // same question of the same organization recognise each other's work. The todo pin
-// is part of the question, because it decides which Proposed state reads back as
-// unstarted; the variable-length team list stays last so no two scopes spell the
-// same key.
+// and the board-column mapping are both part of the question, because each decides
+// which group a row reads back as; the variable-length team list stays last so no
+// two scopes spell the same key.
 func (r *azureReader) scopeKey(stage, project, since string) string {
-	fixed := []string{stage, r.org, project, r.areaPath, since, r.statusTodo}
+	fixed := []string{stage, r.org, project, r.areaPath, since, r.statusTodo, r.boardStates.key()}
 	return strings.Join(append(fixed, r.teams...), "\x00")
 }
 
@@ -304,8 +312,9 @@ func (r *azureReader) synced(ctx context.Context, project string, item *azureapi
 		Title:        item.Title,
 		Description:  item.Description,
 		Status:       item.State,
-		Group:        mapAzureGroup(r.states(ctx, item), r.statusTodo, item.State, item.Reason),
+		Group:        r.group(ctx, item),
 		Priority:     item.Priority,
+		StackRank:    item.StackRank,
 		Labels:       item.Tags,
 		Parent:       azureParentIdentifier(item.Parent),
 		HasChildren:  item.HasChildren(),

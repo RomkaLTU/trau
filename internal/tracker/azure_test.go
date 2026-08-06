@@ -53,6 +53,11 @@ func azureServer(t *testing.T, routes map[string]string) (*AzureDevOps, *[]recor
 	}, patches
 }
 
+// azureConnectionData is the organization answering who the personal access token
+// belongs to — the identity a create assigns itself to.
+const azureConnectionData = `{"authenticatedUser":{"id":"guid-me","providerDisplayName":"Ada L",
+	"properties":{"Account":{"$value":"ada@contoso.test"}}}}`
+
 // azureRoute reduces a request to the work-item route it addresses: the path with
 // the project's API prefix stripped, or the batch read with its id list.
 func azureRoute(r *http.Request) string {
@@ -290,9 +295,11 @@ func TestAzureListEligibleKeepsContainers(t *testing.T) {
 	az, _ := azureServer(t, map[string]string{
 		"/wiql": `{"workItems":[{"id":1},{"id":2}]}`,
 		"/workitems?ids=1,2": `{"value":[
-			{"id":1,"fields":{"System.Title":"Epic","System.State":"New","System.Tags":"ready-for-agent"},
+			{"id":1,"fields":{"System.Title":"Epic","System.State":"New","System.Tags":"ready-for-agent",
+			 "Microsoft.VSTS.Common.StackRank":100},
 			 "relations":[{"rel":"System.LinkTypes.Hierarchy-Forward","url":"` + azureRelBase + `2"}]},
-			{"id":2,"fields":{"System.Title":"Leaf","System.State":"New","System.Tags":"ready-for-agent; ui"},
+			{"id":2,"fields":{"System.Title":"Leaf","System.State":"New","System.Tags":"ready-for-agent; ui",
+			 "Microsoft.VSTS.Common.StackRank":200},
 			 "relations":[{"rel":"System.LinkTypes.Hierarchy-Reverse","url":"` + azureRelBase + `1"}]}
 		]}`,
 	})
@@ -439,8 +446,8 @@ func TestAzureQuarantineSwapsTagsAndComments(t *testing.T) {
 	if len(*patches) != 2 {
 		t.Fatalf("got %d patches, want 2 (tags then comment): %+v", len(*patches), *patches)
 	}
-	if got := (*patches)[0].value("System.Tags"); got != "ui; needs-human" {
-		t.Errorf("tags = %v, want %q", got, "ui; needs-human")
+	if got := (*patches)[0].value("System.Tags"); got != "ui; needs-human; trau" {
+		t.Errorf("tags = %v, want %q", got, "ui; needs-human; trau")
 	}
 	body, _ := (*patches)[1].value("System.History").(string)
 	if !strings.Contains(body, "QA never went green") {
@@ -461,8 +468,8 @@ func TestAzureResetRestoresReadyTagAndUnstartedState(t *testing.T) {
 	if len(*patches) != 2 {
 		t.Fatalf("got %d patches, want 2 (tags then state): %+v", len(*patches), *patches)
 	}
-	if got := (*patches)[0].value("System.Tags"); got != "ready-for-agent" {
-		t.Errorf("tags = %v, want ready-for-agent", got)
+	if got := (*patches)[0].value("System.Tags"); got != "ready-for-agent; trau" {
+		t.Errorf("tags = %v, want %q", got, "ready-for-agent; trau")
 	}
 	if got := (*patches)[1].value("System.State"); got != "New" {
 		t.Errorf("state = %v, want New (the template's Proposed state)", got)
@@ -543,7 +550,10 @@ func TestAzureAddAndRemoveLabelIgnoreBlanks(t *testing.T) {
 // An Azure-tracked run's QA report lands on the work item's own discussion, with
 // the Markdown rendered into the HTML the field stores.
 func TestAzurePostQANoteWritesTheDiscussionAsHTML(t *testing.T) {
-	az, patches := azureServer(t, map[string]string{"patch": `{"id":7}`})
+	az, patches := azureServer(t, map[string]string{
+		"/workitems/7": `{"id":7,"fields":{"System.Tags":"trau"}}`,
+		"patch":        `{"id":7}`,
+	})
 
 	err := az.PostQANote(context.Background(), "CON-7", QANote{
 		Body: "## Trau QA report\n\nVerify passed: all green\n\nPR: https://github.test/pr/7\n",
@@ -594,6 +604,8 @@ func azureQAServer(t *testing.T, refuse map[string]bool) (*AzureDevOps, *[]recor
 			_ = json.Unmarshal(body, &ops)
 			*patches = append(*patches, recordedPatch{path: r.URL.Path, ops: ops})
 			_, _ = w.Write([]byte(`{"id":7}`))
+		case strings.Contains(r.URL.Path, "/workitems/7"):
+			_, _ = w.Write([]byte(`{"id":7,"fields":{"System.Tags":"trau"}}`))
 		default:
 			t.Errorf("unrouted request %s %s", r.Method, r.URL.RequestURI())
 		}
@@ -686,7 +698,10 @@ func TestAzureFileBugCreatesTaggedWorkItem(t *testing.T) {
 	if err := os.WriteFile(verdict, []byte(`{"summary":"login broken","failures":["auth 500"]}`), 0o600); err != nil {
 		t.Fatalf("write verdict: %v", err)
 	}
-	az, patches := azureServer(t, map[string]string{"patch": `{"id":500}`})
+	az, patches := azureServer(t, map[string]string{
+		"/_apis/connectionData": azureConnectionData,
+		"patch":                 `{"id":500}`,
+	})
 
 	bug, err := az.FileBug(context.Background(), "CON-7", verdict)
 	if err != nil {
@@ -701,8 +716,11 @@ func TestAzureFileBugCreatesTaggedWorkItem(t *testing.T) {
 	if !strings.HasSuffix((*patches)[0].path, "/workitems/$Bug") {
 		t.Errorf("path = %q, want it to create a $Bug", (*patches)[0].path)
 	}
-	if got := (*patches)[0].value("System.Tags"); got != "HITL" {
-		t.Errorf("tags = %v, want HITL", got)
+	if got := (*patches)[0].value("System.Tags"); got != "HITL; trau" {
+		t.Errorf("tags = %v, want %q", got, "HITL; trau")
+	}
+	if got := (*patches)[0].value("System.AssignedTo"); got != "ada@contoso.test" {
+		t.Errorf("assignee = %v, want the personal access token's owner", got)
 	}
 	title, _ := (*patches)[0].value("System.Title").(string)
 	if !strings.Contains(title, "login broken") {

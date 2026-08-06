@@ -29,7 +29,11 @@ type azureWriter struct {
 }
 
 func (w *azureWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error) {
-	itemType, err := w.itemType(ctx, draft)
+	level := azureapi.LevelRequirement
+	if draft.Shape == DraftSlice {
+		level = azureapi.LevelTask
+	}
+	itemType, err := w.itemType(ctx, draft, level)
 	if err != nil {
 		return NewIssue{}, err
 	}
@@ -39,31 +43,32 @@ func (w *azureWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIss
 			return NewIssue{}, fmt.Errorf("resolve parent %s: %w", id, err)
 		}
 	}
-	id, err := w.client.CreateWorkItem(ctx, w.project, azureapi.NewWorkItem{
-		Type:        itemType,
-		Title:       draft.Title,
-		Description: draft.Description,
-		Tags:        draft.Labels,
-		Parent:      parent,
+	created, err := w.client.CreateWorkItem(ctx, w.project, azureapi.NewWorkItem{
+		Type:     itemType,
+		Title:    draft.Title,
+		Body:     azureapi.SplitBody(draft.Description, azureHasAcceptance(level)),
+		Tags:     draft.Labels,
+		Parent:   parent,
+		Assignee: azureSelfAssign(ctx, w.client),
 	})
 	if err != nil {
 		return NewIssue{}, err
 	}
-	return NewIssue{Identifier: azureIdentifier(id), URL: w.client.WorkItemURL(w.project, id)}, nil
+	azureRankTop(ctx, w.client, w.project, created)
+	return NewIssue{
+		Identifier: azureIdentifier(created.ID),
+		URL:        w.client.WorkItemURL(w.project, created.ID),
+	}, nil
 }
 
-// itemType resolves the work-item type a draft files as: a slice of an issue this
-// apply is building out is a Task, everything else a requirement. A pinned type is
-// honoured only when the project places it on that same level, which is what keeps
-// a create from filing an Epic or a Feature.
-func (w *azureWriter) itemType(ctx context.Context, draft IssueDraft) (string, error) {
+// itemType resolves the work-item type a draft files as at level: a slice of an
+// issue this apply is building out is a Task, everything else a requirement. A
+// pinned type is honoured only when the project places it on that same level, which
+// is what keeps a create from filing an Epic or a Feature.
+func (w *azureWriter) itemType(ctx context.Context, draft IssueDraft, level azureapi.Level) (string, error) {
 	levels, err := w.backlogLevels(ctx)
 	if err != nil {
 		return "", err
-	}
-	level := azureapi.LevelRequirement
-	if draft.Shape == DraftSlice {
-		level = azureapi.LevelTask
 	}
 	if pinned := strings.TrimSpace(draft.Type); pinned != "" {
 		if levels.Of(pinned) != level {
@@ -108,12 +113,41 @@ func (w *azureWriter) AddComment(ctx context.Context, id, body string) error {
 	return w.client.AddComment(ctx, w.project, n, body)
 }
 
+// UpdateDescription rewrites a work item's body as markdown, with the acceptance
+// criteria landing in the field Azure DevOps keeps them in whenever the item's own
+// type carries one.
 func (w *azureWriter) UpdateDescription(ctx context.Context, id, body string) error {
 	n, err := workItemID(id)
 	if err != nil {
 		return err
 	}
-	return w.client.SetDescription(ctx, w.project, n, body)
+	level, err := w.levelOf(ctx, n)
+	if err != nil {
+		return err
+	}
+	return w.client.SetBody(ctx, w.project, n, azureapi.SplitBody(body, azureHasAcceptance(level)))
+}
+
+// azureHasAcceptance reports whether a work-item type on level carries an
+// acceptance-criteria field. Only the taskboard's own type does not: a Task is a
+// slice of a requirement and Azure DevOps gives it no criteria field, so its whole
+// body — the heading included — stays in the description.
+func azureHasAcceptance(level azureapi.Level) bool {
+	return level != azureapi.LevelTask
+}
+
+// levelOf reads the backlog level the work item's own type sits on, which is what
+// decides whether an acceptance-criteria field exists to write.
+func (w *azureWriter) levelOf(ctx context.Context, id int) (azureapi.Level, error) {
+	item, err := w.client.WorkItem(ctx, w.project, id)
+	if err != nil {
+		return "", err
+	}
+	levels, err := w.backlogLevels(ctx)
+	if err != nil {
+		return "", err
+	}
+	return levels.Of(item.Type), nil
 }
 
 func (w *azureWriter) UpdateLabels(ctx context.Context, id string, add, remove []string) error {
