@@ -228,10 +228,11 @@ func gitFinding(origin string) DetectionFinding {
 }
 
 // forgeFinding names where the code is hosted, read off this repo's own remote
-// and off nothing else. Delivery is GitHub-only, so a repo hosted elsewhere is a
-// failure stated here rather than one discovered at `gh pr create` once the
-// build, handoff and verify agents have been paid for. The tracker is a separate
-// question entirely: tickets in one service and code in another is ordinary.
+// and off nothing else. Delivery reaches GitHub and Bitbucket Cloud, so a repo
+// hosted anywhere else is a failure stated here rather than one discovered at PR
+// time once the build, handoff and verify agents have been paid for. The tracker
+// is a separate question entirely: tickets in one service and code in another is
+// ordinary.
 func forgeFinding(f forge.Forge, origin string) DetectionFinding {
 	value := f.Label()
 	if host := forge.Host(origin); host != "" {
@@ -242,7 +243,7 @@ func forgeFinding(f forge.Forge, origin string) DetectionFinding {
 			Label:  "forge",
 			Value:  value,
 			State:  findingFail,
-			Detail: "trau opens pull requests on GitHub only, so a run here would die at PR time. Set FORGE in this repo's .trau.ini if the host is a GitHub install trau did not recognize.",
+			Detail: "trau opens pull requests on GitHub and Bitbucket Cloud only, so a run here would die at PR time. Set FORGE in this repo's .trau.ini if the host is an install trau did not recognize.",
 		}
 	}
 	return DetectionFinding{Label: "forge", Value: value, State: findingOK}
@@ -457,9 +458,9 @@ func majorityBranch(children []InspectChild) string {
 // folderFindings replaces the single-repo git report for a Folder repo, which has
 // no origin or HEAD of its own to report. Each child ships to its own base, so a
 // child whose base differs from the majority is a fact worth naming and nothing
-// worse. What does stop a child being shipped to is its forge: delivery is
-// GitHub-only, and a mixed folder ships to its GitHub children and leaves the
-// rest alone with the reason named.
+// worse. What does stop a child being shipped to is its forge: delivery reaches
+// GitHub and Bitbucket Cloud, and a mixed folder ships to the children on those
+// and leaves the rest alone with the reason named.
 func folderFindings(children []InspectChild, truncated bool, base string) []DetectionFinding {
 	outliers, unsupported, remoteless := []string{}, []string{}, []string{}
 	for _, c := range children {
@@ -490,7 +491,7 @@ func folderFindings(children []InspectChild, truncated bool, base string) []Dete
 			Label:  "forge",
 			Value:  strings.Join(unsupported, ", "),
 			State:  findingFail,
-			Detail: "trau opens pull requests on GitHub only. A run ships to the rest of the folder and leaves these untouched. Set FORGE in a child's own .trau.ini if its host is a GitHub install trau did not recognize.",
+			Detail: "trau opens pull requests on GitHub and Bitbucket Cloud only. A run ships to the rest of the folder and leaves these untouched. Set FORGE in a child's own .trau.ini if its host is an install trau did not recognize.",
 		})
 	}
 	if len(remoteless) > 0 {

@@ -31,10 +31,10 @@ func (g *ciGitHub) Merge(_ context.Context, pr, _ string, _ bool) error {
 	return nil
 }
 
-func newGatePipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipeline {
+func newGatePipeline(t *testing.T, gh Delivery, tr tracker.Tracker) *Pipeline {
 	t.Helper()
 	p := newTestPipeline(t, fakeRunner{}, tr)
-	p.GitHub = gh
+	p.Delivery = gh
 	p.AutoMerge = true
 	p.MergeMethod = "squash"
 	p.RequireCI = config.CIGateOn

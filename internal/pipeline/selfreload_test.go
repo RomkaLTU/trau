@@ -63,14 +63,14 @@ func (h *reloadHub) request(context.Context) (hubclient.ReloadAck, error) {
 	return hubclient.ReloadAck{Pending: true, Version: "v2.5.0"}, nil
 }
 
-func newReloadPipeline(t *testing.T, git Git, gh GitHub, hub *reloadHub) *Pipeline {
+func newReloadPipeline(t *testing.T, git Git, gh Delivery, hub *reloadHub) *Pipeline {
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
 		Runner:            fakeRunner{},
 		Tracker:           &fakeTracker{},
 		Git:               git,
-		GitHub:            gh,
+		Delivery:          gh,
 		State:             state.NewStore(dir),
 		RunsDir:           dir,
 		RepoRoot:          t.TempDir(),

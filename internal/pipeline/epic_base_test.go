@@ -46,7 +46,7 @@ const (
 	childPRTicketID = "COD-2"
 )
 
-func newChildPRPipeline(t *testing.T, git Git, gh GitHub) *Pipeline {
+func newChildPRPipeline(t *testing.T, git Git, gh Delivery) *Pipeline {
 	t.Helper()
 	p := localTestPipeline(t, git, gh, &epicTracker{title: "Child slice"})
 	p.EpicID = "COD-1"

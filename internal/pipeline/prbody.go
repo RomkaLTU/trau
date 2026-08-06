@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/forge"
+	"github.com/RomkaLTU/trau/internal/forge/bitbucketapi"
 	"github.com/RomkaLTU/trau/internal/proofsbranch"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 )
@@ -81,16 +83,23 @@ func renderProofsSection(pub proofsbranch.Publication, browserOutcome string) st
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// proofRawURL is the raw.githubusercontent embed URL for a public repo's proof,
-// keyed by branch name (not a SHA) so retention force-pushes never orphan a
-// surviving file's link.
+// proofRawURL is the raw-file embed URL for a public repo's proof on the forge
+// that hosts it, keyed by branch name (not a SHA) so retention force-pushes never
+// orphan a surviving file's link.
 func proofRawURL(pub proofsbranch.Publication, path string) string {
+	if pub.Forge == forge.Bitbucket {
+		return bitbucketapi.WebBaseURL + "/" + pub.Owner + "/" + pub.Repo + "/raw/" + pub.Branch + "/" + escapePath(path)
+	}
 	return "https://raw.githubusercontent.com/" + pub.Owner + "/" + pub.Repo + "/" + pub.Branch + "/" + escapePath(path)
 }
 
-// proofBlobURL is the github.com blob URL for a private repo's proof, which a
-// reviewer clicks through to rather than embedding inline.
+// proofBlobURL is the browsable file URL for a private repo's proof, which a
+// reviewer clicks through to rather than embedding inline: neither forge's image
+// renderer can reach a file behind repository authentication.
 func proofBlobURL(pub proofsbranch.Publication, path string) string {
+	if pub.Forge == forge.Bitbucket {
+		return bitbucketapi.WebBaseURL + "/" + pub.Owner + "/" + pub.Repo + "/src/" + pub.Branch + "/" + escapePath(path)
+	}
 	return "https://github.com/" + pub.Owner + "/" + pub.Repo + "/blob/" + pub.Branch + "/" + escapePath(path)
 }
 

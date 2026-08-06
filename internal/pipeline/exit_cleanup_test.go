@@ -153,7 +153,7 @@ func TestSettleEpicBranch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			gh := &epicGitHub{createURL: "https://github.test/pr/7"}
 			p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
-			p.GitHub = gh
+			p.Delivery = gh
 			p.Remote = "origin"
 			p.EpicID = id
 			p.exit.epicBranch, p.exit.epicPushed, p.exit.epicStacked = tc.cached, tc.pushed, tc.stacked
@@ -202,7 +202,7 @@ func TestSettleEpicBranchCountsWorkAgainstTheRemoteBase(t *testing.T) {
 	const epic = "epic/COD-7108-thing"
 	gh := &epicGitHub{createURL: "https://github.test/pr/13"}
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
-	p.GitHub = gh
+	p.Delivery = gh
 	p.Remote = "origin"
 	p.EpicID = "COD-7108"
 	p.exit.epicBranch, p.exit.epicPushed = epic, true
@@ -247,7 +247,7 @@ func TestSettleEpicBranchKeepsWorkTheRemoteCarries(t *testing.T) {
 	gh := &epicGitHub{createURL: "https://github.test/pr/15"}
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
 	p.Git = ExecGit{Repo: work}
-	p.GitHub = gh
+	p.Delivery = gh
 	p.Remote = "origin"
 	p.EpicID = "COD-7109"
 	p.exit.epicBranch, p.exit.epicPushed = epic, true
@@ -267,7 +267,7 @@ func TestSettleEpicBranchKeepsWorkTheRemoteCarries(t *testing.T) {
 // would orphan the slice.
 func TestSliceBranchStacksOnEpicBranch(t *testing.T) {
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
-	p.GitHub = &epicGitHub{}
+	p.Delivery = &epicGitHub{}
 	p.Remote = "origin"
 	p.EpicID = "COD-7105"
 	g := &exitGit{branch: "main"}
@@ -296,7 +296,7 @@ func TestSliceBranchStacksOnEpicBranch(t *testing.T) {
 func TestSettleEpicBranchAdoptsExistingPR(t *testing.T) {
 	gh := &openPRGitHub{url: "https://github.test/pr/9"}
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
-	p.GitHub = gh
+	p.Delivery = gh
 	p.Remote = "origin"
 	p.EpicID = "COD-7102"
 	p.exit.epicBranch = "epic/COD-7102-thing"
@@ -322,7 +322,7 @@ func (g *openPRGitHub) PRURL(context.Context, string) (string, error) { return g
 func TestEpicMergeMarksDraftReady(t *testing.T) {
 	gh := &epicGitHub{checks: []Check{{Name: "ci/test", Bucket: "pass"}}}
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
-	p.GitHub = gh
+	p.Delivery = gh
 	p.EpicID = "COD-7103"
 	p.AutoMerge = true
 	p.MergeMethod = "squash"
@@ -348,7 +348,7 @@ func TestExitCleanupIsIdempotent(t *testing.T) {
 	)
 	gh := &epicGitHub{createURL: "https://github.test/pr/11"}
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
-	p.GitHub = gh
+	p.Delivery = gh
 	p.Remote = "origin"
 	p.EpicID = id
 	g := &exitGit{branch: "main", epicFound: epic, commits: map[string][]string{"origin/main.." + epic: {"abc123"}}}

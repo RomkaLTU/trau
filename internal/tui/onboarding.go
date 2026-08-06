@@ -14,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/forge"
 )
 
 // ProjectSetup is the configuration collected by the onboarding wizard and
@@ -36,6 +37,11 @@ type ProjectSetup struct {
 	JiraAPIToken    string
 	AzureOrgURL     string
 	AzurePAT        string
+	// BitbucketEmail and BitbucketAPIToken are the Atlassian pair a bitbucket.org
+	// remote is delivered as. They are collected only for a repo that ships there,
+	// which has no CLI holding a session the way a GitHub repo has gh.
+	BitbucketEmail    string
+	BitbucketAPIToken string
 }
 
 // SetupResult reports what the setup step actually did.
@@ -201,6 +207,12 @@ type onboardingModel struct {
 	skillsInstalling bool
 	skillsInstallErr string
 
+	// deliversGitHub records whether this repo's own remote is the forge the gh
+	// CLI serves. It gates the gh readiness checks, which are a hard requirement
+	// only for a repo that ships through gh — a Bitbucket remote is delivered
+	// over the REST API and needs no GitHub CLI at all.
+	deliversGitHub bool
+
 	// ciHasPRDet records whether a pull_request-triggered workflow was detected
 	// locally; it seeds the CI merge-gate default synchronously before the async
 	// GitHub probe (ciDet) lands.
@@ -250,6 +262,7 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 	if m.repoRoot == "" {
 		m.phase = phaseNoRepo
 	}
+	m.deliversGitHub = forge.Resolve("", forge.RemoteURL(ctx, m.repoRoot, "")) != forge.Bitbucket
 	scan := config.ScanPullRequestCI(m.repoRoot)
 	m.ciHasPRDet = scan.HasPRWorkflows
 	m.ciDet = CIDetection{Gate: scan.HasPRWorkflows, PathFiltered: scan.AllPathFiltered, Source: ciWorkflowSource(scan.HasPRWorkflows)}
@@ -558,7 +571,8 @@ func (m onboardingModel) focusedKey() string {
 // the field instead of navigating back and ? is typed literally.
 func (m onboardingModel) editing() bool {
 	switch m.focusedKey() {
-	case keyLinearKey, keyJiraBase, keyJiraEmail, keyJiraToken, keyAzureOrgURL, keyAzurePAT, keyBaseBranch, keyTeam, keyTeamManual:
+	case keyLinearKey, keyJiraBase, keyJiraEmail, keyJiraToken, keyAzureOrgURL, keyAzurePAT,
+		keyBitbucketEmail, keyBitbucketToken, keyBaseBranch, keyTeam, keyTeamManual:
 		return true
 	}
 	return false
@@ -771,6 +785,11 @@ func (m onboardingModel) formHelp(nav helpColumn) screenHelp {
 		}}
 	case keyAzureOrgURL, keyAzurePAT:
 		return screenHelp{title: "Azure DevOps credentials", columns: []helpColumn{
+			group("Navigate", fk("tab/↑↓", "move")),
+			group("Actions", fk("enter", "next"), fk("esc/←", "back")),
+		}}
+	case keyBitbucketEmail, keyBitbucketToken:
+		return screenHelp{title: "Bitbucket credentials", columns: []helpColumn{
 			group("Navigate", fk("tab/↑↓", "move")),
 			group("Actions", fk("enter", "next"), fk("esc/←", "back")),
 		}}

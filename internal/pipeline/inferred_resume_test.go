@@ -39,7 +39,7 @@ func newParkedPipeline(t *testing.T, branch string, gh *fakeGitHub, tr tracker.T
 	logs := &logRenderer{}
 	p := newTestPipeline(t, fakeRunner{}, tr)
 	p.Git = parkedGit{branch: branch}
-	p.GitHub = gh
+	p.Delivery = gh
 	p.Renderer = logs
 	return p, logs
 }

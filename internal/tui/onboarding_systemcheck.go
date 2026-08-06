@@ -115,7 +115,11 @@ func (m onboardingModel) nextSystemCheckCmd() tea.Cmd {
 	linearAPIReady := m.actions.LinearAPIKeyConfigured()
 	prefillProvider := m.actions.OnboardingPrefill().Provider
 	repoRoot := m.repoRoot
+	deliversGitHub := m.deliversGitHub
 	return tea.Tick(420*time.Millisecond, func(time.Time) tea.Msg {
+		if !deliversGitHub && (name == "gh" || name == "github-auth") {
+			return systemCheckResultMsg{index: idx, status: checkSkipped, detail: "not needed on this repo's forge"}
+		}
 		status, detail, err := runSystemCheck(name, probe, ghReady, linearAPIReady, prefillProvider, repoRoot)
 		return systemCheckResultMsg{index: idx, status: status, detail: detail, err: err}
 	})
@@ -362,7 +366,14 @@ func (m onboardingModel) handleSystemCheck(msg tea.KeyPressMsg) (onboardingModel
 func (m onboardingModel) systemChecksPass() bool {
 	for _, c := range m.systemChecks {
 		switch c.name {
-		case "git", "gh", "github-auth":
+		case "gh", "github-auth":
+			// gh is a gate only for a repo that ships through it. A Bitbucket
+			// remote is delivered over the REST API and needs no GitHub CLI at
+			// all, so demanding one there blocks a wizard nobody can unblock.
+			if m.deliversGitHub && c.status != checkDone {
+				return false
+			}
+		case "git":
 			if c.status != checkDone {
 				return false
 			}

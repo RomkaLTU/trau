@@ -36,6 +36,8 @@ import (
 	"github.com/RomkaLTU/trau/internal/doctor"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/folderrepo"
+	"github.com/RomkaLTU/trau/internal/forge"
+	"github.com/RomkaLTU/trau/internal/forge/bitbucketapi"
 	"github.com/RomkaLTU/trau/internal/hubartifact"
 	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
@@ -1308,8 +1310,37 @@ func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context
 		if len(proofs) == 0 {
 			return proofsbranch.Publication{}, nil
 		}
-		return proofsbranch.Publish(ctx, proofsbranch.Config{RepoDir: repoDir, Remote: cfg.Remote}, ticket, proofs)
+		pcfg := proofsbranch.Config{RepoDir: repoDir, Remote: cfg.Remote, RepoInfo: proofsRepoInfo(ctx, cfg, repoRoot, repoDir)}
+		return proofsbranch.Publish(ctx, pcfg, ticket, proofs)
 	}
+}
+
+// proofsRepoInfo answers who owns repoDir and whether it is private for a forge
+// with no CLI to ask — Bitbucket Cloud, where the REST API is the only source.
+// It is nil for every other forge, which leaves proofsbranch on its `gh repo
+// view` default and the GitHub path exactly as it was.
+func proofsRepoInfo(ctx context.Context, cfg config.Config, repoRoot, repoDir string) func(context.Context) (string, string, bool, bool) {
+	client, ok := bitbucketapi.ClientFor(ctx, repoDir, declaredForge(cfg, repoRoot, repoDir), cfg.Remote, cfg.BitbucketEmail, cfg.BitbucketAPIToken)
+	if !ok || client.Workspace() == "" || client.RepoSlug() == "" {
+		return nil
+	}
+	return func(ctx context.Context) (string, string, bool, bool) {
+		repo, err := client.Repo(ctx)
+		if err != nil {
+			return "", "", false, false
+		}
+		return client.Workspace(), client.RepoSlug(), repo.Private, true
+	}
+}
+
+// declaredForge is the FORGE that answers for one repository a run ships to: the
+// run's own layered value for the target repo, and a Folder child's own .trau.ini
+// for a child — the same grain baseOf and forgeOf already read a child at.
+func declaredForge(cfg config.Config, repoRoot, root string) string {
+	if root == repoRoot {
+		return cfg.Forge
+	}
+	return config.Declared(root, "FORGE")
 }
 
 // steerQueue adapts the hub client to the pipeline's steer-note calls, binding
@@ -1475,6 +1506,17 @@ func (l sessionLedger) SetTicket(id string) {
 	l.Sink.SetTicket(id)
 }
 
+// deliveryBuilder resolves the pull-request backend for any repository a run
+// ships to. The target repo answers from the run's own layered FORGE; a Folder
+// repo's child answers from its own .trau.ini, the same grain baseOf and forgeOf
+// already read a child's base and forge at.
+func deliveryBuilder(cfg config.Config, repoRoot string) func(string) pipeline.Delivery {
+	creds := pipeline.BitbucketCredentials{Email: cfg.BitbucketEmail, APIToken: cfg.BitbucketAPIToken}
+	return func(root string) pipeline.Delivery {
+		return pipeline.NewDelivery(context.Background(), root, declaredForge(cfg, repoRoot, root), cfg.Remote, creds)
+	}
+}
+
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer, rec *sessionRecorder, fallbackNotice *agent.ModelFallbackNotice) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -1507,6 +1549,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 	}
 	store := newCheckpointStore(cfg, repoRoot)
 	rec.bind(store)
+	deliveryAt := deliveryBuilder(cfg, repoRoot)
 	return &pipeline.Pipeline{
 		Runner:               runner,
 		State:                store,
@@ -1514,10 +1557,10 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		PhaseLogs:            newPhaseLogStore(cfg, repoRoot),
 		LessonLedger:         newLessonStore(cfg, repoRoot),
 		Git:                  pipeline.ExecGit{Repo: repoRoot},
-		GitHub:               pipeline.ExecGitHub{Repo: repoRoot},
+		Delivery:             deliveryAt(repoRoot),
 		FolderRepo:           folder,
 		GitAt:                func(root string) pipeline.Git { return pipeline.ExecGit{Repo: root} },
-		GitHubAt:             func(root string) pipeline.GitHub { return pipeline.ExecGitHub{Repo: root} },
+		DeliveryAt:           deliveryAt,
 		Tracker:              pm,
 		Tokens:               sessionLedger{Sink: sink, rec: rec},
 		Budget:               budgetLimits(cfg),
@@ -2277,8 +2320,21 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 	userEnv := ""
 	if home, herr := os.UserHomeDir(); herr == nil {
 		userEnv = config.ProjectConfigPath(home)
+		userValues := map[string]string{}
 		if setup.LinearAPIKey != "" {
-			if err := config.WriteEnvFile(userEnv, map[string]string{"LINEAR_API_KEY": setup.LinearAPIKey}); err != nil {
+			userValues["LINEAR_API_KEY"] = setup.LinearAPIKey
+		}
+		// The Bitbucket pair authenticates an Atlassian account rather than one
+		// repository, so it belongs to the user file every repo on this machine
+		// reads — the same grain the account itself has.
+		if setup.BitbucketEmail != "" {
+			userValues["BITBUCKET_EMAIL"] = setup.BitbucketEmail
+		}
+		if setup.BitbucketAPIToken != "" {
+			userValues["BITBUCKET_API_TOKEN"] = setup.BitbucketAPIToken
+		}
+		if len(userValues) > 0 {
+			if err := config.WriteEnvFile(userEnv, userValues); err != nil {
 				return tui.SetupResult{ConfigPath: path}, fmt.Errorf("write user env: %w", err)
 			}
 		}
@@ -2475,6 +2531,14 @@ func detectCIGate(ctx context.Context, repoRoot, baseBranch string) tui.CIDetect
 		fallback.Source = "workflows"
 	}
 	if repoRoot == "" {
+		return fallback
+	}
+	// Required-check discovery is a GitHub branch-protection read. Bitbucket's
+	// equivalent merge check ("required builds") is a Premium-plan feature whose
+	// absence is indistinguishable from a repo that simply configures none, so a
+	// Bitbucket repo answers from its own pipelines file and no required-check
+	// gate is invented for it.
+	if forge.FromRemote(forge.RemoteURL(ctx, repoRoot, "")) != forge.GitHub {
 		return fallback
 	}
 	if _, err := exec.LookPath("gh"); err != nil {

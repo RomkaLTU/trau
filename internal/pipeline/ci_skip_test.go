@@ -31,7 +31,7 @@ func ciTestPipeline(t *testing.T, workflow string) *Pipeline {
 	return &Pipeline{
 		RequireCI: config.CIGateAuto,
 		RepoRoot:  root,
-		GitHub:    &epicGitHub{},
+		Delivery:  &epicGitHub{},
 		Sleep:     func(time.Duration) {},
 	}
 }
@@ -81,7 +81,7 @@ func TestPollCIExpectedChecksStillTimeOutOnPathFilteredRepo(t *testing.T) {
 
 func TestPollCIFailingCheckStillFailsOnPathFilteredRepo(t *testing.T) {
 	p := ciTestPipeline(t, "on:\n  pull_request:\n    paths:\n      - 'web/**'\n")
-	p.GitHub = &epicGitHub{checks: []Check{{Name: "ci/test", Bucket: "fail"}}}
+	p.Delivery = &epicGitHub{checks: []Check{{Name: "ci/test", Bucket: "fail"}}}
 	if err := p.pollCI(context.Background(), ciTestPR, "main"); !errors.Is(err, ErrCIFailed) {
 		t.Fatalf("pollCI = %v, want ErrCIFailed", err)
 	}
@@ -138,7 +138,7 @@ func TestPollCIAutoJudgesChecksThatAppearOnBaseWithNoWorkflow(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.bucket, func(t *testing.T) {
 			p := ciTestPipeline(t, "on:\n  pull_request:\n    branches: [main]\n")
-			p.GitHub = &epicGitHub{checks: []Check{{Name: "ci/test", Bucket: tc.bucket}}}
+			p.Delivery = &epicGitHub{checks: []Check{{Name: "ci/test", Bucket: tc.bucket}}}
 			if err := p.pollCI(context.Background(), ciTestPR, "epic/COD-1-checkout"); !errors.Is(err, tc.want) {
 				t.Fatalf("pollCI = %v, want %v", err, tc.want)
 			}
@@ -152,7 +152,7 @@ func TestPollCIAutoJudgesChecksThatAppearOnBaseWithNoWorkflow(t *testing.T) {
 func TestPollCIAutoWaitsForLateCheckWhenRepoHasNoPRWorkflow(t *testing.T) {
 	p := ciTestPipeline(t, "on:\n  push:\n    branches: [main]\n")
 	p.CITimeout, p.CIPoll = 600, 30
-	p.GitHub = &lateCheckGitHub{after: 6}
+	p.Delivery = &lateCheckGitHub{after: 6}
 	if err := p.pollCI(context.Background(), ciTestPR, "main"); !errors.Is(err, ErrCIFailed) {
 		t.Fatalf("pollCI = %v, want ErrCIFailed", err)
 	}

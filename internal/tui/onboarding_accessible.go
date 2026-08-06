@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"charm.land/huh/v2"
+	"github.com/RomkaLTU/trau/internal/forge"
 )
 
 // AccessibleOnboardingRequested reports whether the environment asked for huh's
@@ -65,7 +66,8 @@ func RunAccessibleOnboarding(ctx context.Context, actions OnboardingActions) (Se
 		return SetupResult{}, err
 	}
 
-	rest := huh.NewForm(accessibleGroups(fv)...).WithAccessible(true).WithTheme(huhTheme(theme))
+	deliversBitbucket := forge.Resolve("", forge.RemoteURL(ctx, actions.RepoRoot(), "")) == forge.Bitbucket
+	rest := huh.NewForm(accessibleGroups(fv, deliversBitbucket)...).WithAccessible(true).WithTheme(huhTheme(theme))
 	if err := rest.RunWithContext(ctx); err != nil {
 		return SetupResult{}, err
 	}
@@ -75,8 +77,9 @@ func RunAccessibleOnboarding(ctx context.Context, actions OnboardingActions) (Se
 }
 
 // accessibleGroups builds the second-pass form: credentials for the chosen
-// tracker, then the shared settings.
-func accessibleGroups(fv *formValues) []*huh.Group {
+// tracker, the delivery credential a Bitbucket remote needs, then the shared
+// settings.
+func accessibleGroups(fv *formValues, deliversBitbucket bool) []*huh.Group {
 	var groups []*huh.Group
 	switch fv.tracker {
 	case "linear":
@@ -94,6 +97,14 @@ func accessibleGroups(fv *formValues) []*huh.Group {
 		groups = append(groups, huh.NewGroup(
 			huh.NewInput().Title("Azure DevOps organization URL (required)").Value(&fv.azureOrgURL),
 			huh.NewInput().Title("Azure DevOps personal access token (required)").EchoMode(huh.EchoModePassword).Value(&fv.azurePAT),
+		))
+	}
+
+	if deliversBitbucket {
+		groups = append(groups, huh.NewGroup(
+			huh.NewInput().Title("Atlassian email for Bitbucket delivery (blank keeps what is stored)").Value(&fv.bitbucketEmail),
+			huh.NewInput().Title("Bitbucket API token, minted at "+bitbucketTokenSettingsURL+" (blank keeps what is stored)").
+				EchoMode(huh.EchoModePassword).Value(&fv.bitbucketToken),
 		))
 	}
 

@@ -41,7 +41,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         baseCurrentGit{},
-		GitHub:      gh,
+		Delivery:    gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),
 	}
@@ -86,7 +86,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 		RequireCI:   config.CIGateOff,
 		MergeMethod: "squash",
 		Git:         baseCurrentGit{},
-		GitHub:      gh,
+		Delivery:    gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),
 	}
@@ -133,7 +133,7 @@ func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         baseCurrentGit{},
-		GitHub:      gh,
+		Delivery:    gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),
 	}
@@ -159,7 +159,7 @@ func TestEnsureEpicPRNoCommitsWithoutMergedPRStillFails(t *testing.T) {
 	gh := &epicGitHub{
 		createErr: errors.New("gh pr create: exit status 1: GraphQL: No commits between main and epic/COD-1 (createPullRequest)"),
 	}
-	p := &Pipeline{Base: "main", EpicID: "COD-1", Git: baseCurrentGit{}, GitHub: gh, Tracker: &epicTracker{title: "x"}}
+	p := &Pipeline{Base: "main", EpicID: "COD-1", Git: baseCurrentGit{}, Delivery: gh, Tracker: &epicTracker{title: "x"}}
 	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x", false); err == nil {
 		t.Fatal("expected create error to surface when no merged PR exists")
 	}
@@ -294,7 +294,7 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 		t.Fatalf("epic PR_STATUS = %q, want none — nothing shipped", got)
 	}
 
-	p.GitHub = &waitGitHub{
+	p.Delivery = &waitGitHub{
 		epicGitHub: epicGitHub{createURL: "https://github.test/pr/42"},
 		replies:    []prReply{{state: "MERGED"}},
 	}
@@ -705,7 +705,7 @@ func TestFinalizeEpicRerunLeavesAShippedEpicMerged(t *testing.T) {
 	}
 }
 
-func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
+func newEpicWaitPipeline(t *testing.T, gh Delivery, tr *epicTracker) *Pipeline {
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
@@ -716,7 +716,7 @@ func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         baseCurrentGit{},
-		GitHub:      gh,
+		Delivery:    gh,
 		Tracker:     tr,
 		State:       state.NewStore(dir),
 		RunsDir:     dir,
@@ -726,7 +726,7 @@ func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
 
 // shippableEpicPipeline wires an epic that ships end to end once its children are
 // terminal: CI gated, auto-merge on, fake git and a fresh checkpoint store.
-func shippableEpicPipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipeline {
+func shippableEpicPipeline(t *testing.T, gh Delivery, tr tracker.Tracker) *Pipeline {
 	t.Helper()
 	return &Pipeline{
 		Base:        "main",
@@ -737,7 +737,7 @@ func shippableEpicPipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipelin
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         baseCurrentGit{},
-		GitHub:      gh,
+		Delivery:    gh,
 		Tracker:     tr,
 		State:       state.NewStore(t.TempDir()),
 	}
@@ -797,12 +797,12 @@ func TestFinalizeEpicWaitsWhenAnyChildOpen(t *testing.T) {
 			}
 			gh := &epicGitHub{createURL: "https://github.test/pr/42"}
 			p := &Pipeline{
-				Base:    "main",
-				EpicID:  "COD-1",
-				exit:    exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
-				GitHub:  gh,
-				Tracker: tr,
-				State:   state.NewStore(t.TempDir()),
+				Base:     "main",
+				EpicID:   "COD-1",
+				exit:     exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
+				Delivery: gh,
+				Tracker:  tr,
+				State:    state.NewStore(t.TempDir()),
 			}
 			for k, v := range tt.checkpoint {
 				if err := p.State.Set("COD-3", k, v); err != nil {
@@ -1358,7 +1358,7 @@ func TestEpicCIAndMergeReportsActivities(t *testing.T) {
 	rec := &activityRecorder{}
 	gh := &redThenGreenGitHub{}
 	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
-	p.GitHub = gh
+	p.Delivery = gh
 	p.Remote = "origin"
 	p.EpicID = "COD-7110"
 	p.exit.epicBranch = "epic/COD-7110-thing"

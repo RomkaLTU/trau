@@ -30,14 +30,18 @@ const (
 	keyJiraToken   = "jiratoken"
 	keyAzureOrgURL = "azureorgurl"
 	keyAzurePAT    = "azurepat"
-	keyBaseBranch  = "basebranch"
-	keyBranching   = "branching"
-	keyTeam        = "team"
-	keyTeamManual  = "teammanual"
-	keyLabels      = "labels"
-	keyTimelog     = "timelog"
-	keyCI          = "ci"
-	keyWrite       = "write"
+
+	keyBitbucketEmail = "bitbucketemail"
+	keyBitbucketToken = "bitbuckettoken"
+
+	keyBaseBranch = "basebranch"
+	keyBranching  = "branching"
+	keyTeam       = "team"
+	keyTeamManual = "teammanual"
+	keyLabels     = "labels"
+	keyTimelog    = "timelog"
+	keyCI         = "ci"
+	keyWrite      = "write"
 )
 
 // teamManualSentinel is the team-picker option value that routes to the free-text
@@ -52,6 +56,10 @@ const (
 	// tickets, Project and Team to list the organization's team projects — which
 	// this wizard's picker and the connection test both read.
 	azurePATScopes = "Work Items (read & write) and Project and Team (read)"
+	// bitbucketTokenSettingsURL is where the Bitbucket pair is minted. It is the
+	// same Atlassian token page Jira uses — Bitbucket Cloud removed app passwords,
+	// and a scoped account token is the only credential it still accepts.
+	bitbucketTokenSettingsURL = jiraTokenSettingsURL
 )
 
 // formValues holds the huh-bound wizard values. It is pointer-shared across the
@@ -65,13 +73,17 @@ type formValues struct {
 	jiraToken   string
 	azureOrgURL string
 	azurePAT    string
-	baseBranch  string
-	epicFlow    bool
-	team        string
-	teamManual  string
-	labels      string
-	timelog     bool
-	requireCI   bool
+	// bitbucketEmail and bitbucketToken are the delivery credential, not a tracker
+	// one: they are asked for by the repo's own forge, not by its tracker.
+	bitbucketEmail string
+	bitbucketToken string
+	baseBranch     string
+	epicFlow       bool
+	team           string
+	teamManual     string
+	labels         string
+	timelog        bool
+	requireCI      bool
 	// expectedChecks holds the required status-check names detected on GitHub;
 	// written to EXPECTED_CHECKS so the gate waits for exactly those checks.
 	expectedChecks []string
@@ -157,6 +169,17 @@ func (m onboardingModel) newForm() *huh.Form {
 		Description("Azure DevOps has no MCP, so both values are required.\nThe token needs the " + azurePATScopes + " scopes.\nMint one: " + azurePATSettingsURL).
 		WithHideFunc(func() bool { return fv.tracker != "azure" })
 
+	// Delivery to Bitbucket Cloud is REST-only — there is no CLI holding a session
+	// the way gh does — so the pair is asked for here rather than left to doctor.
+	// A repo on any other forge never sees the group.
+	deliversBitbucket := !m.deliversGitHub
+	bitbucketCreds := huh.NewGroup(
+		huh.NewInput().Key(keyBitbucketEmail).Title("Atlassian email").Placeholder("you@acme.com").CharLimit(200).Value(&fv.bitbucketEmail),
+		huh.NewInput().Key(keyBitbucketToken).Title("API token").Placeholder("Atlassian API token with pull-request scopes").EchoMode(huh.EchoModePassword).CharLimit(256).Value(&fv.bitbucketToken),
+	).Title("Bitbucket Cloud credentials").
+		Description("This repo's remote is Bitbucket, which trau delivers to over the REST API.\nBoth are required to open a pull request there; blank keeps what is stored.\nMint a token: " + bitbucketTokenSettingsURL).
+		WithHideFunc(func() bool { return !deliversBitbucket })
+
 	baseBranch := huh.NewGroup(
 		huh.NewInput().
 			Key(keyBaseBranch).
@@ -238,7 +261,7 @@ func (m onboardingModel) newForm() *huh.Form {
 	)
 
 	form := huh.NewForm(
-		providers, linearKey, jiraCreds, azureCreds, baseBranch,
+		providers, linearKey, jiraCreds, azureCreds, bitbucketCreds, baseBranch,
 		team, teamManual, labels, timeTracking, ci, write,
 	).
 		WithTheme(huhTheme(theme)).
@@ -459,6 +482,12 @@ func (m onboardingModel) renderWritePreview() string {
 			rows = append(rows, "  AZURE_PAT=(blank — the tracker will not be reachable)")
 		}
 	}
+	if v := strings.TrimSpace(fv.bitbucketEmail); v != "" {
+		rows = append(rows, "  BITBUCKET_EMAIL="+v+"  (user config)")
+	}
+	if tok := strings.TrimSpace(fv.bitbucketToken); tok != "" {
+		rows = append(rows, "  BITBUCKET_API_TOKEN="+maskAPIKey(tok)+"  (user config)")
+	}
 	rows = append(rows, "  BASE_BRANCH="+base)
 	rows = append(rows, "  PROVIDER="+fv.aiProvider)
 	rows = append(rows, "  READY_LABEL=ready-for-agent")
@@ -511,6 +540,9 @@ func projectSetupFrom(fv *formValues) ProjectSetup {
 		JiraAPIToken:    strings.TrimSpace(fv.jiraToken),
 		AzureOrgURL:     strings.TrimSpace(fv.azureOrgURL),
 		AzurePAT:        strings.TrimSpace(fv.azurePAT),
+
+		BitbucketEmail:    strings.TrimSpace(fv.bitbucketEmail),
+		BitbucketAPIToken: strings.TrimSpace(fv.bitbucketToken),
 	}
 }
 

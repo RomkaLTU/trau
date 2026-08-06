@@ -131,7 +131,7 @@ func (g *stackedGitHub) CreatePR(ctx context.Context, base, head, title, body st
 	return g.epicGitHub.CreatePR(ctx, base, head, title, body, draft)
 }
 
-func newStackedPipeline(t *testing.T, git Git, gh GitHub, tr tracker.Tracker) *Pipeline {
+func newStackedPipeline(t *testing.T, git Git, gh Delivery, tr tracker.Tracker) *Pipeline {
 	t.Helper()
 	p := localTestPipeline(t, git, gh, tr)
 	p.EpicID = stackedEpicID

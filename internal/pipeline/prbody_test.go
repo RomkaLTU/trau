@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/forge"
 	"github.com/RomkaLTU/trau/internal/proofsbranch"
 )
 
@@ -257,6 +258,35 @@ func TestRenderProofsSectionPrivateUsesLinks(t *testing.T) {
 	}
 	if strings.Contains(got, "Browser QA:") {
 		t.Errorf("no browser outcome means no outcome line:\n%s", got)
+	}
+}
+
+// TestRenderProofsSectionOnBitbucketUsesBitbucketURLs keeps the same public/
+// private split on the second forge: neither forge's image renderer can reach a
+// file behind repository authentication.
+func TestRenderProofsSectionOnBitbucketUsesBitbucketURLs(t *testing.T) {
+	pub := proofsbranch.Publication{
+		Owner:  "acme",
+		Repo:   "widgets",
+		Branch: proofsbranch.Branch,
+		Forge:  forge.Bitbucket,
+		Files:  []proofsbranch.File{{Path: "COD-1514/proof-1.png", Caption: "cart totals"}},
+	}
+
+	got := renderProofsSection(pub, "")
+	want := "![cart totals](https://bitbucket.org/acme/widgets/raw/trau-proofs/COD-1514/proof-1.png)"
+	if !strings.Contains(got, want) {
+		t.Errorf("public Bitbucket repo must embed raw URLs:\n%s", got)
+	}
+	if strings.Contains(got, "raw.githubusercontent.com") {
+		t.Errorf("a Bitbucket publication must not build GitHub URLs:\n%s", got)
+	}
+
+	pub.Private = true
+	got = renderProofsSection(pub, "")
+	want = "[cart totals](https://bitbucket.org/acme/widgets/src/trau-proofs/COD-1514/proof-1.png)"
+	if !strings.Contains(got, want) || strings.Contains(got, "![") {
+		t.Errorf("private Bitbucket repo must emit clickable src links:\n%s", got)
 	}
 }
 

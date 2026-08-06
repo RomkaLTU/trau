@@ -126,6 +126,33 @@ func Host(remoteURL string) string {
 	return strings.ToLower(host)
 }
 
+// Slug is the owner and repository name a remote URL carries — the last two path
+// segments, "acme/widgets" split in two — across every URL form git accepts. It
+// is how each forge's REST API addresses a repository (a Bitbucket workspace and
+// repo slug, a GitHub owner and repo), and reading it off the remote costs
+// nothing and answers before any credential exists. A remote naming no host, or
+// carrying fewer than two segments, has no slug.
+func Slug(remoteURL string) (owner, name string, ok bool) {
+	if Host(remoteURL) == "" {
+		return "", "", false
+	}
+	path := strings.TrimSuffix(strings.TrimSpace(remoteURL), ".git")
+	if _, rest, hasScheme := strings.Cut(path, "://"); hasScheme {
+		_, path, _ = strings.Cut(rest, "/")
+	} else {
+		_, path, _ = strings.Cut(path, ":")
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	owner, name = parts[len(parts)-2], parts[len(parts)-1]
+	if owner == "" || name == "" {
+		return "", "", false
+	}
+	return owner, name, true
+}
+
 // Label names the forge the way a report should say it out loud.
 func (f Forge) Label() string {
 	switch f {
@@ -144,15 +171,15 @@ func (f Forge) Label() string {
 }
 
 // Unsupported names why a run cannot deliver to this forge, or "" when it can.
-// Opening pull requests is GitHub-only, so this is a fact a run states before it
-// spends anything rather than one it discovers at `gh pr create`, after the
-// build, handoff and verify agents have been paid for.
+// trau opens pull requests on GitHub and Bitbucket Cloud; everywhere else this is
+// a fact a run states before it spends anything rather than one it discovers at
+// PR time, after the build, handoff and verify agents have been paid for.
 func (f Forge) Unsupported() string {
 	switch f {
-	case GitHub, None:
+	case GitHub, Bitbucket, None:
 		return ""
 	case Unknown:
 		return "its remote is on a forge trau does not recognize — name it with FORGE in its .trau.ini"
 	}
-	return "its remote is on " + f.Label() + ", and trau opens pull requests on GitHub only"
+	return "its remote is on " + f.Label() + ", and trau opens pull requests on GitHub and Bitbucket only"
 }

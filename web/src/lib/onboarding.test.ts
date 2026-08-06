@@ -7,6 +7,7 @@ import {
   blankAppURLAccount,
   blankAppURLRow,
   credentialLayer,
+  forgeDelivers,
   essentialsConfigWrites,
   essentialsProjectKeys,
   joinProject,
@@ -181,6 +182,7 @@ describe('essentialsProjectKeys', () => {
       essentialsProjectKeys({
         baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
         forges: [],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: ' ship-it ',
         epicFlow: true,
       }),
@@ -192,6 +194,7 @@ describe('essentialsProjectKeys', () => {
       essentialsProjectKeys({
         baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
         forges: [],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: '  ',
         epicFlow: false,
       }),
@@ -205,6 +208,7 @@ describe('essentialsConfigWrites', () => {
       {
         baseBranches: [{ repo: 'acme', root: '/src/acme', branch: 'develop' }],
         forges: [{ root: '/src/acme', forge: '' }],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: 'ready-for-agent',
         epicFlow: true,
       },
@@ -225,6 +229,7 @@ describe('essentialsConfigWrites', () => {
           { repo: 'web', root: '/src/web', branch: ' master ' },
         ],
         forges: [],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -244,6 +249,7 @@ describe('essentialsConfigWrites', () => {
           { repo: 'svc', root: '/src/dupB/svc', branch: 'develop' },
         ],
         forges: [],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -263,6 +269,7 @@ describe('essentialsConfigWrites', () => {
           { repo: 'web', root: '/src/web', branch: 'master' },
         ],
         forges: [],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -285,6 +292,7 @@ describe('essentialsConfigWrites', () => {
           { root: '/src/api', forge: 'github' },
           { root: '/src/web', forge: 'azure' },
         ],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -295,6 +303,37 @@ describe('essentialsConfigWrites', () => {
       { root: '/src/web', key: 'BASE_BRANCH', value: 'master', layer: 'project' },
       { root: '/src/api', key: 'FORGE', value: 'github', layer: 'project' },
       { root: '/src/web', key: 'FORGE', value: 'azure', layer: 'project' },
+    ])
+  })
+
+  it('writes the Bitbucket pair once, to the user config', () => {
+    const writes = essentialsConfigWrites(
+      {
+        baseBranches: [{ repo: 'widgets', root: '/src/widgets', branch: 'main' }],
+        forges: [],
+        bitbucket: {
+          roots: ['/src/widgets'],
+          email: ' rd@acme.com ',
+          token: 'atl-token',
+        },
+        readyLabel: 'ready-for-agent',
+        epicFlow: false,
+      },
+      'platform',
+    )
+    expect(writes.filter((w) => w.key.startsWith('BITBUCKET_'))).toEqual([
+      {
+        root: '/src/widgets',
+        key: 'BITBUCKET_EMAIL',
+        value: 'rd@acme.com',
+        layer: 'user',
+      },
+      {
+        root: '/src/widgets',
+        key: 'BITBUCKET_API_TOKEN',
+        value: 'atl-token',
+        layer: 'user',
+      },
     ])
   })
 
@@ -309,6 +348,7 @@ describe('essentialsConfigWrites', () => {
           { root: '/src/api', forge: '' },
           { root: '/src/web', forge: 'gitlab' },
         ],
+        bitbucket: { roots: [], email: '', token: '' },
         readyLabel: 'ready-for-agent',
         epicFlow: false,
       },
@@ -603,5 +643,19 @@ describe('writeAppURLRows', () => {
     await writeAppURLRows('acme', [blankAppURLRow(), blankAppURLRow()])
 
     expect(calls).toEqual([])
+  })
+})
+
+// Mirrors TestUnsupportedNamesEveryForgeWithNoDeliveryPath in internal/forge: the
+// wizard must reach the same verdict a run does, or it passes a repo the run then
+// refuses (ADR 0036).
+describe('forgeDelivers', () => {
+  it('accepts the forges trau opens pull requests on, and no others', () => {
+    expect(forgeDelivers('github')).toBe(true)
+    expect(forgeDelivers('bitbucket')).toBe(true)
+    expect(forgeDelivers('')).toBe(true)
+    expect(forgeDelivers('gitlab')).toBe(false)
+    expect(forgeDelivers('azure')).toBe(false)
+    expect(forgeDelivers('unknown')).toBe(false)
   })
 })

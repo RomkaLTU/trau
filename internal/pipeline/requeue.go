@@ -43,7 +43,7 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 		if a.pr == "" {
 			continue
 		}
-		states[i], _ = a.github.PRState(ctx, a.pr)
+		states[i], _ = a.delivery.PRState(ctx, a.pr)
 		if states[i] == "MERGED" && !force {
 			return RefuseShipped("requeue", id, fmt.Sprintf("PR %s is merged%s", a.pr, a.inRepo()))
 		}
@@ -62,7 +62,7 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 
 	for i, a := range attempts {
 		if a.pr != "" && states[i] != "CLOSED" && states[i] != "MERGED" {
-			if err := a.github.ClosePR(ctx, a.pr); err != nil {
+			if err := a.delivery.ClosePR(ctx, a.pr); err != nil {
 				errs = append(errs, fmt.Errorf("close PR %s%s: %w", a.pr, a.inRepo(), err))
 			} else {
 				changed = append(changed, "closed the attempt PR "+a.pr+a.inRepo())

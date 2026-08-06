@@ -34,11 +34,11 @@ func (g *ciRepairGitHub) Checks(context.Context, string) ([]Check, error) {
 	return round, nil
 }
 
-func newCIRepairPipeline(t *testing.T, git Git, gh GitHub, tr *fakeTracker, maxRepairs int) (*Pipeline, *promptLog) {
+func newCIRepairPipeline(t *testing.T, git Git, gh Delivery, tr *fakeTracker, maxRepairs int) (*Pipeline, *promptLog) {
 	t.Helper()
 	calls := &promptLog{}
 	p := newMergePipeline(t, git, &mergeGitHub{}, tr)
-	p.GitHub = gh
+	p.Delivery = gh
 	p.Runner = fakeRunner{calls: calls}
 	p.PhaseLogs = newMemPhaseLogs()
 	p.MaxRepairs = maxRepairs
@@ -378,7 +378,7 @@ func TestFolderCIAndMergeStillFailsFastOnRedChild(t *testing.T) {
 	p.AutoMerge = true
 	p.MergeMethod = "squash"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	for key, value := range map[string]string{
 		"BRANCH":       branch,
 		"PHASE":        state.PROpen,

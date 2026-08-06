@@ -23,7 +23,7 @@ func qaFolder(t *testing.T, id, branch string, gits map[string]*childGit, ghs ma
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		t.Fatal(err)
 	}

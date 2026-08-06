@@ -79,7 +79,7 @@ func TestRetryGHExhaustsRetries(t *testing.T) {
 
 func TestCreateOrAdoptPRAdoptsExistingOnError(t *testing.T) {
 	fake := &fakeGitHub{createErr: []error{errors.New("exit status 1")}, prURL: "https://x/pr/99"}
-	p := &Pipeline{GitHub: fake, Sleep: func(time.Duration) {}}
+	p := &Pipeline{Delivery: fake, Sleep: func(time.Duration) {}}
 	url, err := p.createOrAdoptPR(context.Background(), "main", "feature/x", "t", "b")
 	if err != nil {
 		t.Fatalf("want nil, got %v", err)
@@ -94,7 +94,7 @@ func TestCreateOrAdoptPRAdoptsExistingOnError(t *testing.T) {
 
 func TestCreateOrAdoptPRRetriesTransientThenCreates(t *testing.T) {
 	fake := &fakeGitHub{createErr: []error{errors.New("exit status 1")}, createURL: "https://x/pr/100"}
-	p := &Pipeline{GitHub: fake, Sleep: func(time.Duration) {}}
+	p := &Pipeline{Delivery: fake, Sleep: func(time.Duration) {}}
 	url, err := p.createOrAdoptPR(context.Background(), "main", "feature/x", "t", "b")
 	if err != nil {
 		t.Fatalf("want nil, got %v", err)

@@ -468,3 +468,37 @@ func TestOnboardingNoRepo(t *testing.T) {
 		t.Error("enter on the no-repo screen should finish onboarding")
 	}
 }
+
+// TestOnboardingFormAsksBitbucketCredentials drives the delivery credential a
+// Bitbucket repo has no CLI to hold: the wizard asks for the pair, it lands in
+// the config mapping, and a repo on any other forge is never asked.
+func TestOnboardingFormAsksBitbucketCredentials(t *testing.T) {
+	bitbucketForm := func(deliversGitHub bool) onboardingModel {
+		fake := &fakeOnboardActions{repoRoot: t.TempDir()}
+		m := newOnboardingModelWithPrefill(context.Background(), fake, DefaultStyles(), 80, 40, OnboardingPrefill{})
+		m.fv.tracker = "github"
+		m.deliversGitHub = deliversGitHub
+		m.phase = phaseForm
+		m.form = m.newForm()
+		m = driveCmds(m, m.form.Init())
+		// tracker -> ai provider -> the first credential group not hidden.
+		return pressKey(pressKey(m, tea.KeyEnter), tea.KeyEnter)
+	}
+
+	m := bitbucketForm(false)
+	if got := m.focusedKey(); got != keyBitbucketEmail {
+		t.Fatalf("focused key after providers = %q, want %q (a bitbucket.org remote is delivered over the REST API)", got, keyBitbucketEmail)
+	}
+	m = typeRunes(m, "rd@acme.com")
+	m = pressKey(m, tea.KeyTab)
+	m = typeRunes(m, "atl-token")
+
+	setup := projectSetupFrom(m.fv)
+	if setup.BitbucketEmail != "rd@acme.com" || setup.BitbucketAPIToken != "atl-token" {
+		t.Errorf("setup pair = (%q, %q), want the typed credentials", setup.BitbucketEmail, setup.BitbucketAPIToken)
+	}
+
+	if got := bitbucketForm(true).focusedKey(); got == keyBitbucketEmail || got == keyBitbucketToken {
+		t.Errorf("focused key on a gh-delivered repo = %q, want the Bitbucket group hidden", got)
+	}
+}

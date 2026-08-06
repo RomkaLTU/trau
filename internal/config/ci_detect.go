@@ -34,16 +34,31 @@ func ParseCIGate(v string) CIGate {
 	}
 }
 
-// PRCIScan summarizes how the GitHub Actions workflows under repoRoot respond
-// to pull requests. HasPRWorkflows is true when at least one workflow triggers
-// on pull_request or pull_request_target. AllPathFiltered is true when every
-// such workflow scopes its PR trigger with paths/paths-ignore — a PR touching
-// only files outside every filter then receives zero status checks even though
-// the repo has PR CI for most changes.
+// PRCIScan summarizes how the CI a repository configures for itself responds to
+// pull requests, read from GitHub Actions workflows and Bitbucket Pipelines
+// alike. HasPRWorkflows is true when at least one pipeline can be triggered by a
+// pull request. AllPathFiltered is true when every such pipeline scopes itself to
+// a set of paths — a PR touching only files outside every filter then receives
+// zero status checks even though the repo has PR CI for most changes.
 type PRCIScan struct {
 	HasPRWorkflows  bool
 	AllPathFiltered bool
 	branches        []branchFilter
+	// unfiltered records that at least one PR trigger carries no path filter. It
+	// is kept alongside AllPathFiltered so two sources can be merged: a repo with
+	// both an Actions workflow and a Pipelines file is path-filtered only when
+	// neither of them has an unfiltered trigger.
+	unfiltered bool
+}
+
+// merge folds another source's scan into this one. Coverage is a union: any
+// pipeline from any source that could check a PR counts, and a repo is only
+// checkless by design when no source configured one at all.
+func (s *PRCIScan) merge(other PRCIScan) {
+	s.HasPRWorkflows = s.HasPRWorkflows || other.HasPRWorkflows
+	s.unfiltered = s.unfiltered || other.unfiltered
+	s.branches = append(s.branches, other.branches...)
+	s.AllPathFiltered = s.HasPRWorkflows && !s.unfiltered
 }
 
 // CoversBranch reports whether any PR trigger admits a pull request whose base
@@ -136,15 +151,23 @@ func globExpr(pattern string) string {
 	return b.String()
 }
 
-// ScanPullRequestCI inspects repoRoot's .github/workflows for pull_request
-// triggers and their path filters. Detection only sees GitHub Actions; CI
-// hosted elsewhere is invisible here, which is why the derived choices stay
-// user-overridable.
+// ScanPullRequestCI reports how repoRoot's own CI configuration answers a pull
+// request, reading both sources trau delivers to: .github/workflows for GitHub
+// Actions and bitbucket-pipelines.yml for Bitbucket Pipelines. It is keyed on the
+// files present rather than on the repo's forge, so a repo carrying both is
+// covered by either. CI hosted anywhere else is still invisible here, which is
+// why the derived choices stay user-overridable.
 func ScanPullRequestCI(repoRoot string) PRCIScan {
-	var scan PRCIScan
 	if repoRoot == "" {
-		return scan
+		return PRCIScan{}
 	}
+	scan := scanActionsWorkflows(repoRoot)
+	scan.merge(scanBitbucketPipelines(repoRoot))
+	return scan
+}
+
+func scanActionsWorkflows(repoRoot string) PRCIScan {
+	var scan PRCIScan
 	dir := filepath.Join(repoRoot, ".github", "workflows")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -174,14 +197,15 @@ func ScanPullRequestCI(repoRoot string) PRCIScan {
 		}
 		scan.branches = append(scan.branches, pr.branches...)
 	}
+	scan.unfiltered = unfiltered
 	scan.AllPathFiltered = scan.HasPRWorkflows && !unfiltered
 	return scan
 }
 
-// HasPullRequestCI reports whether repoRoot has at least one GitHub Actions
-// workflow triggered by pull_request or pull_request_target. Repos with no
-// workflows — or only push/schedule/deploy workflows — return false: their PRs
-// receive zero status checks, so the merge gate (REQUIRE_CI) should default off.
+// HasPullRequestCI reports whether repoRoot configures any CI a pull request can
+// trigger. Repos with no workflows and no pipelines — or only push/schedule/
+// deploy ones — return false: their PRs receive zero status checks, so the merge
+// gate (REQUIRE_CI) should default off.
 func HasPullRequestCI(repoRoot string) bool {
 	return ScanPullRequestCI(repoRoot).HasPRWorkflows
 }

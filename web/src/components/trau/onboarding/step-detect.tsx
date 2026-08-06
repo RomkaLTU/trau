@@ -56,7 +56,7 @@ function ChildRepos({ items, base }: { items: InspectChild[]; base: string }) {
       <Hint>
         Each child ships to its own base — {base} is only the one most of them use. A child
         parked elsewhere is checked out onto its base before the build; one hosted off GitHub
-        is left alone, because that is where trau opens pull requests.
+        or Bitbucket is left alone, because those are where trau opens pull requests.
       </Hint>
     </div>
   )
@@ -107,8 +107,8 @@ export function StepDetect({
       )}
 
       {hasFailures && (
-        <Callout tone="fail" title="trau opens pull requests on GitHub only">
-          Name the host on the essentials step if it's a GitHub install trau didn't recognise.
+        <Callout tone="fail" title="trau opens pull requests on GitHub and Bitbucket only">
+          Name the host on the essentials step if it's an install trau didn't recognise.
           A repo on another forge can still be registered, it just won't be shipped to.
         </Callout>
       )}

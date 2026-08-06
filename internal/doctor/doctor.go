@@ -23,6 +23,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/forge"
+	"github.com/RomkaLTU/trau/internal/forge/bitbucketapi"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/launchd"
@@ -65,7 +66,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	provider := cfg.ResolveSyncProvider(sources)
 
 	checkGit(ctx, rr)
-	checkGitHub(ctx, rr)
+	checkDelivery(ctx, cfg, repoRoot, rr)
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, provider, sources, repoRoot, rr)
 	checkRemote(ctx, cfg, repoRoot, rr)
@@ -134,7 +135,71 @@ func checkGit(ctx context.Context, rr *runner) {
 	rr.add("git", pass, strings.TrimSpace(string(out)), "")
 }
 
-func checkGitHub(ctx context.Context, rr *runner) {
+// checkDelivery reports the credentials the forges this repo really ships to
+// need, and only those. gh stopped being a universal requirement when Bitbucket
+// delivery arrived: a repo on bitbucket.org needs an Atlassian API token and no
+// gh at all, and demanding one there is a failed check nobody can act on. A repo
+// whose forge cannot be read — doctor run outside a repository — is still checked
+// for gh, since that is what an unread remote most often turns out to be; a repo
+// with no remote at all delivers locally and needs no forge credential, so it is
+// asked for none.
+func checkDelivery(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) {
+	forges, known := deliveryForges(ctx, cfg, repoRoot)
+	if !known {
+		checkGitHubCLI(ctx, rr)
+		return
+	}
+	for _, t := range forges {
+		switch t.forge {
+		case forge.GitHub:
+			checkGitHubCLI(ctx, rr)
+		case forge.Bitbucket:
+			checkBitbucket(ctx, cfg, t.path, rr)
+		}
+	}
+}
+
+// deliveryTarget is one forge a run would deliver to, and the repository whose
+// remote named it — a Folder repo's Bitbucket credential is proved against the
+// child that actually lives there, not against the folder, which is not a git
+// repository at all.
+type deliveryTarget struct {
+	forge forge.Forge
+	path  string
+}
+
+// deliveryForges names every forge a run started here would open a pull request
+// on: this repo's own, or one per Child repo of a Folder repo, deduplicated and
+// with the hosts trau cannot deliver to left out — checkForge and checkChildRepos
+// already name those. known is false when the repo itself could not be read, and
+// an empty set with known true means local delivery.
+func deliveryForges(ctx context.Context, cfg config.Config, repoRoot string) (targets []deliveryTarget, known bool) {
+	if repoRoot == "" {
+		return nil, false
+	}
+	remote := strings.TrimSpace(cfg.Remote)
+	seen := map[forge.Forge]bool{}
+	add := func(f forge.Forge, path string) {
+		if f.Unsupported() == "" && f != forge.None && !seen[f] {
+			seen[f] = true
+			targets = append(targets, deliveryTarget{forge: f, path: path})
+		}
+	}
+	if !folderrepo.Is(repoRoot) {
+		add(forge.Resolve(strings.TrimSpace(cfg.Forge), forge.RemoteURL(ctx, repoRoot, remote)), repoRoot)
+		return targets, true
+	}
+	children, _, err := folderrepo.Children(repoRoot)
+	if err != nil {
+		return nil, false
+	}
+	for _, c := range children {
+		add(forge.Resolve(config.Declared(c.Path, "FORGE"), forge.RemoteURL(ctx, c.Path, remote)), c.Path)
+	}
+	return targets, true
+}
+
+func checkGitHubCLI(ctx context.Context, rr *runner) {
 	bin, err := exec.LookPath("gh")
 	if err != nil {
 		rr.add("gh", fail, "gh is not on PATH", "install the GitHub CLI (https://cli.github.com)")
@@ -145,6 +210,37 @@ func checkGitHub(ctx context.Context, rr *runner) {
 		return
 	}
 	rr.add("gh", pass, "authenticated", "")
+}
+
+// checkBitbucket verifies the credential pair a Bitbucket Cloud remote is
+// delivered with. There is no CLI to ask, so the token itself is the check: one
+// authenticated read of the repository, which is also the cheapest call the API
+// has. Only the account email is ever echoed back.
+func checkBitbucket(ctx context.Context, cfg config.Config, repoPath string, rr *runner) {
+	email, token := strings.TrimSpace(cfg.BitbucketEmail), strings.TrimSpace(cfg.BitbucketAPIToken)
+	if email == "" || token == "" {
+		rr.add("bitbucket", fail, "BITBUCKET_EMAIL and BITBUCKET_API_TOKEN are not both set",
+			"mint an Atlassian API token at "+bitbucketapi.TokenHelpURL+" and set both keys in the repo's .trau.ini")
+		return
+	}
+	// The target reached this check because it already resolved to Bitbucket, so
+	// the forge is stated rather than read a second time.
+	client, _ := bitbucketapi.ClientFor(ctx, repoPath, string(forge.Bitbucket), strings.TrimSpace(cfg.Remote), email, token)
+	if !client.Enabled() {
+		rr.add("bitbucket", warn, "credentials are set but the remote names no workspace and repository",
+			"check the remote URL — it should read bitbucket.org/<workspace>/<repo>")
+		return
+	}
+	workspace, slug := client.Workspace(), client.RepoSlug()
+	if err := client.Ping(ctx); err != nil {
+		if hint := bitbucketapi.AuthErrorMessage(err, email); hint != "" {
+			rr.add("bitbucket", fail, "credentials rejected for "+workspace+"/"+slug, hint)
+			return
+		}
+		rr.add("bitbucket", warn, "could not reach Bitbucket Cloud: "+err.Error(), "check network access to api.bitbucket.org")
+		return
+	}
+	rr.add("bitbucket", pass, workspace+"/"+slug+" as "+email, "")
 }
 
 func checkProvider(ctx context.Context, cfg config.Config, rr *runner) {

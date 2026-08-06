@@ -113,12 +113,12 @@ func (c *countingGitHub) Merge(ctx context.Context, pr, method string, deleteBra
 	return c.epicGitHub.Merge(ctx, pr, method, deleteBranch)
 }
 
-func localTestPipeline(t *testing.T, git Git, gh GitHub, tr tracker.Tracker) *Pipeline {
+func localTestPipeline(t *testing.T, git Git, gh Delivery, tr tracker.Tracker) *Pipeline {
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
 		Git:                 git,
-		GitHub:              gh,
+		Delivery:            gh,
 		Tracker:             tr,
 		State:               state.NewStore(dir),
 		RunsDir:             dir,

@@ -68,9 +68,10 @@ export function forgeLabel(forge: string): string {
   return FORGE_LABEL[forge] ?? 'no remote'
 }
 
-// Delivery is GitHub-only: everything else is identified honestly and left alone.
+// Mirrors Forge.Unsupported in internal/forge: delivery reaches GitHub and
+// Bitbucket Cloud, and everything else is identified honestly and left alone.
 export function forgeDelivers(forge: string): boolean {
-  return forge === 'github' || forge === ''
+  return forge === 'github' || forge === 'bitbucket' || forge === ''
 }
 
 // Mirrors forge.Names() in internal/forge — the values FORGE accepts.
@@ -322,12 +323,28 @@ export interface MemberForge {
   forge: string
 }
 
+// The Atlassian account a Bitbucket Cloud member is delivered as, and the roots
+// that would use it. Bitbucket Cloud accepts no other credential — there is no
+// CLI holding a session the way GitHub has gh — so a member left without the pair
+// is refused before it picks a ticket.
+export interface BitbucketFields {
+  roots: string[]
+  email: string
+  token: string
+}
+
 export interface EssentialsFields {
   baseBranches: MemberBaseBranch[]
   forges: MemberForge[]
+  bitbucket: BitbucketFields
   readyLabel: string
   epicFlow: boolean
 }
+
+// Where a Bitbucket API token is minted; app passwords are gone and a scoped
+// Atlassian token is the only credential Bitbucket Cloud still accepts.
+export const BITBUCKET_TOKEN_URL =
+  'https://id.atlassian.com/manage-profile/security/api-tokens'
 
 export interface EssentialsWrite extends ConfigWrite {
   root: string
@@ -357,6 +374,19 @@ export function essentialsConfigWrites(
   for (const { root, forge } of fields.forges) {
     if (forge === '') continue
     writes.push({ root, key: 'FORGE', value: forge, layer: 'project' })
+  }
+  // The Bitbucket pair authenticates an Atlassian account rather than a
+  // repository, so one set answers for every member that ships there: it is
+  // written once, to the user config, addressed through a member that uses it. A
+  // blank field is left out, keeping whatever is already stored.
+  const { roots, email, token } = fields.bitbucket
+  if (roots.length > 0) {
+    if (email.trim() !== '') {
+      writes.push({ root: roots[0], key: 'BITBUCKET_EMAIL', value: email.trim(), layer: 'user' })
+    }
+    if (token.trim() !== '') {
+      writes.push({ root: roots[0], key: 'BITBUCKET_API_TOKEN', value: token, layer: 'user' })
+    }
   }
   if (project !== null) return writes
   const primary = fields.baseBranches[0].root

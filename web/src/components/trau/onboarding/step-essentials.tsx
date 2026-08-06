@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/select'
 import { writeConfig } from '@/lib/config'
 import {
+  BITBUCKET_TOKEN_URL,
   ensureGitignore,
   essentialsConfigWrites,
   essentialsProjectKeys,
@@ -21,14 +22,14 @@ import {
   type MemberRepo,
 } from '@/lib/onboarding'
 import { writeProjectTracker } from '@/lib/projects'
-import { FieldLabel, Hint, TextInput, Toggle } from './ui'
+import { FieldLabel, Hint, SecretInput, TextInput, Toggle } from './ui'
 
 // Radix rejects an empty item value, so the "let trau read it" choice carries a
 // sentinel that never leaves this file.
 const FORGE_AUTO = 'auto'
 
 const FORGE_HINT =
-  "Read from the remote — name it only when trau couldn't. A self-hosted GitHub Enterprise install is GitHub, and picking it is what unblocks delivery. Naming another forge records the truth for doctor and the sweep, but trau still opens pull requests on GitHub only."
+  "Read from the remote — name it only when trau couldn't. A self-hosted GitHub Enterprise install is GitHub, and picking it is what unblocks delivery. Naming another forge records the truth for doctor and the sweep, but trau opens pull requests on GitHub and Bitbucket Cloud only."
 
 function detectedBranch(member: MemberRepo): string {
   return member.inspection.default_branch || 'main'
@@ -90,6 +91,14 @@ export function StepEssentials({
   const [readyLabel, setReadyLabel] = useState(prefill?.ready_label ?? 'ready-for-agent')
   const [epicFlow, setEpicFlow] = useState(prefill?.epic_flow ?? false)
   const [gitignore, setGitignore] = useState(true)
+  const [bitbucketEmail, setBitbucketEmail] = useState('')
+  const [bitbucketToken, setBitbucketToken] = useState('')
+
+  // The forge a member would actually ship through: the pick when there is one,
+  // the detected remote otherwise.
+  const bitbucketRoots = forgeable
+    .filter((m) => (forges[m.root] || detectedForge(m)) === 'bitbucket')
+    .map((m) => m.root)
 
   const fields: EssentialsFields = {
     baseBranches: members.map((m) => ({
@@ -101,6 +110,7 @@ export function StepEssentials({
     forges: forgeable
       .filter((m) => forges[m.root] !== detectedForge(m))
       .map((m) => ({ root: m.root, forge: forges[m.root] })),
+    bitbucket: { roots: bitbucketRoots, email: bitbucketEmail, token: bitbucketToken },
     readyLabel,
     epicFlow,
   }
@@ -218,6 +228,34 @@ export function StepEssentials({
             <Hint>{FORGE_HINT}</Hint>
           </div>
         ))}
+
+      {bitbucketRoots.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            <FieldLabel htmlFor="bitbucket-email">bitbucket email</FieldLabel>
+            <TextInput
+              id="bitbucket-email"
+              value={bitbucketEmail}
+              placeholder="you@acme.com"
+              onChange={(e) => setBitbucketEmail(e.target.value)}
+            />
+          </div>
+          <SecretInput
+            id="bitbucket-api-token"
+            label="bitbucket api token"
+            placeholder="Atlassian API token"
+            value={bitbucketToken}
+            onChange={setBitbucketToken}
+          />
+          <Hint>
+            Bitbucket Cloud has no CLI to hold a session, so delivery authenticates with your
+            Atlassian account: both keys are required to open a pull request there. Mint a token
+            with pull-request scopes at{' '}
+            <span className="font-mono break-all">{BITBUCKET_TOKEN_URL}</span>. They are stored in
+            your user config, so every Bitbucket repo on this machine shares them.
+          </Hint>
+        </div>
+      )}
 
       <div className="flex flex-col gap-2">
         <FieldLabel htmlFor="ready-label">ready label</FieldLabel>
