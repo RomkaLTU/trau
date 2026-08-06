@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+} from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
 import {
   Clock,
   Loader2,
+  MoreHorizontal,
   PanelRightClose,
   PanelRightOpen,
   RotateCcw,
-  SkipForward,
   Sparkles,
   Square,
   Trash2,
@@ -16,11 +21,7 @@ import {
 
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
-import { ActivitySwitch } from "@/components/grill/activity";
-import {
-  AutoAcceptSwitch,
-  AutoAcceptToggle,
-} from "@/components/grill/auto-accept";
+import { AutoAcceptToggle } from "@/components/grill/auto-accept";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import {
@@ -33,7 +34,21 @@ import {
 } from "@/components/grill/model-select";
 import { useGrillSession } from "@/components/grill/session";
 import { SessionModeBadge } from "@/components/grill/session-mode";
+import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Popover,
   PopoverContent,
@@ -69,6 +84,7 @@ import {
   type GrillStartOpening,
   type OutcomePayload,
 } from "@/lib/grill";
+import { useActivityShown } from "@/lib/grill-activity";
 import {
   contextRows,
   loadContextOpen,
@@ -206,7 +222,7 @@ function InboxPage() {
   // Once a conversation is on screen it stays on screen. buildInbox re-sorts the queue
   // on every session state change, so a selection tracking the head would hand the chat
   // to another issue the moment an answer lands; the sticky id pins it until an explicit
-  // move — a rail click, j/k, Skip, an advance, or Back — sets ?issue=.
+  // move — a rail click, j/k, an advance, or Back — sets ?issue=.
   const [sticky, setSticky] = useState<string | null>(null);
   const selected = resolveSelection(items, done, peek, sticky);
 
@@ -296,24 +312,20 @@ function InboxPage() {
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
   });
 
-  // Skipping parks nothing: an untouched session settles server-side on idle, so the
+  // Advancing parks nothing: an untouched session settles server-side on idle, so the
   // item keeps its place in the queue and comes round again.
-  function skip() {
+  function advance() {
     const next = skipTarget(items, selected?.id ?? null);
     if (next !== null && next !== selected?.id) void setPeek(next);
   }
 
-  // The workspace owns j/k/s while it is on screen. The listener sits on the document
+  // The workspace owns j/k while it is on screen. The listener sits on the document
   // because the queue has nothing focused to hang a handler on — the chat does, and
   // the composer's Enter stays its own.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const action = inboxKeyAction(readKeyStroke(e));
       if (action === null) return;
-      if (action === "skip") {
-        skip();
-        return;
-      }
       if (!selected) return;
       const to =
         action === "next"
@@ -348,7 +360,7 @@ function InboxPage() {
   // banner the review published, so the inbox never leaves for the backlog.
   function onApplied() {
     const wasDraft = selected?.draft;
-    skip();
+    advance();
     void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
     void queryClient.invalidateQueries({
       queryKey: ["grill", repo, "applied"],
@@ -362,7 +374,7 @@ function InboxPage() {
   // stays in the queue as untouched.
   function onDiscarded() {
     const wasDraft = selected?.draft;
-    skip();
+    advance();
     if (wasDraft)
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
   }
@@ -475,7 +487,6 @@ function InboxPage() {
                     starter={starter}
                     onStatus={setStatus}
                     onStarted={onDraftStarted}
-                    onSkip={skip}
                     onApplied={onApplied}
                     onDiscarded={onDiscarded}
                   />
@@ -492,7 +503,6 @@ function InboxPage() {
                     onStatus={setStatus}
                     contextOpen={contextOpen}
                     onToggleContext={toggleContext}
-                    onSkip={skip}
                     onApplied={onApplied}
                     onDiscarded={onDiscarded}
                     onDeleted={onDeleted}
@@ -539,7 +549,6 @@ function SessionColumn({
   onStatus,
   contextOpen,
   onToggleContext,
-  onSkip,
   onApplied,
   onDiscarded,
   onDeleted,
@@ -554,7 +563,6 @@ function SessionColumn({
   onStatus: (status: GrillStatus) => void;
   contextOpen: boolean;
   onToggleContext: () => void;
-  onSkip: () => void;
   onApplied: (applied: GrillAppliedOutcome) => void;
   onDiscarded: () => void;
   onDeleted: (deleted: string[]) => void;
@@ -594,7 +602,6 @@ function SessionColumn({
         showContextToggle={hasSession}
         contextOpen={contextOpen}
         onToggleContext={onToggleContext}
-        onSkip={onSkip}
         onStartOver={live ? startOver : undefined}
         restarting={restarting}
         onEnd={
@@ -638,7 +645,6 @@ function SessionColumn({
             item={item}
             starter={starter}
             onStart={start}
-            onSkip={onSkip}
           />
         )}
 
@@ -673,7 +679,6 @@ function DraftColumn({
   starter,
   onStatus,
   onStarted,
-  onSkip,
   onApplied,
   onDiscarded,
 }: {
@@ -685,7 +690,6 @@ function DraftColumn({
   starter: InterviewStart;
   onStatus: (status: GrillStatus) => void;
   onStarted: (session: GrillSession) => void;
-  onSkip: () => void;
   onApplied: (applied: GrillAppliedOutcome) => void;
   onDiscarded: () => void;
 }) {
@@ -716,7 +720,6 @@ function DraftColumn({
         showContextToggle={false}
         contextOpen={false}
         onToggleContext={() => {}}
-        onSkip={onSkip}
         onEnd={session ? () => discard.mutate(session.id) : undefined}
         ending={discard.isPending}
         endError={discard.error}
@@ -821,7 +824,10 @@ function FreshDraftBody({
   const [autoAccept, setAutoAccept] = useState(false);
   const start = useMutation({
     mutationFn: (seed: string) =>
-      startGrillSession(repo, "", { ...starterOpening(starter, seed), autoAccept }),
+      startGrillSession(repo, "", {
+        ...starterOpening(starter, seed),
+        autoAccept,
+      }),
     onSuccess: (session) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -868,19 +874,17 @@ function FreshDraftBody({
 // read-only read of the issue over a footer whose actions are the only way an
 // Interview begins. Start interview opens a blank one; the composer opens with the
 // typed message as the first turn; Ask ahead parks just the opening question for
-// later; Skip moves on untouched.
+// later.
 function SessionPreview({
   repo,
   item,
   starter,
   onStart,
-  onSkip,
 }: {
   repo: string;
   item: InboxItem;
   starter: InterviewStart;
   onStart: (opening?: GrillStartOpening) => void;
-  onSkip: () => void;
 }) {
   const queryClient = useQueryClient();
   const issue = useQuery(issueQueryOptions(repo, item.id));
@@ -943,10 +947,6 @@ function SessionPreview({
             <Clock className={cn(askAhead.isPending && "animate-pulse")} />
             {askAhead.isPending ? "Asking ahead…" : "Ask ahead"}
           </Button>
-          <Button size="sm" variant="ghost" onClick={onSkip}>
-            <SkipForward />
-            Skip
-          </Button>
           <StartModelSelect starter={starter} className="ml-auto" />
         </div>
         <Composer
@@ -975,7 +975,6 @@ function SessionBar({
   showContextToggle,
   contextOpen,
   onToggleContext,
-  onSkip,
   onStartOver,
   restarting,
   onEnd,
@@ -997,7 +996,6 @@ function SessionBar({
   showContextToggle: boolean;
   contextOpen: boolean;
   onToggleContext: () => void;
-  onSkip: () => void;
   onStartOver?: () => void;
   restarting?: boolean;
   onEnd?: () => void;
@@ -1006,8 +1004,8 @@ function SessionBar({
   onDeleted?: (deleted: string[]) => void;
   draft?: boolean;
 }) {
-  const [modelError, setModelError] = useState<string | null>(null);
-  const [autoAcceptError, setAutoAcceptError] = useState<string | null>(null);
+  const switchModel = useModelSwitch(repo, session?.id);
+  const autoAccept = useAutoAcceptSwitch(session?.id);
 
   return (
     <div className="shrink-0 border-b border-border">
@@ -1031,20 +1029,6 @@ function SessionBar({
         </div>
         <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
           <SessionModeBadge mode={session?.mode} />
-          {session && (
-            <>
-              <ModelSwitch
-                repo={repo}
-                session={session}
-                onError={setModelError}
-              />
-              <SessionAutoAccept
-                session={session}
-                onError={setAutoAcceptError}
-              />
-              <ActivitySwitch />
-            </>
-          )}
           {reconnecting && (
             <span className="inline-flex items-center gap-1 text-xs text-warn">
               <span aria-hidden="true">⚠</span>
@@ -1052,29 +1036,19 @@ function SessionBar({
             </span>
           )}
           {pill && <StatusPill state={pill.tone} label={pill.label} />}
-          {onStartOver && (
-            <StartOverButton onConfirm={onStartOver} pending={restarting} />
-          )}
           {onEnd && (
             <EndButton draft={draft} onConfirm={onEnd} pending={ending} />
           )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onSkip}
-            aria-label="Skip to next issue"
-          >
-            <SkipForward />
-            Skip
-          </Button>
-          {onDeleted && (
-            <DeleteIssueDialog
-              repo={repo}
-              id={item.id}
-              iconOnly
-              onDeleted={onDeleted}
-            />
-          )}
+          <SessionMenu
+            repo={repo}
+            issueId={item.id}
+            session={session ?? null}
+            switchModel={switchModel}
+            autoAccept={autoAccept}
+            onStartOver={onStartOver}
+            restarting={restarting}
+            onDeleted={onDeleted}
+          />
           {showContextToggle && (
             <Button
               variant="ghost"
@@ -1095,34 +1069,29 @@ function SessionBar({
       {endError && (
         <p className="px-5 pb-2 text-xs text-destructive">{endError.message}</p>
       )}
-      {modelError && (
-        <p className="px-5 pb-2 text-xs text-destructive">{modelError}</p>
+      {switchModel.error && (
+        <p className="px-5 pb-2 text-xs text-destructive">
+          {switchModel.error.message}
+        </p>
       )}
-      {autoAcceptError && (
-        <p className="px-5 pb-2 text-xs text-destructive">{autoAcceptError}</p>
+      {autoAccept.error && (
+        <p className="px-5 pb-2 text-xs text-destructive">
+          {autoAccept.error.message}
+        </p>
       )}
     </div>
   );
 }
 
-// ModelSwitch is the bar's provider/model indicator for a live session. A switch
-// applies from the next agent turn and the SSE state frame updates the label, so
-// nothing here is optimistic; a finished or settled session keeps the label but the
-// menu disables. The confirmed model still lands in the list cache, which is what
-// Start over reads to carry a mid-interview switch into the fresh session.
-function ModelSwitch({
-  repo,
-  session,
-  onError,
-}: {
-  repo: string;
-  session: GrillSession;
-  onError: (message: string | null) => void;
-}) {
+// Both switches are driven from the bar rather than from the menu item that shows them:
+// the dropdown's content unmounts when the menu closes, and a mutation owned by an item
+// would lose its in-flight state the moment a selection dismissed the menu — taking the
+// guard against firing a second switch over an unresolved one with it.
+function useModelSwitch(repo: string, sessionId?: string) {
   const queryClient = useQueryClient();
-  const switchModel = useMutation({
-    mutationFn: (model: string) => switchGrillModel(session.id, model),
-    onMutate: () => onError(null),
+
+  return useMutation({
+    mutationFn: (model: string) => switchGrillModel(sessionId ?? "", model),
     onSuccess: (updated) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -1137,43 +1106,195 @@ function ModelSwitch({
           : prev,
       );
     },
-    onError: (err) => onError((err as Error).message),
   });
+}
+
+function useAutoAcceptSwitch(sessionId?: string) {
+  return useMutation({
+    mutationFn: (enabled: boolean) =>
+      setGrillAutoAccept(sessionId ?? "", enabled),
+  });
+}
+
+// SessionMenu is the bar's overflow: everything worth reaching for mid-interview but
+// not worth a permanent seat on the row. Both confirms are held here rather than under
+// the item that opens them — selecting an item closes the menu, and a dialog the menu
+// owned would go with it.
+function SessionMenu({
+  repo,
+  issueId,
+  session,
+  switchModel,
+  autoAccept,
+  onStartOver,
+  restarting,
+  onDeleted,
+}: {
+  repo: string;
+  issueId: string;
+  session: GrillSession | null;
+  switchModel: UseMutationResult<GrillSession, Error, string>;
+  autoAccept: UseMutationResult<GrillSession, Error, boolean>;
+  onStartOver?: () => void;
+  restarting?: boolean;
+  onDeleted?: (deleted: string[]) => void;
+}) {
+  const [startOverOpen, setStartOverOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  if (!session && !onDeleted) return null;
 
   return (
-    <GrillModelSelect
-      provider={session.provider ?? "claude"}
-      model={session.model ?? ""}
-      options={session.model_options ?? []}
-      label="Switch model"
-      disabled={isOver(session.state) || switchModel.isPending}
-      onChange={(next) => switchModel.mutate(next)}
-    />
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label="More actions"
+            title="More actions"
+          >
+            <MoreHorizontal />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-72">
+          {session && (
+            <>
+              <ModelSwitch session={session} switchModel={switchModel} />
+              <SessionAutoAccept session={session} autoAccept={autoAccept} />
+              <ActivityItem />
+              {(onStartOver || onDeleted) && <DropdownMenuSeparator />}
+            </>
+          )}
+          {onStartOver && (
+            <DropdownMenuItem
+              disabled={restarting}
+              onSelect={() => setStartOverOpen(true)}
+            >
+              <RotateCcw className={cn(restarting && "animate-spin")} />
+              Start over
+            </DropdownMenuItem>
+          )}
+          {onDeleted && (
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={() => setDeleteOpen(true)}
+            >
+              <Trash2 />
+              Delete
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      {onStartOver && (
+        <StartOverConfirm
+          open={startOverOpen}
+          onOpenChange={setStartOverOpen}
+          onConfirm={onStartOver}
+        />
+      )}
+      {onDeleted && (
+        <DeleteIssueDialog
+          repo={repo}
+          id={issueId}
+          open={deleteOpen}
+          onOpenChange={setDeleteOpen}
+          onDeleted={onDeleted}
+        />
+      )}
+    </>
   );
 }
 
-// SessionAutoAccept is the bar's auto-accept switch for a live session. Nothing here
-// is optimistic — the SSE state frame carries the new value, along with the auto answer
-// the hub posts when the flip lands on a question already waiting.
-function SessionAutoAccept({
+// ModelSwitch is the menu's provider/model control for a live session. A switch
+// applies from the next agent turn and the SSE state frame updates the label, so
+// nothing here is optimistic; a finished or settled session keeps the label but the
+// submenu disables. The confirmed model still lands in the list cache, which is what
+// Start over reads to carry a mid-interview switch into the fresh session.
+function ModelSwitch({
   session,
-  onError,
+  switchModel,
 }: {
   session: GrillSession;
-  onError: (message: string | null) => void;
+  switchModel: UseMutationResult<GrillSession, Error, string>;
 }) {
-  const setAutoAccept = useMutation({
-    mutationFn: (enabled: boolean) => setGrillAutoAccept(session.id, enabled),
-    onMutate: () => onError(null),
-    onError: (err) => onError((err as Error).message),
-  });
+  const provider = session.provider ?? "claude";
+  const model = session.model ?? "";
+  const options = session.model_options ?? [];
 
   return (
-    <AutoAcceptSwitch
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        disabled={
+          isOver(session.state) || switchModel.isPending || options.length === 0
+        }
+        aria-label="Switch model"
+      >
+        <span className="whitespace-nowrap">Switch model</span>
+        <span className="ml-auto truncate pl-4 font-mono text-xs text-muted-foreground">
+          {provider} · {model || "default"}
+        </span>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        <DropdownMenuRadioGroup
+          value={model}
+          onValueChange={(next) => switchModel.mutate(next)}
+        >
+          {options.map((m) => (
+            <DropdownMenuRadioItem
+              key={m}
+              value={m}
+              className="font-mono text-xs"
+            >
+              {m}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+}
+
+// SessionAutoAccept is the menu's auto-accept switch for a live session. Nothing here
+// is optimistic — the SSE state frame carries the new value, along with the auto answer
+// the hub posts when the flip lands on a question already waiting. Flipping it leaves
+// the menu open, so the other switches are still one click away.
+function SessionAutoAccept({
+  session,
+  autoAccept,
+}: {
+  session: GrillSession;
+  autoAccept: UseMutationResult<GrillSession, Error, boolean>;
+}) {
+  return (
+    <DropdownMenuCheckboxItem
       checked={session.auto_accept ?? false}
-      disabled={isOver(session.state) || setAutoAccept.isPending}
-      onChange={(next) => setAutoAccept.mutate(next)}
-    />
+      disabled={isOver(session.state) || autoAccept.isPending}
+      onCheckedChange={(next) => autoAccept.mutate(next === true)}
+      onSelect={(e) => e.preventDefault()}
+      title="Answers with the interviewer's own recommendation, asking you only when human taste is required"
+    >
+      Auto-accept
+    </DropdownMenuCheckboxItem>
+  );
+}
+
+// ActivityItem is the reader's own opt-in rather than the session's: it belongs to the
+// browser, so flipping it here settles every thread this browser opens.
+function ActivityItem() {
+  const [shown, setShown] = useActivityShown();
+
+  return (
+    <DropdownMenuCheckboxItem
+      checked={shown}
+      onCheckedChange={(next) => setShown(next === true)}
+      onSelect={(e) => e.preventDefault()}
+      title="Shows what the agent is doing mid-turn — the tools it reaches for, the stretches it spends thinking"
+    >
+      Activity
+    </DropdownMenuCheckboxItem>
   );
 }
 
@@ -1213,53 +1334,27 @@ function StartModelSelect({
 
 // Start over discards the live Interview and opens a fresh one on the same item. The
 // confirm guards only the typed answers — nothing has been written to the tracker — so
-// it is a lightweight popover, not a modal. Never call this "Reset": Reset is the
-// destructive ticket action (branch delete + re-queue).
-function StartOverButton({
+// it stays a plain confirm rather than a destructive one. Never call this "Reset":
+// Reset is the destructive ticket action (branch delete + re-queue).
+function StartOverConfirm({
+  open,
+  onOpenChange,
   onConfirm,
-  pending,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
-  pending?: boolean;
 }) {
-  const [open, setOpen] = useState(false);
-
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={pending}
-          aria-label="Start over"
-        >
-          <RotateCcw className={cn(pending && "animate-spin")} />
-          Start over
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-64">
-        <p className="text-sm font-medium text-foreground">
-          Discard this interview and start over?
-        </p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-          Your typed answers are lost. The ticket and its labels stay untouched.
-        </p>
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => {
-              setOpen(false);
-              onConfirm();
-            }}
-          >
-            Start over
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
+    <ConfirmDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      windowTitle="start over"
+      title="Discard this interview and start over?"
+      description="Your typed answers are lost. The ticket and its labels stay untouched."
+      confirmLabel="Start over"
+      onConfirm={onConfirm}
+    />
   );
 }
 
@@ -1396,7 +1491,7 @@ function QueueRail({
       <div className="mt-auto flex flex-col gap-1 px-2.5 pt-4">
         <SectionLabel>Keys</SectionLabel>
         <p className="font-mono text-[0.65rem] leading-relaxed text-faint">
-          j / k — next / prev · s — skip · enter — send
+          j / k — next / prev · enter — send
         </p>
       </div>
     </nav>

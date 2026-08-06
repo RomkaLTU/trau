@@ -1,11 +1,10 @@
 import { isBareKey, isTyping, type KeyStroke } from './keys'
 
-export type InboxKeyAction = 'next' | 'prev' | 'skip'
+export type InboxKeyAction = 'next' | 'prev'
 
 const ACTIONS: Record<string, InboxKeyAction> = {
   j: 'next',
   k: 'prev',
-  s: 'skip',
 }
 
 // inboxKeyAction maps a bare keystroke to its queue action. Anything the keystroke
