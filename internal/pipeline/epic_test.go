@@ -290,8 +290,10 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 	if tr.setStatus == tracker.StageDone {
 		t.Fatalf("a stopped epic must not be closed, got %q", tr.setStatus)
 	}
-	if got := p.State.Get("COD-1", "PR_STATUS"); got != "" {
-		t.Fatalf("epic PR_STATUS = %q, want none — nothing shipped", got)
+	// Stopped mid-wait, the epic reads as what it is: a PR open and waiting on the
+	// operator, never as one trau shipped.
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != prStatusAwaitingMerge {
+		t.Fatalf("epic PR_STATUS = %q, want %q — the PR is still the operator's to merge", got, prStatusAwaitingMerge)
 	}
 
 	p.Delivery = &waitGitHub{

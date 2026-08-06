@@ -215,11 +215,11 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		return &EpicUnfinalizedError{EpicID: p.EpicID, Open: open}
 	}
 	p.checkpointEpicReleasing(ctx)
-	// The release is its own unit of work, so it resolves its own skip set rather
-	// than inheriting whatever the last sub-issue resolved — a skip a child read
-	// back from its checkpoint must never disarm the epic's CI or merge gate.
-	// Resolved here, not at entry: loadSkips records a declared set on the epic's
-	// checkpoint, and until checkpointEpicReleasing there is no epic row to carry it.
+	// The release is its own unit of work, so it re-resolves the skip set against
+	// the epic rather than inheriting whatever the last sub-issue resolved — a skip
+	// a child read back from its own checkpoint must never disarm the epic's CI or
+	// merge gate. Resolved here rather than at entry so a finalize that declines
+	// (children still open) leaves the epic's row exactly as it found it.
 	p.loadSkips(p.EpicID)
 	p.abortHalfMerge(ctx)
 
@@ -544,7 +544,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	}
 
 	if !p.autoMerge() {
-		p.markEpicAwaitingHuman()
+		p.markEpicPRAwaitingHuman(prURL)
 		merged, err := p.waitForManualMerge(ctx, p.EpicID, pr, prURL)
 		if err != nil {
 			return false, err
@@ -615,18 +615,27 @@ func (p *Pipeline) markEpicAwaitingHuman() {
 	}
 }
 
-// handOffEpic ends the finalize on a release only a human can land. Beyond the
-// parked marker it records the PR on the epic's checkpoint — the card links it,
-// and the queue's reconcile sweep later reads that same PR to settle the item
-// once the human merges — notifies the operator, and returns the typed hand-off
-// the caller settles awaiting-merge on instead of recording a delivery.
-func (p *Pipeline) handOffEpic(why, prURL string) error {
+// markEpicPRAwaitingHuman parks the release on a human and records the PR they
+// have to land: the card links it, and the queue's reconcile sweep later reads
+// that same PR to settle the item once the merge happens. Every way the epic ends
+// up waiting on a person goes through here, so a run parked mid-wait leaves the
+// same readable end state a killed one does.
+func (p *Pipeline) markEpicPRAwaitingHuman(prURL string) {
 	p.markEpicAwaitingHuman()
-	if prURL != "" {
-		_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
-		_ = p.State.Set(p.EpicID, "PR_URL", prURL)
-		p.setPRStatus(p.EpicID, prStatusAwaitingMerge)
+	if prURL == "" {
+		return
 	}
+	_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
+	_ = p.State.Set(p.EpicID, "PR_URL", prURL)
+	p.setPRStatus(p.EpicID, prStatusAwaitingMerge)
+}
+
+// handOffEpic ends the finalize on a release only a human can land: it parks the
+// epic on that human with the PR recorded, notifies the operator, and returns the
+// typed hand-off the caller settles awaiting-merge on instead of recording a
+// delivery.
+func (p *Pipeline) handOffEpic(why, prURL string) error {
+	p.markEpicPRAwaitingHuman(prURL)
 	p.emitEpicAwaitingMerge(why, prURL)
 	return &EpicHandOffError{EpicID: p.EpicID, PRURL: prURL, Reason: why}
 }

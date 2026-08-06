@@ -12,14 +12,14 @@ import (
 // loadSkips settles which work the ticket in flight bypasses and makes the answer
 // durable. A run started with --skip records its set on the ticket's own
 // checkpoint; a run started without one adopts what an earlier attempt recorded
-// there, so a resume honors the same skips with no argv behind it.
+// there, so a resume honors the same skips with no argv behind it. An epic run
+// declares the set once for the whole epic, so it is recorded on the epic's
+// checkpoint too and every unit of work under it — each sub-issue run and the
+// release — resolves against that.
 func (p *Pipeline) loadSkips(id string) {
-	p.runSkips = p.Skips
-	if len(p.Skips) == 0 {
-		p.runSkips = state.DecodeSkips(p.State.Get(id, state.SkipsKey))
-	} else if err := p.State.Set(id, state.SkipsKey, state.EncodeSkips(p.Skips)); err != nil {
-		p.logf("  ⚠ could not record the skipped work on %s's checkpoint (a resume will not honor it): %v", id, err)
-	}
+	p.rememberEpicSkips()
+	p.runSkips = p.resolveSkips(id)
+	p.recordSkips(id, p.runSkips)
 	if len(p.runSkips) == 0 {
 		return
 	}
@@ -27,6 +27,53 @@ func (p *Pipeline) loadSkips(id string) {
 	p.logf("  ⏭ %s", msg)
 	if p.Events != nil {
 		p.Events.Emit(event.KindRunSkips, "", msg, map[string]any{"ticket": id, "skips": p.runSkips})
+	}
+}
+
+// resolveSkips settles one unit of work's effective set: this run's declared set
+// first, then what an earlier attempt recorded on that unit's own checkpoint, and
+// last — for a sub-issue of the epic — the set the epic run declared. That last
+// fallback is what carries a skip to a child the loop reaches for the first time
+// after a restart, since only children that already started have a checkpoint.
+// It reads downward only: the release resolves against the epic's checkpoint
+// alone, so a set one sub-issue stored can never disarm the epic's CI or merge
+// gate.
+func (p *Pipeline) resolveSkips(id string) []string {
+	if len(p.Skips) > 0 {
+		return p.Skips
+	}
+	if keys := state.DecodeSkips(p.State.Get(id, state.SkipsKey)); len(keys) > 0 {
+		return keys
+	}
+	if p.EpicID == "" || id == p.EpicID {
+		return nil
+	}
+	return state.DecodeSkips(p.State.Get(p.EpicID, state.SkipsKey))
+}
+
+// rememberEpicSkips makes an epic run's declared set durable before the release
+// opens the epic's row, so a loop killed between children and resumed with no argv
+// behind it can still read it for the next child. Only a run that drives the whole
+// epic may speak for it: a single sub-issue run that merely builds on the epic
+// branch declared its set for that sub-issue alone, and stamping the epic with it
+// would lower the bar for every sibling a later run picks up.
+func (p *Pipeline) rememberEpicSkips() {
+	if p.EpicID == "" || !p.EpicRun {
+		return
+	}
+	p.recordSkips(p.EpicID, p.Skips)
+}
+
+// recordSkips puts a resolved set on a unit of work's own checkpoint, so a later
+// resume honors it with no argv behind it. An empty set writes nothing — a run
+// that skips nothing must not open a checkpoint to say so.
+func (p *Pipeline) recordSkips(id string, keys []string) {
+	want := state.EncodeSkips(keys)
+	if want == "" || p.State.Get(id, state.SkipsKey) == want {
+		return
+	}
+	if err := p.State.Set(id, state.SkipsKey, want); err != nil {
+		p.logf("  ⚠ could not record the skipped work on %s's checkpoint (a resume will not honor it): %v", id, err)
 	}
 }
 
