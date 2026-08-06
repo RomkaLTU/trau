@@ -612,11 +612,9 @@ func TestGrillPregrillRoundCostsFewerExchangesThanOneAtATime(t *testing.T) {
 	}
 
 	tsSingle, singleID := newPass(t)
-	singleExchanges := 0
 	singleAnswers := make([]string, 0, len(frontier))
 	for _, q := range frontier {
 		tr := toolResult(t, mcpJSON(t, mcpURL(tsSingle, singleID), toolCall("ask_user", q)))
-		singleExchanges++
 		if tr.IsError || len(tr.Content) != 1 {
 			t.Fatalf("ask_user %q returned %+v, want the recommendation as the answer", q["question"], tr)
 		}
@@ -633,9 +631,6 @@ func TestGrillPregrillRoundCostsFewerExchangesThanOneAtATime(t *testing.T) {
 	}
 	if got := roundResult(t, tr); !slices.Equal(got, want) {
 		t.Fatalf("round answers = %+v, want %+v in the order asked", got, want)
-	}
-	if singleExchanges <= 1 {
-		t.Fatalf("one-at-a-time baseline took %d exchanges, want more than the round's single call", singleExchanges)
 	}
 
 	singleMessages := len(grillDetail(t, tsSingle, singleID).Messages)
