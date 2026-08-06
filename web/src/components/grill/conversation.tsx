@@ -2,15 +2,17 @@ import { useEffect, useReducer, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ArrowRight, Sparkles } from "lucide-react";
 
-import { BannerRow } from "@/components/grill/banners";
+import { BannerRow, ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import { OutcomeReview } from "@/components/grill/outcome-review";
 import { ReportDocument } from "@/components/grill/report";
+import { RoundForm } from "@/components/grill/round";
 import { Suggestions } from "@/components/grill/suggestions";
 import { GrillThread } from "@/components/grill/thread";
 import { useOpenConversation } from "@/lib/open-conversation";
 import {
   answerGrill,
+  answerGrillRound,
   canCompose,
   composerPlaceholder,
   grillBanner,
@@ -24,12 +26,16 @@ import {
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  roundAnswers,
+  roundQuestions,
   stopGrill,
   type GrillActivity,
   type GrillAppliedOutcome,
   type GrillDelta,
   type GrillMessage,
+  type GrillRoundFrame,
   type GrillSession,
+  type RoundAnswer,
 } from "@/lib/grill";
 import { useActivityShown } from "@/lib/grill-activity";
 import { streamSSE } from "@/lib/sse";
@@ -121,6 +127,8 @@ export function GrillConversation({
           dispatch({ type: "state", session: parsed as GrillSession });
         else if (event === "message")
           dispatch({ type: "message", message: parsed as GrillMessage });
+        else if (event === "round")
+          dispatch({ type: "round", round: parsed as GrillRoundFrame });
         else if (event === "delta")
           dispatch({ type: "delta", delta: parsed as GrillDelta });
         else if (event === "activity")
@@ -132,7 +140,12 @@ export function GrillConversation({
 
   const { session, messages, pending, hydrated, streaming } = state;
   const asked = pendingQuestion(messages);
-  const question = asked ? questionPayload(asked) : null;
+  // A round is answered as a form rather than a line, so it takes the surface a single
+  // question's options and composer would have had.
+  const round = asked ? roundQuestions(asked) : null;
+  const given = asked && round ? roundAnswers(asked) : [];
+  const roundOpen = round !== null && given.length < round.length;
+  const question = asked && !round ? questionPayload(asked) : null;
   const outcomeMsg = latestOutcome(messages);
   const proposal = outcomeMsg ? outcomePayload(outcomeMsg) : null;
   const reviewing =
@@ -154,14 +167,37 @@ export function GrillConversation({
     mutationFn: ({ text }: { id: string; text: string }) =>
       answerGrill(session.id, text),
     onSuccess: (res) => {
-      dispatch({ type: "message", message: res.message });
+      if (res.message) dispatch({ type: "message", message: res.message });
       // An interjection leaves the turn running, so replaying its state frame would
       // only reset the reply the thread is still streaming.
-      if (res.message.kind !== "interjection")
+      if (res.message?.kind !== "interjection")
         dispatch({ type: "state", session: res.session });
     },
     onError: (_err, { id, text }) =>
       dispatch({ type: "send-failed", id, text }),
+  });
+
+  // A round's answers land on the round itself, so a submission has no bubble of its
+  // own to retry from: the form keeps the questions it could not send and the note
+  // beneath it says why. The hub pushes the answers back as a round frame; merging the
+  // submitted ones here as well keeps the form honest when that frame is slow.
+  const answerRound = useMutation({
+    mutationFn: (answers: RoundAnswer[]) => answerGrillRound(session.id, answers),
+    onSuccess: (res, submitted) => {
+      if (asked)
+        dispatch({
+          type: "round",
+          round: {
+            message_id: asked.id,
+            answers: [
+              ...given,
+              ...submitted.filter((s) => !given.some((g) => g.index === s.index)),
+            ],
+          },
+        });
+      if (res.message) dispatch({ type: "message", message: res.message });
+      dispatch({ type: "state", session: res.session });
+    },
   });
 
   // The hub publishes the park it made on the session's own state frames, so the
@@ -208,14 +244,22 @@ export function GrillConversation({
     canCompose(session.state) || (stalled !== null && resume === "");
   const freeText = question?.allow_free_text ?? true;
   const sending = answer.isPending;
+  // An open round is answered on its own form, and one line cannot settle a set: the
+  // composer stands down until the round is complete. Typing is not an answer on a
+  // running turn (it steers at the agent's next step) or on a session the user stopped
+  // themselves (it redirects the turn they killed), so the round holds neither down.
+  const composing =
+    !roundOpen || session.state === "running" || session.stopped === true;
   // A running turn takes typing as steering, not as an answer, so it reads its
   // prompt off the state rather than off the question.
   const placeholder =
     !answering || session.state === "running"
       ? composerPlaceholder(session.state)
-      : freeText
-        ? "Type your answer…"
-        : "Pick one of the answers above…";
+      : !composing
+        ? "Answer the round above…"
+        : freeText
+          ? "Type your answer…"
+          : "Pick one of the answers above…";
 
   const thread = (
     <GrillThread
@@ -285,19 +329,37 @@ export function GrillConversation({
           ) : (
             <>
               {showBanner && <BannerRow banner={banner} />}
-              {question && question.options.length > 0 && (
-                <Suggestions
-                  options={question.options}
-                  recommended={question.recommended}
-                  why={question.why}
-                  disabled={sending || !answering}
-                  onPick={send}
-                />
+              {asked && round ? (
+                <>
+                  <RoundForm
+                    key={asked.id}
+                    repo={repo}
+                    questions={round}
+                    answers={given}
+                    disabled={!answering}
+                    submitting={answerRound.isPending}
+                    onSubmit={(answers) => answerRound.mutate(answers)}
+                  />
+                  {answerRound.error && (
+                    <ErrorNote message={answerRound.error.message} />
+                  )}
+                </>
+              ) : (
+                question &&
+                question.options.length > 0 && (
+                  <Suggestions
+                    options={question.options}
+                    recommended={question.recommended}
+                    why={question.why}
+                    disabled={sending || !answering}
+                    onPick={send}
+                  />
+                )
               )}
               <Composer
                 repo={repo}
                 placeholder={placeholder}
-                disabled={!answering || !freeText || sending}
+                disabled={!answering || !freeText || sending || !composing}
                 submitting={sending}
                 onSend={send}
                 autoFocus={autoFocus}

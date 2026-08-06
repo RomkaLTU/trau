@@ -227,6 +227,42 @@ func TestRenderTestEffortGoldens(t *testing.T) {
 	})
 }
 
+// The round is the default reach and the single question the exception, so no grill
+// prompt may still teach one-question-at-a-time as the base rhythm.
+func TestGrillPromptsInterviewRoundByRound(t *testing.T) {
+	oneAtATime := []string{
+		"one question at a time",
+		"one question per ask_user call",
+		"wait for each answer before asking the next",
+	}
+	cases := []struct {
+		name string
+		data any
+	}{
+		{"grill_issue", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
+		{"grill_authoring", GrillAuthoringData{Idea: "A dark-mode toggle in the toolbar."}},
+		{"grill_research", grillResearchAnchored(goldenGrillFocus)},
+		{"grill_pregrill", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
+		{"grill_fix", grillFix(goldenBranch)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Render(tc.name, tc.data)
+			lower := strings.ToLower(got)
+			for _, phrase := range oneAtATime {
+				if strings.Contains(lower, phrase) {
+					t.Errorf("prompt still sets one-at-a-time as the rhythm (%q):\n%s", phrase, got)
+				}
+			}
+			for _, want := range []string{"ask_round", "frontier"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("prompt never mentions %q:\n%s", want, got)
+				}
+			}
+		})
+	}
+}
+
 // Both research variants share one template, so the plan-approval step has to
 // survive edits made for either side.
 func TestResearchPromptRequiresPlanApproval(t *testing.T) {

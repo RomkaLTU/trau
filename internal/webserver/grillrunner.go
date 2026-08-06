@@ -306,10 +306,14 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 // they pasted mid-interview materialized locally and referenced by path, so a
 // screenshot dropped into an answer is something the child can open on this turn. An
 // interjection queued while the previous turn worked outranks it — the answer it
-// trails is one the agent has already had.
+// trails is one the agent has already had. A round the user only answered part of
+// outranks the answer too: the turn resumes to collect the rest of it.
 func (r *grillRunner) answerPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
 	if queued := r.srv.grillTakeInterjections(sess.ID); len(queued) > 0 {
 		return r.srv.withPastedFiles(ctx, repo, sess, grillSteerFrame(queued))
+	}
+	if prompt, ok := r.srv.grillRoundResumePrompt(sess.ID); ok {
+		return r.srv.withPastedFiles(ctx, repo, sess, prompt)
 	}
 	text, steer := r.latestAnswer(sess.ID)
 	if text == "" {
