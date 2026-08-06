@@ -294,6 +294,32 @@ func TestResearchPromptRequiresPlanApproval(t *testing.T) {
 	}
 }
 
+// Both preambles carry the control-byte guidance sentence, and the escape text
+// it names is its own trap: a raw NUL written into the source or the golden
+// would make git treat the file as binary and hide it from review.
+func TestGoldenPreamblesInstructControlByteEscapes(t *testing.T) {
+	for _, name := range []string{"preamble", "explore_preamble"} {
+		t.Run(name, func(t *testing.T) {
+			want, err := os.ReadFile(filepath.Join("testdata", name+".golden"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := Render(name, nil)
+			if got != string(want) {
+				t.Fatalf("Render(%q) diverged from the golden\n got: %q\nwant: %q", name, got, want)
+			}
+			for _, sub := range []string{`\u0000`, `\x00`, "never as a literal byte", "git treat the file as binary"} {
+				if !strings.Contains(got, sub) {
+					t.Errorf("%s: missing %q", name, sub)
+				}
+			}
+			if strings.ContainsRune(got, 0) {
+				t.Errorf("%s: carries a raw NUL byte", name)
+			}
+		})
+	}
+}
+
 func TestCatalog(t *testing.T) {
 	cat := Catalog()
 	if len(cat) != 26 {

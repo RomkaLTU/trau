@@ -290,7 +290,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	if err != nil {
 		return Result{}, err
 	}
-	full := c.Preamble + "\n\n" + prompt + "\n\n" + resultInstruction(resultPath)
+	full := scrubPrompt(c.Log, label, c.Preamble+"\n\n"+prompt+"\n\n"+resultInstruction(resultPath))
 
 	sessionID, _ := newUUID()
 	if c.OnSessionStart != nil {
@@ -699,6 +699,20 @@ func (c *ClaudeInteractive) record(label string, res Result, dur time.Duration) 
 	})
 }
 
+// scrubPrompt is the last thing every backend does to a composed prompt before it
+// becomes an argv element (or, for kimi's TUI, keystrokes). A single raw NUL
+// anywhere in the composed material makes os.StartProcess reject the whole vector
+// with EINVAL, identically on every retry and every fallback provider. The warning
+// is one row per prompt, not per byte, and names the phase, because the byte is in
+// repo or tool content the operator has to go and find.
+func scrubPrompt(log *event.Log, label, prompt string) string {
+	clean, changed := sanitize.PromptText(prompt)
+	if changed && log != nil {
+		log.Emit(event.KindPromptSanitized, label, "composed prompt contained a raw NUL byte — replaced with its visible escape so the spawn can proceed", nil)
+	}
+	return clean
+}
+
 func resultInstruction(path string) string {
 	return "Do not rely on stdout as the machine-readable response. When this phase is complete, write your result to exactly this file path, creating parent directories if needed: " + path + "\n" +
 		"Write the result in the form the task requests — the requested sentinel/text, or a small JSON object when the task offers one (for a pick, either 'PICK=<ID>'/'PICK=NONE' or {\"pick\":\"<ID>\"}/{\"pick\":\"NONE\"} is accepted). After the file is written, stop working and leave the session idle; the loop will close the terminal."
@@ -1040,6 +1054,10 @@ func (c *Codex) args(prompt, msgPath string) []string {
 	return append(args, prompt)
 }
 
+func (c *Codex) fullPrompt(prompt, label string) string {
+	return scrubPrompt(c.Log, label, c.Preamble+"\n\n"+prompt)
+}
+
 type codexEvent struct {
 	Type  string `json:"type"`
 	Usage struct {
@@ -1082,7 +1100,7 @@ func parseCodexUsage(stream []byte) (Usage, int) {
 // message, so dumping stdout here would be wrong; the -o file is the only source
 // of the final message.
 func (c *Codex) Run(ctx context.Context, prompt, label string) (Result, error) {
-	full := c.Preamble + "\n\n" + prompt
+	full := c.fullPrompt(prompt, label)
 
 	msg, err := os.CreateTemp("", "trau-codex-msg-*")
 	if err != nil {
@@ -1224,6 +1242,10 @@ func (c *Kimi) args(prompt string) []string {
 	return append(args, "--output-format", "stream-json", "-p", prompt)
 }
 
+func (c *Kimi) fullPrompt(prompt, label string) string {
+	return scrubPrompt(c.Log, label, c.Preamble+"\n\n"+prompt)
+}
+
 type kimiEvent struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -1349,7 +1371,7 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	full := c.Preamble + "\n\n" + prompt
+	full := c.fullPrompt(prompt, label)
 
 	var stdout, stderr bytes.Buffer
 	sink := io.Writer(&stdout)

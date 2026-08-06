@@ -78,7 +78,7 @@ func (c *KimiInteractive) Run(ctx context.Context, prompt, label string) (Result
 	if err != nil {
 		return Result{}, err
 	}
-	full := c.Preamble + "\n\n" + prompt + "\n\n" + resultInstruction(resultPath)
+	full := scrubPrompt(c.Log, label, c.Preamble+"\n\n"+prompt+"\n\n"+resultInstruction(resultPath))
 
 	starter := c.start
 	if starter == nil {

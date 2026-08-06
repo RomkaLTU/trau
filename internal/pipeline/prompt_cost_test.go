@@ -63,6 +63,20 @@ func mustNotContain(t *testing.T, name, s string, subs ...string) {
 	}
 }
 
+// The preamble prefixes every phase prompt, so a sentence added there is paid
+// once per phase: the control-byte guidance has to appear exactly once in each
+// variant, and as escape text rather than the byte it describes.
+func TestPromptCostPreambleGuidanceStaysOneSentence(t *testing.T) {
+	const guidance = "When a test or fixture needs a control byte"
+	for _, name := range []string{"preamble", "explore_preamble"} {
+		got := prompts.Render(name, nil)
+		if n := strings.Count(got, guidance); n != 1 {
+			t.Errorf("%s: control-byte guidance appears %d times, want 1", name, n)
+		}
+		mustNotContain(t, name, got, "\x00")
+	}
+}
+
 // ticketContextNote injects the REST-fetched title/description and steers the
 // agent away from the account-level tracker MCP; empty detail injects nothing so
 // the agent keeps its MCP fallback (used when per-repo API creds are missing).

@@ -114,6 +114,11 @@ const KindConfigChange = "config_change"
 // the web feed still renders.
 const KindSpawnFailed = "spawn_failed"
 
+// KindPromptSanitized marks a composed prompt that carried a raw NUL byte and was
+// scrubbed before the spawn. One row per prompt, naming the phase, because the
+// byte comes from repo or tool content the operator has to go and find.
+const KindPromptSanitized = "prompt_sanitized"
+
 // KindQueueReconciled marks a parked queue item the hub settled done on stored
 // evidence alone — its checkpoint proved the work shipped — carrying the item and
 // the evidence that settled it. The hub emits it, since the settle happens with no

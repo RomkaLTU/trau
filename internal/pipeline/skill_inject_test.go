@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/sanitize"
 )
 
 func TestResolveSkillsInjectMode(t *testing.T) {
@@ -35,6 +37,45 @@ func TestResolveSkillsInjectMode(t *testing.T) {
 	if !strings.HasPrefix(full, ps.injection) || !strings.Contains(full, "RENDERED TEMPLATE BODY") {
 		t.Error("injectInto should prepend the block ahead of the rendered template")
 	}
+
+	// The injected block carries the SKILL.md verbatim, so a literal control byte in
+	// repo content lands straight on the prompt path.
+	t.Run("a NUL in a SKILL.md body cannot poison the spawn", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, ".claude", "skills", "nul-fixture")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "# nul-fixture\n\nAssert the parser rejects \x00 input.\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		p := &Pipeline{RepoRoot: root, SkillsMode: skillsModeInject}
+		set := agent.SkillSet{Names: []string{"nul-fixture"}, Source: agent.SkillsSourceRequired}
+		ps := p.resolveSkills(set, []string{"nul-fixture"}, agent.PhaseBuild)
+
+		composed := injectInto(ps.injection, "RENDERED TEMPLATE BODY")
+		if !strings.ContainsRune(composed, 0) {
+			t.Fatal("the fixture no longer reproduces the hazard — the SKILL.md byte never reached the prompt")
+		}
+
+		clean, changed := sanitize.PromptText(composed)
+		if !changed {
+			t.Error("the backend seam did not report the prompt as changed")
+		}
+		if strings.ContainsRune(clean, 0) {
+			t.Error("the assembled prompt still holds a raw NUL; fork/exec would reject the argv")
+		}
+		if !strings.Contains(clean, sanitize.NULEscape) {
+			t.Error("the scrubbed prompt hides that the source material held a NUL")
+		}
+		for _, want := range []string{"# nul-fixture", "Assert the parser rejects", "RENDERED TEMPLATE BODY"} {
+			if !strings.Contains(clean, want) {
+				t.Errorf("scrubbing lost prompt content: missing %q", want)
+			}
+		}
+	})
 }
 
 func TestResolveSkillsInstructMode(t *testing.T) {
