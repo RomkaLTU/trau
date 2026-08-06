@@ -12,6 +12,7 @@ import {
   CreatedBanner,
   CreatedBannerProvider,
 } from '@/components/trau/created-banner'
+import { InstallBanner } from '@/components/trau/install-banner'
 import { UpdateNotifier } from '@/components/trau/update-notifier'
 import { AwayRecap } from '@/components/away-recap'
 import { NotificationToaster } from '@/components/notification-toaster'
@@ -45,6 +46,7 @@ function RootLayout() {
             <div className="mx-auto flex min-h-screen w-full max-w-[96rem] flex-col px-6 py-8">
               <CreatedBanner />
               <AwayRecap collapsible={onRunRoute} />
+              <InstallBanner />
               <Outlet />
             </div>
             <NotificationToaster />
