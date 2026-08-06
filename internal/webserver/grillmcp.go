@@ -39,9 +39,11 @@ var grillMCPTools = []mcpTool{
 	{
 		Name: "ask_user",
 		Description: "Ask the user exactly one clarifying question and wait for their answer, which is returned as the tool result. " +
+			"Reach for this only when a single question is genuinely all that is open: ask_round is the default, and every question " +
+			"whose prerequisites are already settled belongs in one round with the rest rather than in a call of its own. " +
 			"One question per call and per question string: never bundle several questions into one question value — no \"Also, ...?\" " +
-			"tacked on the end. If the user has stepped away the call returns a park instruction: end your turn then " +
-			"without asking again — the question is saved and the session resumes with their answer when they return.",
+			"tacked on the end; a set of questions goes to ask_round. If the user has stepped away the call returns a park instruction: " +
+			"end your turn then without asking again — the question is saved and the session resumes with their answer when they return.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {

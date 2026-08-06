@@ -68,11 +68,13 @@ type GrillRoundAnswerInput struct {
 var grillAskRoundTool = mcpTool{
 	Name: "ask_round",
 	Description: "Ask the user a numbered round of independent questions in one exchange and wait for the answers, " +
-		"which come back in the order you asked them. Every question in a round must stand on its own: never include a " +
-		"question whose wording depends on the answer to another question in the same round — ask those in a later round. " +
-		"One question per question string, exactly as ask_user requires. If the user steps away the call returns a park " +
-		"instruction: end your turn then without asking again — the round is saved, the answers already given are kept, " +
-		"and the session resumes when they return.",
+		"which come back in the order you asked them. This is the default way to interview: put every question whose " +
+		"prerequisites are already settled into one round instead of asking them one at a time, and keep ask_user for the " +
+		"case where a single question is genuinely all that is open. Every question in a round must stand on its own: never " +
+		"include a question whose wording depends on the answer to another question in the same round — ask those in a later " +
+		"round, once this round's answers are in. One question per question string, exactly as ask_user requires. If the user " +
+		"steps away the call returns a park instruction: end your turn then without asking again — the round is saved, the " +
+		"answers already given are kept, and the session resumes when they return.",
 	InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {

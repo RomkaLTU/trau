@@ -20,7 +20,7 @@ type grillPromptInput struct {
 }
 
 // grillIssuePrompt is the first-turn prompt for grilling an existing issue: the
-// agent interviews the user one question at a time via the ask_user MCP tool and
+// agent interviews the user round by round via the ask_round MCP tool and
 // ends with a finish_session proposal. It runs with the repo as cwd, so it is told
 // to read the code before asking when that sharpens a question. Resume turns carry
 // only the user's answer — the child already holds this context.

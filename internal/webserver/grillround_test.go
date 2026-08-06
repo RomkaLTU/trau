@@ -588,6 +588,66 @@ func TestGrillRoundAnswerRefusals(t *testing.T) {
 	}
 }
 
+// The point of flipping the prompts to rounds: a pre-grill pass whose frontier is
+// three recommended questions settles in ONE exchange where the one-at-a-time rhythm
+// spent one per question, and reaches the same answers in the same order.
+func TestGrillPregrillRoundCostsFewerExchangesThanOneAtATime(t *testing.T) {
+	frontier := []map[string]any{
+		{"question": "Which page is in scope?", "options": []string{"login", "signup"}, "recommended": "login"},
+		{"question": "Ship behind a flag?", "recommended": "yes", "why": "It is reversible."},
+		{"question": "Keep the legacy route?", "recommended": "no", "why": "Nothing links to it."},
+	}
+	want := []string{"login", "yes", "no"}
+
+	newPass := func(t *testing.T) (*httptest.Server, string) {
+		t.Helper()
+		ts, _, repo, srv := grillHookServer(t)
+		sess := createGrillWith(t, ts, repo, GrillCreateRequest{IssueID: "COD-1", AutoAccept: true})
+		sid, err := strconv.ParseInt(sess.ID, 10, 64)
+		if err != nil {
+			t.Fatalf("parse session id %q: %v", sess.ID, err)
+		}
+		srv.markPregrill(sid)
+		return ts, sess.ID
+	}
+
+	tsSingle, singleID := newPass(t)
+	singleExchanges := 0
+	singleAnswers := make([]string, 0, len(frontier))
+	for _, q := range frontier {
+		tr := toolResult(t, mcpJSON(t, mcpURL(tsSingle, singleID), toolCall("ask_user", q)))
+		singleExchanges++
+		if tr.IsError || len(tr.Content) != 1 {
+			t.Fatalf("ask_user %q returned %+v, want the recommendation as the answer", q["question"], tr)
+		}
+		singleAnswers = append(singleAnswers, tr.Content[0].Text)
+	}
+	if !slices.Equal(singleAnswers, want) {
+		t.Fatalf("one-at-a-time answers = %+v, want %+v", singleAnswers, want)
+	}
+
+	tsRound, roundID := newPass(t)
+	tr := toolResult(t, mcpJSON(t, mcpURL(tsRound, roundID), roundCall(frontier...)))
+	if tr.IsError {
+		t.Fatalf("ask_round returned an error result: %+v", tr)
+	}
+	if got := roundResult(t, tr); !slices.Equal(got, want) {
+		t.Fatalf("round answers = %+v, want %+v in the order asked", got, want)
+	}
+	if singleExchanges <= 1 {
+		t.Fatalf("one-at-a-time baseline took %d exchanges, want more than the round's single call", singleExchanges)
+	}
+
+	singleMessages := len(grillDetail(t, tsSingle, singleID).Messages)
+	roundMessages := len(grillDetail(t, tsRound, roundID).Messages)
+	if roundMessages != 2 {
+		t.Fatalf("round pass stored %d messages, want the round and its one auto answer", roundMessages)
+	}
+	if roundMessages >= singleMessages {
+		t.Fatalf("round pass stored %d messages against %d one at a time, want fewer", roundMessages, singleMessages)
+	}
+}
+
 func TestGrillAskRoundValidation(t *testing.T) {
 	ts, _, repo := grillServer(t)
 	sess := createGrill(t, ts, repo, "COD-1")
