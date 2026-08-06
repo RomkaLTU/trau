@@ -33,7 +33,7 @@ func (p *Pipeline) foreignWorkInPR(ctx context.Context, id, pr string) string {
 	if pin == "" || branch == "" {
 		return ""
 	}
-	prCommits, prFiles, err := p.GitHub.PRSize(ctx, pr)
+	prCommits, prFiles, err := p.Delivery.PRSize(ctx, pr)
 	if err != nil {
 		p.logf("  merge gate: could not size PR #%s (merging anyway): %v", pr, err)
 		return ""
@@ -61,7 +61,11 @@ func (p *Pipeline) foreignWorkInPR(ctx context.Context, id, pr string) string {
 // here, immediately before the merge. Like the size half of the gate the check is
 // fail-open: a gh that cannot answer reads as unstacked.
 func (p *Pipeline) stackedPRRefusal(ctx context.Context, id, pr string) string {
-	stacked, err := p.GitHub.InStack(ctx, pr)
+	s, ok := p.stacker()
+	if !ok {
+		return ""
+	}
+	stacked, err := s.InStack(ctx, pr)
 	if err != nil {
 		p.logf("  merge gate: could not tell whether PR #%s is stacked (merging anyway): %v", pr, err)
 		return ""

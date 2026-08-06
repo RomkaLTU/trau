@@ -66,7 +66,7 @@ func TestQARealGitFanOutAndResume(t *testing.T) {
 	p.FolderRepo = true
 	p.RepoRoot = root
 	p.Remote = "origin"
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestQARealGitFanOutAndResume(t *testing.T) {
 	p2.FolderRepo = true
 	p2.RepoRoot = root
 	p2.Remote = "origin"
-	p2.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p2.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	p2.startFolderRun(ctx, id, true)
 
 	if err := p2.CommitAndPR(ctx, id); err != nil {
@@ -191,7 +191,7 @@ func TestQARealGitFreshRunIgnoresAnAbandonedBranch(t *testing.T) {
 	p.FolderRepo = true
 	p.RepoRoot = root
 	p.Remote = "origin"
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	for key, value := range map[string]string{
 		"BRANCH":       branch,
 		"SHIP_TARGETS": "api-b",

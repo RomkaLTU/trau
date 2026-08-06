@@ -39,14 +39,14 @@ func (g *waitGitHub) PRState(context.Context, string) (string, error) {
 	return g.replies[i].state, g.replies[i].err
 }
 
-func newWaitPipeline(t *testing.T, gh GitHub, tr *fakeTracker) *Pipeline {
+func newWaitPipeline(t *testing.T, gh Delivery, tr *fakeTracker) *Pipeline {
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
 		Runner:      fakeRunner{},
 		Tracker:     tr,
 		Git:         fakeGit{},
-		GitHub:      gh,
+		Delivery:    gh,
 		State:       state.NewStore(dir),
 		RunsDir:     dir,
 		Base:        "main",

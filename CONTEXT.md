@@ -18,7 +18,7 @@ A git repository inside a Folder repo, found by a bounded scan of the folder at 
 _Avoid_: member (that's a Project's registered repo), submodule, sub-repo, nested repo, workspace
 
 **Forge**:
-The code host a repository's own git remote points at — who would receive a push and open the pull request. Identified per Repo and per Child repo from that repository's remote, never from the tracker and never assumed; the `FORGE` key overrides it for a host trau does not recognize. Delivery is GitHub-only, so any other Forge is named and left alone before a run spends anything (ADR 0032).
+The code host a repository's own git remote points at — who would receive a push and open the pull request. Identified per Repo and per Child repo from that repository's remote, never from the tracker and never assumed; the `FORGE` key overrides it for a host trau does not recognize. Delivery reaches GitHub and Bitbucket Cloud, so any other Forge is named and left alone before a run spends anything (ADR 0032, ADR 0036).
 _Avoid_: tracker (that's where tickets live), remote (that's the ref name, `origin`), host, provider (that's the AI backend), git server
 
 **Project**:

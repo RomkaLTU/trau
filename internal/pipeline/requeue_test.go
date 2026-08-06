@@ -72,11 +72,11 @@ func (g *requeueGit) DeletePushedBranch(_ context.Context, remote, branch string
 	return nil
 }
 
-func newRequeuePipeline(t *testing.T, tr tracker.Tracker, g Git, gh GitHub) (*Pipeline, *logRenderer) {
+func newRequeuePipeline(t *testing.T, tr tracker.Tracker, g Git, gh Delivery) (*Pipeline, *logRenderer) {
 	t.Helper()
 	p := newTestPipeline(t, fakeRunner{}, tr)
 	rend := &logRenderer{}
-	p.Git, p.GitHub, p.Renderer = g, gh, rend
+	p.Git, p.Delivery, p.Renderer = g, gh, rend
 	p.Remote = "origin"
 	p.ReadyLabel, p.QuarantineLabel = requeueReady, requeueQuarantine
 	return p, rend

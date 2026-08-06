@@ -134,14 +134,26 @@ func (p *Pipeline) stackedShapeRefusal(ctx context.Context) string {
 	if epic, err := p.Git.FindRemoteEpicBranch(ctx, p.Remote, p.EpicID); err == nil && epic != "" {
 		return "epic branch " + epic + " on " + p.Remote + " already carries this epic's work"
 	}
-	ok, err := p.GitHub.StacksEnabled(ctx)
+	s, ok := p.stacker()
+	if !ok {
+		return "this repo's forge has no stacked pull requests"
+	}
+	enabled, err := s.StacksEnabled(ctx)
 	if err != nil {
 		return fmt.Sprintf("GitHub's stacked-PRs preview did not answer for this repo (%v)", err)
 	}
-	if !ok {
+	if !enabled {
 		return "GitHub's stacked-PRs preview is not enabled for this repo"
 	}
 	return ""
+}
+
+// stacker is the run's Delivery seen as a Stacker, false when it delivers to a
+// forge with no stacked-pull-request concept. Every caller reads false exactly as
+// it reads a failed probe — run the classic shape and merge each PR on its own.
+func (p *Pipeline) stacker() (Stacker, bool) {
+	s, ok := p.Delivery.(Stacker)
+	return s, ok
 }
 
 // stackedBase names the branch the slice in flight is layered on: the memo its
@@ -261,7 +273,7 @@ func (p *Pipeline) resolveStackPRs(ctx context.Context, chain []stackLayer) []st
 	out := make([]stackLayer, 0, len(chain))
 	for _, layer := range chain {
 		if layer.PR == "" {
-			if url, _ := p.GitHub.PRURL(ctx, layer.Branch); url != "" {
+			if url, _ := p.Delivery.PRURL(ctx, layer.Branch); url != "" {
 				layer.PR, layer.PRURL = prNumber(url), url
 			}
 		}
@@ -332,8 +344,12 @@ func (p *Pipeline) linkStack(ctx context.Context, branches []string) error {
 	if p.stackLinked.holds(p.EpicID, branches) {
 		return nil
 	}
+	s, ok := p.stacker()
+	if !ok {
+		return nil
+	}
 	err := p.retryGH(ctx, "gh stack link", func() error {
-		return p.GitHub.LinkStack(ctx, branches)
+		return s.LinkStack(ctx, branches)
 	})
 	if err != nil {
 		return err
@@ -436,7 +452,7 @@ func (p *Pipeline) assertLayerShippable(ctx context.Context, layer stackLayer) e
 	if layer.PR == "" {
 		return p.handOffEpic("layer "+layer.ID+" ("+layer.Branch+") has no PR, so the stack is incomplete", "")
 	}
-	switch st, _ := p.GitHub.PRState(ctx, layer.PR); st {
+	switch st, _ := p.Delivery.PRState(ctx, layer.PR); st {
 	case "MERGED":
 		// A human merged part of the stack by hand. Nothing left to gate on this
 		// layer, and the top merge lands whatever is still open.
@@ -459,10 +475,14 @@ func (p *Pipeline) assertLayerShippable(ctx context.Context, layer stackLayer) e
 // A top PR another actor already merged short-circuits, so re-running the finalize
 // adopts that merge rather than repeating it.
 func (p *Pipeline) mergeStack(ctx context.Context, top stackLayer) error {
-	if st, _ := p.GitHub.PRState(ctx, top.PR); st == "MERGED" {
+	if st, _ := p.Delivery.PRState(ctx, top.PR); st == "MERGED" {
 		return nil
 	}
-	err := p.GitHub.MergeStack(ctx, top.PR, p.MergeMethod)
+	s, ok := p.stacker()
+	if !ok {
+		return nil
+	}
+	err := s.MergeStack(ctx, top.PR, p.MergeMethod)
 	if err == nil {
 		return nil
 	}
@@ -543,7 +563,7 @@ func (p *Pipeline) markLayersMerged(chain []stackLayer) {
 // received.
 func (p *Pipeline) stackMerged(ctx context.Context, chain []stackLayer) bool {
 	for _, layer := range chain {
-		if st, _ := p.GitHub.PRState(ctx, layer.PR); st != "MERGED" {
+		if st, _ := p.Delivery.PRState(ctx, layer.PR); st != "MERGED" {
 			return false
 		}
 	}

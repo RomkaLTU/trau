@@ -148,7 +148,7 @@ func TestFolderShipsEachChildToItsOwnBase(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestFolderShipFansOutToEveryChangedChild(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	for key, value := range map[string]string{
 		"BRANCH":       branch,
 		"SHIP_TARGETS": "api-billing",
@@ -306,7 +306,7 @@ func TestFolderShipLeavesChildrenTheRunFoundDirty(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestFolderResumeKeepsTheStartOfRunSweep(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		t.Fatal(err)
 	}
@@ -472,7 +472,7 @@ func TestFolderShipResumesEveryChildAnInterruptedRunLeftBehind(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	for key, value := range map[string]string{
 		"BRANCH":       branch,
 		"SHIP_TARGETS": "api-companies",
@@ -544,7 +544,7 @@ func TestFolderShipCrossLinksEveryPRAndPublishesProofs(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	publishedTo := ""
 	p.PublishProofs = func(_ context.Context, repoDir, _ string) (proofsbranch.Publication, error) {
 		publishedTo = repoDir
@@ -719,7 +719,7 @@ func TestFolderRequeueClosesEveryPRTheRunOpened(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	for key, value := range map[string]string{
 		"BRANCH":       branch,
 		"PHASE":        "pr_open",

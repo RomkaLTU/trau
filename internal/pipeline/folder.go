@@ -50,10 +50,10 @@ type shipTarget struct {
 // branch carries. Reset, PurgeLocal and Requeue all act on the whole set, so a
 // folder run's every branch and every PR is undone rather than only the first.
 type attempt struct {
-	repo   string // Child repo name, empty for the target repo itself
-	git    Git
-	github GitHub
-	pr     string
+	repo     string // Child repo name, empty for the target repo itself
+	git      Git
+	delivery Delivery
+	pr       string
 }
 
 // inRepo names the Child repo an attempt acted in as a message suffix — " in
@@ -68,16 +68,16 @@ func (a attempt) inRepo() string {
 
 func (p *Pipeline) attempts(id string) []attempt {
 	if !p.FolderRepo {
-		return []attempt{{git: p.Git, github: p.GitHub, pr: p.State.Get(id, "PR")}}
+		return []attempt{{git: p.Git, delivery: p.Delivery, pr: p.State.Get(id, "PR")}}
 	}
 	targets := p.shipTargets(id)
 	out := make([]attempt, 0, len(targets))
 	for _, t := range targets {
 		out = append(out, attempt{
-			repo:   t.Name,
-			git:    p.childGit(t.Child),
-			github: p.childGitHub(t.Child),
-			pr:     prNumber(t.PRURL),
+			repo:     t.Name,
+			git:      p.childGit(t.Child),
+			delivery: p.childDelivery(t.Child),
+			pr:       prNumber(t.PRURL),
 		})
 	}
 	return out
@@ -129,9 +129,9 @@ func (p *Pipeline) childGit(c folderrepo.Child) Git {
 	return ExecGit{Repo: c.Path}
 }
 
-func (p *Pipeline) childGitHub(c folderrepo.Child) GitHub {
-	if p.GitHubAt != nil {
-		return p.GitHubAt(c.Path)
+func (p *Pipeline) childDelivery(c folderrepo.Child) Delivery {
+	if p.DeliveryAt != nil {
+		return p.DeliveryAt(c.Path)
 	}
 	return ExecGitHub{Repo: c.Path}
 }
@@ -594,7 +594,7 @@ func (p *Pipeline) crossLinkPRs(ctx context.Context, targets []shipTarget, body 
 		if t.PRURL == "" {
 			continue
 		}
-		if err := p.childGitHub(t.Child).UpdatePRBody(ctx, prNumber(t.PRURL), body+siblingSection(targets, t.Name)); err != nil {
+		if err := p.childDelivery(t.Child).UpdatePRBody(ctx, prNumber(t.PRURL), body+siblingSection(targets, t.Name)); err != nil {
 			p.logf("  ⚠ could not cross-link the pull requests from %s: %v", t.Name, err)
 		}
 	}
@@ -615,7 +615,7 @@ func siblingSection(targets []shipTarget, name string) string {
 }
 
 func (p *Pipeline) openChildPR(ctx context.Context, c folderrepo.Child, branch, title, body string) (string, error) {
-	g, gh, base := p.childGit(c), p.childGitHub(c), p.baseFor(c.Name)
+	g, gh, base := p.childGit(c), p.childDelivery(c), p.baseFor(c.Name)
 	if err := g.Push(ctx, p.Remote, branch, false); err != nil {
 		return "", fmt.Errorf("push %s: %w", branch, err)
 	}
@@ -730,7 +730,7 @@ func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 		if t.PRURL == "" {
 			return p.giveUp(ctx, id, "no PR recorded for "+t.Name)
 		}
-		if err := p.pollCIWith(ctx, p.childGitHub(t.Child), t.Path, prNumber(t.PRURL), p.baseFor(t.Name)); err != nil {
+		if err := p.pollCIWith(ctx, p.childDelivery(t.Child), t.Path, prNumber(t.PRURL), p.baseFor(t.Name)); err != nil {
 			p.logf("  ✗ CI in %s: %v", t.Name, err)
 			return p.giveUp(ctx, id, "CI not green in "+t.Name)
 		}
@@ -744,7 +744,7 @@ func (p *Pipeline) folderCIAndMerge(ctx context.Context, id string) error {
 	for _, t := range targets {
 		pr := prNumber(t.PRURL)
 		if err := p.retryGH(ctx, "merge "+t.Name, func() error {
-			return p.childGitHub(t.Child).Merge(ctx, pr, p.MergeMethod, true)
+			return p.childDelivery(t.Child).Merge(ctx, pr, p.MergeMethod, true)
 		}); err != nil {
 			return fmt.Errorf("merge %s in %s: %w", id, t.Name, err)
 		}

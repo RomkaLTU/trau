@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/forge"
 )
 
 // Branch is the orphan branch every repo's proofs live on. It is never merged;
@@ -29,12 +31,16 @@ Each run's proofs live under a ` + "`<ticket>/`" + ` directory and are reference
 from that ticket's pull request. The branch is orphaned and never merged.
 `
 
-// Config identifies the target repo and the tooling used to reach it.
+// Config identifies the target repo and the tooling used to reach it. RepoInfo,
+// when set, answers who owns the repository and whether it is private instead of
+// `gh repo view`, which is how a repo on a forge with no CLI — Bitbucket Cloud —
+// gets its proofs published on exactly the same path.
 type Config struct {
-	RepoDir string
-	Remote  string
-	GitBin  string
-	GHBin   string
+	RepoDir  string
+	Remote   string
+	GitBin   string
+	GHBin    string
+	RepoInfo func(ctx context.Context) (owner, repo string, private, ok bool)
 }
 
 // Proof is one screenshot to publish, as fetched back from the hub: its seq and
@@ -47,12 +53,14 @@ type Proof struct {
 }
 
 // Publication reports how the PR body should reference a run's published proofs:
-// the owner/repo and branch that host them, whether the repo is private (which
-// decides inline images vs links), and each file's on-branch path and caption.
+// the owner/repo and branch that host them, the forge whose URL shapes reach
+// them, whether the repo is private (which decides inline images vs links), and
+// each file's on-branch path and caption.
 type Publication struct {
 	Owner   string
 	Repo    string
 	Branch  string
+	Forge   forge.Forge
 	Private bool
 	Files   []File
 }
@@ -93,7 +101,7 @@ func Publish(ctx context.Context, cfg Config, ticket string, proofs []Proof) (Pu
 	if _, err := cfg.git(ctx, nil, nil, "push", cfg.remote(), commit+":refs/heads/"+Branch); err != nil {
 		return Publication{}, err
 	}
-	return Publication{Owner: owner, Repo: repo, Branch: Branch, Private: private, Files: pl.Files}, nil
+	return Publication{Owner: owner, Repo: repo, Branch: Branch, Forge: cfg.hostForge(ctx), Private: private, Files: pl.Files}, nil
 }
 
 // Prune rebuilds the orphan branch without the expired runs' <ticket>/
@@ -299,7 +307,21 @@ func (c Config) remoteBranchExists(ctx context.Context, remote, branch string) (
 	return strings.TrimSpace(out) != "", nil
 }
 
+// hostForge identifies the forge whose web URLs reach the published files. It is
+// read off the repo's own remote, the one fact that is true whichever way
+// repoInfo answered.
+func (c Config) hostForge(ctx context.Context) forge.Forge {
+	url, err := c.git(ctx, nil, nil, "remote", "get-url", c.remote())
+	if err != nil {
+		return forge.None
+	}
+	return forge.FromRemote(url)
+}
+
 func (c Config) repoInfo(ctx context.Context) (owner, repo string, private, ok bool) {
+	if c.RepoInfo != nil {
+		return c.RepoInfo(ctx)
+	}
 	out, err := c.gh(ctx, "repo", "view", "--json", "nameWithOwner,isPrivate")
 	if err != nil {
 		return "", "", false, false

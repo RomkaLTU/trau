@@ -64,6 +64,8 @@ type Config struct {
 	JiraEpicType          string
 	AzureOrgURL           string
 	AzurePAT              string
+	BitbucketEmail        string
+	BitbucketAPIToken     string
 	AzureAreaPath         string
 	AzureTeams            []string
 	ReadyLabel            string
@@ -831,6 +833,8 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	}
 	str("REMOTE", &c.Remote)
 	str("FORGE", &c.Forge)
+	str("BITBUCKET_EMAIL", &c.BitbucketEmail)
+	str("BITBUCKET_API_TOKEN", &c.BitbucketAPIToken)
 	str("TRAU_REPO_ROOT", &c.RepoRoot)
 	str("PROVIDER", &c.Provider)
 	if provider != "" {
@@ -1857,6 +1861,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
 		{Key: "FORGE", Group: sectionGit, WebEditable: true, Suggestions: forge.Names(), Description: "Code host this repo's remote is on — leave empty to identify it from the remote itself; a Folder repo's child overrides it in its own .trau.ini"},
+		{Key: "BITBUCKET_EMAIL", Group: sectionGit, WebEditable: true, Advanced: true, Description: "Atlassian account email for Bitbucket Cloud REST Basic auth; required to deliver to a bitbucket.org remote"},
+		{Key: "BITBUCKET_API_TOKEN", Group: sectionGit, WebEditable: true, Advanced: true, Description: "Atlassian API token with pull-request scopes; Bitbucket Cloud accepts no other credential since app passwords were removed"},
 		{Key: "TRAU_REPO_ROOT", Group: sectionPaths, Description: "Target app repo path"},
 		{Key: "PROVIDER", Group: sectionProviders, Default: "claude", Description: "AI provider: claude | codex | kimi", Options: providerOptions},
 		{Key: "CLAUDE_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Claude config file"},
@@ -2096,10 +2102,11 @@ func tuningProviderFor(key string) string {
 // masked in any surface that exposes config over the wire and must never be
 // serialized into an API response.
 var secretKeys = map[string]bool{
-	"LINEAR_API_KEY": true,
-	"JIRA_API_TOKEN": true,
-	"AZURE_PAT":      true,
-	"SERVE_TOKEN":    true,
+	"LINEAR_API_KEY":      true,
+	"JIRA_API_TOKEN":      true,
+	"BITBUCKET_API_TOKEN": true,
+	"AZURE_PAT":           true,
+	"SERVE_TOKEN":         true,
 }
 
 // IsSecretKey reports whether key holds a credential (API key or token).
@@ -2430,6 +2437,10 @@ func keyValue(cfg Config, key string) string {
 		return cfg.Remote
 	case "FORGE":
 		return cfg.Forge
+	case "BITBUCKET_EMAIL":
+		return cfg.BitbucketEmail
+	case "BITBUCKET_API_TOKEN":
+		return cfg.BitbucketAPIToken
 	case "TRAU_REPO_ROOT":
 		return cfg.RepoRoot
 	case "PROVIDER":

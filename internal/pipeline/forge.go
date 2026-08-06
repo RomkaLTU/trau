@@ -8,15 +8,21 @@ import (
 )
 
 // assertDeliverable refuses a run whose repo is hosted somewhere trau cannot open
-// a pull request, before a ticket is picked and an agent is paid for a change
-// that would die at `gh pr create`. A repo with no remote is not refused: it
-// delivers locally and never reaches a forge at all.
+// a pull request — or whose forge it can reach but holds no credential for —
+// before a ticket is picked and an agent is paid for a change that would die at
+// PR time. A repo with no remote is not refused: it delivers locally and never
+// reaches a forge at all.
 func (p *Pipeline) assertDeliverable(ctx context.Context) error {
 	if p.localDelivery(ctx) {
 		return nil
 	}
 	if reason := p.forgeOf(ctx, p.Git, p.Forge).Unsupported(); reason != "" {
 		return fmt.Errorf("%s cannot be delivered to: %s", p.repoLabel(), reason)
+	}
+	if ready, ok := p.Delivery.(DeliveryReady); ok {
+		if reason := ready.NotReady(); reason != "" {
+			return fmt.Errorf("%s cannot be delivered to: %s", p.repoLabel(), reason)
+		}
 	}
 	return nil
 }

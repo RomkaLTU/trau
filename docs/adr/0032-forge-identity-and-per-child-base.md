@@ -47,6 +47,8 @@ that repository's own remote, per repository and per Child repo.**
   anything.** `EnsureCleanBase` refuses a plain Repo hosted elsewhere before the
   ticket is picked; a Folder repo's off-limits sweep names such a child and ships
   to the rest. This ADR identifies forges; it does not add a second delivery path.
+  *(Superseded by ADR 0036: delivery now also reaches Bitbucket Cloud, refused at
+  the same point and by the same choke point. Everything else here stands.)*
 - **Each Child repo ships to its own base** — its own `.trau.ini`
   `BASE_BRANCH`, else the branch its own remote calls default, else the folder's.
   The sweep records the bases on the checkpoint so a resumed run branches exactly

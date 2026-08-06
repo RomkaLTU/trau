@@ -76,15 +76,28 @@ PROJECT=                     # Linear project this repo owns (e.g. salonradar.co
                              # picks tickets in this project, refuses a run on a ticket from another project
                              # before any branch/checkpoint, and files bugs here. Empty = no project scoping.
 
-# --- git / GitHub ---
+# --- git / forge ---
 BASE_BRANCH=main
 REMOTE=origin
 FORGE=                       # code host this repo's remote points at: github | azure | gitlab | bitbucket.
                              # Empty (the normal case) identifies it from the remote itself. Set it only to
                              # name a host trau does not recognize — a self-hosted GitHub Enterprise, say.
-                             # Delivery is GitHub-only: a repo on any other forge is refused before the run
-                             # spends anything rather than at `gh pr create`. A Folder repo's children each
-                             # answer from their own remote and override this in their own .trau.ini.
+                             # Delivery reaches GitHub and Bitbucket Cloud: a repo on any other forge is
+                             # refused before the run spends anything rather than at PR time. A Folder repo's
+                             # children each answer from their own remote and override this in their own
+                             # .trau.ini.
+
+# Bitbucket Cloud delivery (a bitbucket.org remote). trau talks to
+# api.bitbucket.org directly — Atlassian ships no Bitbucket CLI — using HTTP
+# Basic auth, the same shape as JIRA_EMAIL/JIRA_API_TOKEN. App passwords were
+# removed in July 2026, so a scoped Atlassian API token is the only credential
+# Bitbucket accepts. Mint one at
+# https://id.atlassian.com/manage-profile/security/api-tokens with the
+# repository and pull-request scopes. A GitHub remote needs neither key and keeps
+# using `gh auth`; a Bitbucket remote with these unset is refused before the run
+# spends anything. Never commit the token.
+BITBUCKET_EMAIL=             # your Atlassian account email
+BITBUCKET_API_TOKEN=         # Atlassian API token with pull-request scopes
 # Target app repo the loop operates on (REPO_ROOT). Usually empty in project
 # config; the repo is resolved first from --repo, then TRAU_REPO_ROOT, then
 # the cwd git top-level (ADR 0001 §2).

@@ -60,17 +60,50 @@ func TestResolveBasePrefersTheRemoteOverTheFallback(t *testing.T) {
 	}
 }
 
-// TestUnsupportedNamesEveryForgeButGitHub guards the gate a run spends nothing
-// before: only GitHub and a remote-less repo pass, and each refusal says why.
-func TestUnsupportedNamesEveryForgeButGitHub(t *testing.T) {
-	for _, f := range []Forge{GitHub, None} {
+// TestUnsupportedNamesEveryForgeWithNoDeliveryPath guards the gate a run spends
+// nothing before: GitHub, Bitbucket and a remote-less repo pass (ADR 0036), and
+// each refusal says why.
+func TestUnsupportedNamesEveryForgeWithNoDeliveryPath(t *testing.T) {
+	for _, f := range []Forge{GitHub, Bitbucket, None} {
 		if reason := f.Unsupported(); reason != "" {
 			t.Errorf("%q refused with %q, want it deliverable", f, reason)
 		}
 	}
-	for _, f := range []Forge{Azure, GitLab, Bitbucket, Unknown} {
+	for _, f := range []Forge{Azure, GitLab, Unknown} {
 		if f.Unsupported() == "" {
-			t.Errorf("%q reads as deliverable, but trau opens pull requests on GitHub only", f)
+			t.Errorf("%q reads as deliverable, but trau opens no pull requests there", f)
 		}
+	}
+}
+
+// TestSlugReadsOwnerAndRepoFromEveryRemoteForm proves the identifier both forges'
+// REST APIs address a repository by is read off the remote alone, before any
+// credential exists.
+func TestSlugReadsOwnerAndRepoFromEveryRemoteForm(t *testing.T) {
+	cases := []struct {
+		name       string
+		remote     string
+		wantOwner  string
+		wantRepo   string
+		wantParsed bool
+	}{
+		{"bitbucket https", "https://bitbucket.org/acme/widgets.git", "acme", "widgets", true},
+		{"bitbucket https with user", "https://rd@bitbucket.org/acme/widgets.git", "acme", "widgets", true},
+		{"bitbucket scp", "git@bitbucket.org:acme/widgets.git", "acme", "widgets", true},
+		{"bitbucket no suffix", "https://bitbucket.org/acme/widgets", "acme", "widgets", true},
+		{"github scp", "git@github.com:RomkaLTU/trau.git", "RomkaLTU", "trau", true},
+		{"azure deep path", "https://dev.azure.com/org/project/_git/repo", "_git", "repo", true},
+		{"local path", "/Users/rd/Projects/loop", "", "", false},
+		{"host only", "https://bitbucket.org/acme", "", "", false},
+		{"empty", "", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			owner, repo, ok := Slug(tc.remote)
+			if ok != tc.wantParsed || owner != tc.wantOwner || repo != tc.wantRepo {
+				t.Errorf("Slug(%q) = (%q, %q, %v), want (%q, %q, %v)",
+					tc.remote, owner, repo, ok, tc.wantOwner, tc.wantRepo, tc.wantParsed)
+			}
+		})
 	}
 }

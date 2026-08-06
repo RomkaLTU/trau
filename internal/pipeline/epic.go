@@ -126,7 +126,7 @@ func (p *Pipeline) remoteBaseTip(ctx context.Context) string {
 // draft opens it as a draft: exit hygiene tracks an unfinished epic that way, and
 // the finalize that later ships the epic adopts that same PR and marks it ready.
 func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bool) (string, error) {
-	prURL, _ := p.GitHub.PRURL(ctx, epicBranch)
+	prURL, _ := p.Delivery.PRURL(ctx, epicBranch)
 	if prURL != "" {
 		return prURL, nil
 	}
@@ -138,10 +138,10 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bo
 	if err != nil {
 		title = p.EpicID
 	}
-	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID), draft)
+	prURL, err = p.Delivery.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID), draft)
 	if err != nil {
 		if strings.Contains(err.Error(), "No commits between") {
-			if merged, _ := p.GitHub.MergedPRURL(ctx, epicBranch); merged != "" {
+			if merged, _ := p.Delivery.MergedPRURL(ctx, epicBranch); merged != "" {
 				p.logf("  epic PR already merged %s", merged)
 				return merged, nil
 			}
@@ -383,13 +383,13 @@ func (p *Pipeline) syncEpicForMerge(ctx context.Context, epic string) (bool, err
 // the Linear epic with the right comment.
 func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, error) {
 	pr := prNumber(prURL)
-	if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
+	if st, _ := p.Delivery.PRState(ctx, pr); st == "MERGED" {
 		p.checkpointEpicMerged(ctx, prURL)
 		return true, nil
 	}
 	// The PR may be the draft an earlier run's exit hygiene opened; neither a merge
 	// nor a reviewer can take a draft, and one already open for review is not news.
-	if err := p.GitHub.MarkPRReady(ctx, pr); err != nil {
+	if err := p.Delivery.MarkPRReady(ctx, pr); err != nil {
 		logger.Verbosef("mark epic PR %s ready: %v", pr, err)
 	}
 
@@ -437,11 +437,11 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		return true, nil
 	}
 	p.setActivity(p.EpicID, activity.Merge, "")
-	if err := p.retryGH(ctx, "gh pr merge", func() error {
-		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
+	if err := p.retryGH(ctx, "merge pull request", func() error {
+		if st, _ := p.Delivery.PRState(ctx, pr); st == "MERGED" {
 			return nil
 		}
-		return p.GitHub.Merge(ctx, pr, p.MergeMethod, true)
+		return p.Delivery.Merge(ctx, pr, p.MergeMethod, true)
 	}); err != nil {
 		return false, fmt.Errorf("merge epic PR %s: %w", prURL, err)
 	}

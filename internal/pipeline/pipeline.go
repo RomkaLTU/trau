@@ -221,19 +221,23 @@ type Git interface {
 	RemoteSHA(ctx context.Context, remote, branch string) (string, error)
 }
 
-// Check is one PR status check (gh pr checks --json name,bucket). bucket is gh's
-// rollup of the check's conclusion: pass | fail | pending | skipping | cancel.
+// Check is one PR status check. Bucket is the rollup of the check's conclusion in
+// gh's vocabulary — pass | fail | pending | skipping | cancel — which every forge
+// implementation maps its own build states onto, so the merge gate reads one set
+// of words whatever host produced them.
 type Check struct {
 	Name   string `json:"name"`
 	Bucket string `json:"bucket"`
 }
 
-// GitHub is the subset of `gh` operations the closing phases need, scoped to the
-// target repo. Stubbed in tests; ExecGitHub is the real `gh` implementation. The
-// read methods follow a swallow-and-default convention (a missing PR or a gh
-// hiccup reads as "" / no checks) so a transient failure re-polls rather than
-// aborting the ticket.
-type GitHub interface {
+// Delivery is the forge-neutral subset of pull-request operations the closing
+// phases need, scoped to one repository. ExecGitHub shells to `gh`; Bitbucket
+// talks to Bitbucket Cloud's REST API; tests stub it. Nothing here names a host:
+// a forge that speaks pull requests, checks and merges satisfies it, which is what
+// lets a second forge ship without touching the phases. The read methods follow a
+// swallow-and-default convention (a missing PR or a transport hiccup reads as "" /
+// no checks) so a transient failure re-polls rather than aborting the ticket.
+type Delivery interface {
 	PRURL(ctx context.Context, branch string) (string, error)
 
 	MergedPRURL(ctx context.Context, branch string) (string, error)
@@ -266,7 +270,14 @@ type GitHub interface {
 	ClosePR(ctx context.Context, pr string) error
 
 	Merge(ctx context.Context, pr, method string, deleteBranch bool) error
+}
 
+// Stacker is the stacked-pull-request capability, which only GitHub has: no other
+// forge models a chain of PRs that merge as one unit. A Delivery that cannot stack
+// simply does not implement it, and the callers — which already refuse a stacked
+// epic on any non-GitHub remote — read the failed type assertion the same way they
+// read an error from the probe: run the classic shape.
+type Stacker interface {
 	// InStack reports whether the PR is a layer of a GitHub stack. The legacy merge
 	// endpoint Merge shells to refuses a stacked PR at every position, so the
 	// auto-merge path asks first and parks the ticket rather than merging into that
@@ -538,13 +549,13 @@ type Pipeline struct {
 	PhaseLogs    PhaseLogStore
 	LessonLedger LessonStore
 	Git          Git
-	GitHub       GitHub
+	Delivery     Delivery
 	// FolderRepo marks RepoRoot as a Folder repo: not a git repository itself, but
-	// a folder whose direct git children are the run's ship targets. Git and GitHub
-	// have no repository to act on there; GitAt and GitHubAt bind them per child.
+	// a folder whose direct git children are the run's ship targets. Git and Delivery
+	// have no repository to act on there; GitAt and DeliveryAt bind them per child.
 	FolderRepo bool
 	GitAt      func(root string) Git
-	GitHubAt   func(root string) GitHub
+	DeliveryAt func(root string) Delivery
 	Tracker    tracker.Tracker
 	Tokens     Ledger
 	Budget     budget.Limits
@@ -1406,7 +1417,7 @@ func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) 
 	}
 	var pr string
 	if !p.localDelivery(ctx) {
-		pr, _ = p.GitHub.PRURL(ctx, head)
+		pr, _ = p.Delivery.PRURL(ctx, head)
 	}
 	if pr != "" {
 		phase = state.PROpen
@@ -1429,7 +1440,7 @@ func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) 
 func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
 	var url string
 	if !p.localDelivery(ctx) {
-		url, _ = p.GitHub.MergedPRURL(ctx, head)
+		url, _ = p.Delivery.MergedPRURL(ctx, head)
 	}
 	if url != "" {
 		pr := prNumber(url)
@@ -2751,7 +2762,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 			branch = b
 		}
 	}
-	prURL, err := p.GitHub.PRURL(ctx, branch)
+	prURL, err := p.Delivery.PRURL(ctx, branch)
 	if err != nil {
 		return fmt.Errorf("commit %s: pr view: %w", id, err)
 	}
@@ -2958,7 +2969,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
+	if prState, _ := p.Delivery.PRState(ctx, pr); prState == "MERGED" {
 		if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 			return err
 		}
@@ -3048,10 +3059,10 @@ func (p *Pipeline) resolvePR(ctx context.Context, id string) (string, error) {
 	if branch == "" {
 		return "", p.giveUp(ctx, id, "no PR recorded and no branch to find one from")
 	}
-	if url, _ := p.GitHub.MergedPRURL(ctx, branch); url != "" {
+	if url, _ := p.Delivery.MergedPRURL(ctx, branch); url != "" {
 		return "", p.adoptMergedPR(ctx, id, branch, url)
 	}
-	url, _ := p.GitHub.PRURL(ctx, branch)
+	url, _ := p.Delivery.PRURL(ctx, branch)
 	if url == "" {
 		return "", p.giveUp(ctx, id, "no PR recorded or found for branch "+branch)
 	}
@@ -3074,7 +3085,7 @@ func (p *Pipeline) reconcileDeliveredBranch(ctx context.Context, id, from string
 	if p.localDelivery(ctx) {
 		return nil
 	}
-	url, _ := p.GitHub.MergedPRURL(ctx, branch)
+	url, _ := p.Delivery.MergedPRURL(ctx, branch)
 	if url == "" {
 		return nil
 	}
@@ -3143,7 +3154,7 @@ func (p *Pipeline) waitForManualMerge(ctx context.Context, id, pr, url string) (
 	p.emitAwaitingMerge(id, pr, url)
 	warnedLookup := false
 	for {
-		switch st, err := p.GitHub.PRState(ctx, pr); {
+		switch st, err := p.Delivery.PRState(ctx, pr); {
 		case st == "MERGED":
 			return true, nil
 		case st == "CLOSED":
@@ -3178,11 +3189,11 @@ func (p *Pipeline) emitAwaitingMerge(id, pr, url string) {
 // mergePR merges pr with the transient-retry guard, adopting a merge a prior
 // attempt (or a racing actor) already completed.
 func (p *Pipeline) mergePR(ctx context.Context, pr string) error {
-	return p.retryGH(ctx, "gh pr merge", func() error {
-		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
+	return p.retryGH(ctx, "merge pull request", func() error {
+		if st, _ := p.Delivery.PRState(ctx, pr); st == "MERGED" {
 			return nil
 		}
-		return p.GitHub.Merge(ctx, pr, p.MergeMethod, true)
+		return p.Delivery.Merge(ctx, pr, p.MergeMethod, true)
 	})
 }
 
@@ -3400,10 +3411,10 @@ func withRepairs(reason, conj string, repairs int) string {
 }
 
 // noChecksGrace bounds how long the gate waits for a PR's first check to appear
-// before it reads the silence as an answer. GitHub registers a triggered
-// workflow within seconds, so a PR still checkless this far in is one no
-// workflow was ever going to check — waiting out the full CITimeout only delays
-// the same conclusion.
+// before it reads the silence as an answer. Both forges register a triggered
+// pipeline within seconds, so a PR still checkless this far in is one no pipeline
+// was ever going to check — waiting out the full CITimeout only delays the same
+// conclusion.
 const noChecksGrace = 120
 
 // pollCI is the merge gate. A PR that receives no check at all is its own
@@ -3411,13 +3422,13 @@ const noChecksGrace = 120
 // genuinely missing checks run out the clock into ErrCITimeout. base is the
 // branch pr targets, which decides whether any workflow could have checked it.
 func (p *Pipeline) pollCI(ctx context.Context, pr, base string) error {
-	return p.pollCIWith(ctx, p.GitHub, p.RepoRoot, pr, base)
+	return p.pollCIWith(ctx, p.Delivery, p.RepoRoot, pr, base)
 }
 
-// pollCIWith is pollCI against one repository: gh names the PR's own `gh`, and
-// root the checkout whose workflows decide whether a checkless PR is checkless by
-// design. A Folder repo runs it once per changed Child repo.
-func (p *Pipeline) pollCIWith(ctx context.Context, gh GitHub, root, pr, base string) error {
+// pollCIWith is pollCI against one repository: d names the PR's own forge, and
+// root the checkout whose CI configuration decides whether a checkless PR is
+// checkless by design. A Folder repo runs it once per changed Child repo.
+func (p *Pipeline) pollCIWith(ctx context.Context, d Delivery, root, pr, base string) error {
 	if p.RequireCI == config.CIGateOff {
 		p.logf("  CI gate off (REQUIRE_CI=0) — not waiting for checks")
 		return nil
@@ -3426,7 +3437,7 @@ func (p *Pipeline) pollCIWith(ctx context.Context, gh GitHub, root, pr, base str
 	scan := config.ScanPullRequestCI(root)
 	sawCheck := false
 	for waited := 0; ; waited += p.CIPoll {
-		checks, _ := gh.Checks(ctx, pr)
+		checks, _ := d.Checks(ctx, pr)
 		if len(checks) > 0 {
 			sawCheck = true
 		}
@@ -3457,19 +3468,19 @@ func (p *Pipeline) pollCIWith(ctx context.Context, gh GitHub, root, pr, base str
 
 // checklessByDesign reports whether a PR still checkless waited seconds in is
 // one the repo never configured CI for — rather than one whose CI was configured
-// and failed to report, which stays a timeout. The repo's own PR workflows are
-// the proof, so how long the gate holds out for it depends on what they show: a
-// base they demonstrably skip is answered as soon as the grace window passes,
-// while a repo with no pull_request workflow at all says nothing about a CI
-// hosted outside Actions and is only waived once the full CITimeout has passed
-// without its first check. Both waivers merge work no check ever saw, so each
-// one says so in the log.
+// and failed to report, which stays a timeout. The repo's own pull-request
+// pipelines are the proof, so how long the gate holds out for it depends on what
+// they show: a base they demonstrably skip is answered as soon as the grace
+// window passes, while a repo with no pull-request pipeline at all says nothing
+// about a CI hosted somewhere trau cannot read and is only waived once the full
+// CITimeout has passed without its first check. Both waivers merge work no check
+// ever saw, so each one says so in the log.
 func (p *Pipeline) checklessByDesign(scan config.PRCIScan, base string, waited int) bool {
 	if waited < min(noChecksGrace, p.CITimeout) {
 		return false
 	}
 	if scan.AllPathFiltered {
-		p.logf("  ⓘ no checks appeared and every PR workflow is path-filtered — this change matches none of them; skipping the CI gate")
+		p.logf("  ⓘ no checks appeared and every pull-request pipeline is path-filtered — this change matches none of them; skipping the CI gate")
 		return true
 	}
 	if p.RequireCI == config.CIGateOn || scan.CoversBranch(base) {
@@ -3477,9 +3488,9 @@ func (p *Pipeline) checklessByDesign(scan config.PRCIScan, base string, waited i
 	}
 	switch {
 	case scan.HasPRWorkflows:
-		p.logf("  ⚠ no CI configured on base %s — no pull_request workflow targets it, so no check can ever appear", base)
+		p.logf("  ⚠ no CI configured on base %s — no pull-request pipeline targets it, so no check can ever appear", base)
 	case waited >= p.CITimeout:
-		p.logf("  ⚠ no check appeared on %s within CI_TIMEOUT and this repo has no pull_request workflow to produce one", base)
+		p.logf("  ⚠ no check appeared on %s within CI_TIMEOUT and this repo configures no pull-request pipeline to produce one", base)
 	default:
 		return false
 	}
@@ -3520,11 +3531,12 @@ func (p *Pipeline) retryGH(ctx context.Context, what string, op func() error) er
 	return err
 }
 
-// retryableGH reports whether a failed gh/git command is worth retrying. It is
-// optimistic: anything that is not a recognized deterministic failure (one a
-// retry cannot fix — bad input, auth, a missing or duplicate resource) is treated
-// as a transient hiccup. It reads the error text, which now carries the command's
-// stderr (see withStderr).
+// retryableGH reports whether a failed delivery or git operation is worth
+// retrying. It is optimistic: anything that is not a recognized deterministic
+// failure (one a retry cannot fix — bad input, auth, a missing or duplicate
+// resource) is treated as a transient hiccup. It reads the error text, which
+// carries a gh command's stderr (see withStderr) and a REST client's own typed
+// message, both of which spell those failures the same way.
 func retryableGH(err error) bool {
 	if err == nil {
 		return false
@@ -3672,13 +3684,13 @@ func classifyRemotePushErr(probeErr error) pushOutcome {
 // run), it adopts that PR rather than failing or opening a duplicate.
 func (p *Pipeline) createOrAdoptPR(ctx context.Context, base, branch, title, body string) (string, error) {
 	var url string
-	err := p.retryGH(ctx, "gh pr create", func() error {
-		created, e := p.GitHub.CreatePR(ctx, base, branch, title, body, false)
+	err := p.retryGH(ctx, "open pull request", func() error {
+		created, e := p.Delivery.CreatePR(ctx, base, branch, title, body, false)
 		if e == nil {
 			url = created
 			return nil
 		}
-		if existing, e2 := p.GitHub.PRURL(ctx, branch); e2 == nil && existing != "" {
+		if existing, e2 := p.Delivery.PRURL(ctx, branch); e2 == nil && existing != "" {
 			url = existing
 			return nil
 		}

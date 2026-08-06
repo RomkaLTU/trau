@@ -12,6 +12,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/forge/bitbucketapi"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
@@ -65,7 +66,7 @@ func newDrainer(s *Server) *drainer {
 		backoff: autoResumeBackoff,
 		now:     time.Now,
 		alive:   registry.Alive,
-		prState: ghPRState,
+		prState: forgePRState,
 		active:  map[string]context.CancelFunc{},
 		resumes: map[string]autoResume{},
 		watch:   map[string]drainWatch{},
@@ -387,11 +388,34 @@ func (d *drainer) prMerged(root string, row hubstore.CheckpointRow) bool {
 	return d.prState(root, pr) == "MERGED"
 }
 
-// ghPRState asks the forge for a PR's state through gh, the tool the pipeline
-// merges with. Anything that is not a clean answer reads as unknown, so a missing
-// gh or an offline machine leaves the item parked rather than settling it. The
-// grace bounds the read too: a credential helper gh leaves holding the pipe would
-// otherwise outlive the cancelled command.
+// forgePRState asks the forge a repository is hosted on for a PR's state,
+// through the same path the pipeline merges with: gh on GitHub, the REST API on
+// Bitbucket Cloud. Anything that is not a clean answer reads as unknown, so a
+// missing credential or an offline machine leaves the item parked rather than
+// settling it — the reconcile sweep settles only on proof.
+func forgePRState(root, pr string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), prStateTimeout-prStateGrace)
+	defer cancel()
+	cfg, cfgErr := repoConfig(root)
+	client, ok := bitbucketapi.ClientFor(ctx, root, config.Declared(root, "FORGE"), "", cfg.BitbucketEmail, cfg.BitbucketAPIToken)
+	if !ok {
+		// Every other forge is gh's to answer, whether or not this repo's own
+		// config could be read — that answer needs no credential from it.
+		return ghPRState(root, pr)
+	}
+	if cfgErr != nil {
+		return ""
+	}
+	found, err := client.PullRequest(ctx, pr)
+	if err != nil || found == nil {
+		return ""
+	}
+	return found.State
+}
+
+// ghPRState reads a PR's state with gh. The grace bounds the read: a credential
+// helper gh leaves holding the pipe would otherwise outlive the cancelled
+// command.
 func ghPRState(root, pr string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), prStateTimeout-prStateGrace)
 	defer cancel()

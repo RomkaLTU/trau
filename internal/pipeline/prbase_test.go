@@ -86,7 +86,7 @@ const (
 	prBasePRCreated = "https://github.test/pr/512"
 )
 
-func newSlicePRPipeline(t *testing.T, git Git, gh GitHub) *Pipeline {
+func newSlicePRPipeline(t *testing.T, git Git, gh Delivery) *Pipeline {
 	t.Helper()
 	p := localTestPipeline(t, git, gh, &epicTracker{title: "Base gate slice"})
 	if err := p.State.Set(prBaseTicketID, "BRANCH", prBaseRunBranch); err != nil {
@@ -241,7 +241,7 @@ func TestFolderChildPRGatesEachChildOnItsOwnBase(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +281,7 @@ func TestFolderChildPRRefusedWhenChildBaseStaysStale(t *testing.T) {
 	p.RepoRoot = root
 	p.Remote = "origin"
 	p.GitAt = func(path string) Git { return gits[filepath.Base(path)] }
-	p.GitHubAt = func(path string) GitHub { return ghs[filepath.Base(path)] }
+	p.DeliveryAt = func(path string) Delivery { return ghs[filepath.Base(path)] }
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		t.Fatal(err)
 	}
