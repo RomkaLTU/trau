@@ -6,11 +6,11 @@ describe('inboxKeyAction', () => {
   it('maps the queue bindings', () => {
     expect(inboxKeyAction({ key: 'j' })).toBe('next')
     expect(inboxKeyAction({ key: 'k' })).toBe('prev')
-    expect(inboxKeyAction({ key: 's' })).toBe('skip')
   })
 
   it('ignores unbound keys', () => {
     expect(inboxKeyAction({ key: 'x' })).toBeNull()
+    expect(inboxKeyAction({ key: 's' })).toBeNull()
     expect(inboxKeyAction({ key: 'Enter' })).toBeNull()
     expect(inboxKeyAction({ key: 'ArrowDown' })).toBeNull()
   })
@@ -20,8 +20,8 @@ describe('inboxKeyAction', () => {
   })
 
   it('yields a modified keystroke to the browser', () => {
-    expect(inboxKeyAction({ key: 's', metaKey: true })).toBeNull()
-    expect(inboxKeyAction({ key: 's', ctrlKey: true })).toBeNull()
+    expect(inboxKeyAction({ key: 'j', metaKey: true })).toBeNull()
+    expect(inboxKeyAction({ key: 'k', ctrlKey: true })).toBeNull()
     expect(inboxKeyAction({ key: 'j', altKey: true })).toBeNull()
   })
 
@@ -37,7 +37,7 @@ describe('inboxKeyAction', () => {
 
   it('yields while focus is in a contenteditable editor', () => {
     expect(inboxKeyAction({ key: 'j', targetTag: 'DIV', targetEditable: true })).toBeNull()
-    expect(inboxKeyAction({ key: 's', targetTag: 'DIV', targetEditable: true })).toBeNull()
+    expect(inboxKeyAction({ key: 'k', targetTag: 'DIV', targetEditable: true })).toBeNull()
   })
 
   it('still fires over the page body', () => {

@@ -320,9 +320,9 @@ export function prevIssueId(
   return items[at - 1].id;
 }
 
-// skipTarget is where Skip lands: the item after id, wrapping to the top so a skipped
-// item comes round again rather than being lost, and starting at the first item when
-// id has left the queue.
+// skipTarget is where the auto-advance lands after an outcome is applied or discarded:
+// the item after id, wrapping to the top so an item left untouched comes round again
+// rather than being lost, and starting at the first item when id has left the queue.
 export function skipTarget(
   items: readonly InboxItem[],
   id: string | null,
@@ -332,7 +332,7 @@ export function skipTarget(
   return items[(at + 1) % items.length].id;
 }
 
-// postDeleteTarget advances the same way Skip does, but over every identifier the
+// postDeleteTarget advances the same way skipTarget does, but over every identifier the
 // purge took — an epic's children leave the rail with it, so landing on one would
 // select a row that is already gone. Null when nothing survived.
 export function postDeleteTarget(

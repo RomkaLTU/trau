@@ -15,20 +15,29 @@ import { cn } from "@/lib/utils";
 // so every list that could still be holding it is refreshed; onDeleted is left the
 // surface's own follow-up, advancing a selection or closing a panel, and is handed
 // every identifier that went so it can steer clear of an epic's children too.
-// iconOnly drops the label for the dense inbox session bar.
+// iconOnly drops the label for a dense bar. Passing open hands the state to the
+// caller and drops the trigger button, which is how a menu item opens the confirm:
+// the menu closes on select, and a dialog owned by it would close with it.
 export function DeleteIssueDialog({
   repo,
   id,
   iconOnly = false,
+  open: openProp,
+  onOpenChange,
   onDeleted,
 }: {
   repo: string;
   id: string;
   iconOnly?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onDeleted: (deleted: string[]) => void;
 }) {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const [selfOpen, setSelfOpen] = useState(false);
+  const controlled = openProp !== undefined;
+  const open = controlled ? openProp : selfOpen;
+  const setOpen = controlled && onOpenChange ? onOpenChange : setSelfOpen;
 
   // The warning has to name the family the purge takes down, archived children
   // included, and only the issue read carries that count — the board's own
@@ -56,21 +65,23 @@ export function DeleteIssueDialog({
 
   return (
     <>
-      <Button
-        variant="outline"
-        size={iconOnly ? "icon" : "sm"}
-        disabled={remove.isPending}
-        onClick={() => setOpen(true)}
-        aria-label={`Delete ${id}`}
-        title={iconOnly ? `Delete ${id}` : undefined}
-        className={cn(
-          "border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive",
-          iconOnly && "size-8",
-        )}
-      >
-        {remove.isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
-        {!iconOnly && "Delete"}
-      </Button>
+      {!controlled && (
+        <Button
+          variant="outline"
+          size={iconOnly ? "icon" : "sm"}
+          disabled={remove.isPending}
+          onClick={() => setOpen(true)}
+          aria-label={`Delete ${id}`}
+          title={iconOnly ? `Delete ${id}` : undefined}
+          className={cn(
+            "border-destructive/40 text-destructive hover:border-destructive/60 hover:bg-destructive/10 hover:text-destructive",
+            iconOnly && "size-8",
+          )}
+        >
+          {remove.isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
+          {!iconOnly && "Delete"}
+        </Button>
+      )}
       <ConfirmDialog
         open={open}
         onOpenChange={setOpen}
