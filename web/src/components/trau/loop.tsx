@@ -45,6 +45,7 @@ import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
 import { useHandback } from "@/components/trau/handback-dialog";
+import { useRunSteps } from "@/components/trau/run-steps-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import type { PaneTab } from "@/components/trau/run-view";
@@ -123,7 +124,7 @@ import {
   STOPPED_HEADLINE,
   STOPPED_HINT,
 } from "@/lib/runlive";
-import { isAwaitingHuman, stepName, syncState } from "@/lib/steps";
+import { isAwaitingHuman, stepName, syncState, withSkips } from "@/lib/steps";
 import { runsQueryOptions, type PRStatus } from "@/lib/runs";
 import {
   builderView,
@@ -998,12 +999,14 @@ function LaunchQueueCard({
 
   // Run next is one gesture: land the ticket in the first pending slot, then arm
   // the drain. Landing is this page's timeline — the queue response flips the
-  // view to running, never a live-page navigation.
+  // view to running, never a live-page navigation. The skip set is the launch's
+  // own variable, so nothing but the picker that confirmed it can decide what
+  // this run bypasses.
   const runNext = useMutation({
-    mutationFn: () =>
+    mutationFn: (skips: string[]) =>
       runNextRequest(
         startRepo.target,
-        { id: submittedId, provider: overrideProvider },
+        { id: submittedId, provider: overrideProvider, skips },
         { no_resume: skipResume && skipResumeShown, on_fault: onFault },
       ),
     onSuccess: (res) => {
@@ -1011,7 +1014,6 @@ function LaunchQueueCard({
       resetAdd();
     },
   });
-  const handback = useHandback(repo, () => runNext.mutate());
 
   const addAll = useMutation({
     mutationFn: async () => {
@@ -1044,6 +1046,20 @@ function LaunchQueueCard({
   };
   const itemsById = new Map(items.map((it) => [it.id, it]));
   const removeTarget = removeId ? itemsById.get(removeId) : undefined;
+
+  // Run next chains its two confirmations in the order the run reads them: the
+  // hand-back settles what the last run left behind, then the step picker says
+  // what this one does, and its answer is what launches.
+  const runSteps = useRunSteps((_target, skips) => runNext.mutate(skips));
+  const handback = useHandback(repo, (ticket) =>
+    runSteps.request({
+      repo: startRepo.target,
+      id: ticket,
+      skips: itemsById.get(ticket)?.skips,
+      confirmLabel: "Run next",
+      note: runNextCopy(ticket, pendingBehind(items, ticket)),
+    }),
+  );
 
   const runOne = useMutation({
     mutationFn: (id: string) => runQueueItem(repo, id),
@@ -1635,6 +1651,7 @@ function LaunchQueueCard({
         />
       ) : null}
 
+      {runSteps.dialog}
       {handback.dialog}
     </div>
   );
@@ -1877,19 +1894,24 @@ function FinishedSection({
 }
 
 // LiveProgress is a live row's progress line: a base sync in flight names itself
-// and its attempt counter, every other phase walks the generic stepper.
+// and its attempt counter, every other phase walks the generic stepper, restated
+// against the work the queued item bypassed so this page and the run detail say
+// the same thing about a skipped Step.
 function LiveProgress({
   phase,
   activity,
   detail,
+  skips,
 }: {
   phase: string;
   activity?: string;
   detail?: string;
+  skips?: string[];
 }) {
   const sync = syncState(activity, detail);
   if (sync) return <SyncStateLine sync={sync} />;
-  return <PhaseStepper {...runSteps("live", phase, activity, detail)} />;
+  const { steps, subLabel } = runSteps("live", phase, activity, detail);
+  return <PhaseStepper steps={withSkips(steps, skips)} subLabel={subLabel} />;
 }
 
 function RunningRow({
@@ -1944,6 +1966,7 @@ function RunningRow({
           phase={phase ?? ""}
           activity={live?.activity}
           detail={live?.detail}
+          skips={item?.skips}
         />
       ) : (
         <p className="font-sans text-sm text-muted-foreground">
@@ -2016,11 +2039,13 @@ const RELEASE_TONE: Partial<Record<RunState, string>> = {
 // halted by one — still holds the row, wearing that state instead of live ticks.
 function FinalizeRow({
   finalize,
+  item,
   instance,
   now,
   onPeek,
 }: {
   finalize: FinalizeEntry;
+  item?: QueueItem;
   instance?: Instance;
   now: number;
   onPeek: (id: string) => void;
@@ -2084,6 +2109,7 @@ function FinalizeRow({
           phase={finalize.phase}
           activity={finalize.activity}
           detail={finalize.detail}
+          skips={item?.skips}
         />
       )}
       {live?.state_since ? (
@@ -2395,6 +2421,7 @@ function RunningQueueView({
             ) : timeline.finalize ? (
               <FinalizeRow
                 finalize={timeline.finalize}
+                item={itemsById.get(timeline.finalize.epicId)}
                 instance={instance}
                 now={now}
                 onPeek={onPeek}

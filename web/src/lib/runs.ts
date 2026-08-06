@@ -59,6 +59,9 @@ export interface Run {
   handback?: Handback
   shared?: SharedRun
   ships?: RunShip[]
+  // skips names the pipeline work the operator bypassed for this run, absent on
+  // the ordinary run that skipped nothing.
+  skips?: string[]
 }
 
 export interface ReposResponse {

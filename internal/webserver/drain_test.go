@@ -50,7 +50,7 @@ func seedQueue(t *testing.T, s *Server, root string, draining bool, items ...que
 	t.Helper()
 	st := s.stores.Queue(root)
 	for _, it := range items {
-		base := queue.Item{Kind: it.Kind, ID: it.ID, Title: it.Title, Source: it.Source, Provider: it.Provider, SubIssues: it.SubIssues}
+		base := queue.Item{Kind: it.Kind, ID: it.ID, Title: it.Title, Source: it.Source, Provider: it.Provider, Skips: it.Skips, SubIssues: it.SubIssues}
 		if base.Kind == "" {
 			base.Kind = queue.KindTicket
 		}

@@ -1,6 +1,6 @@
 import type { RunState } from '@/components/trau/status-pill'
 
-export type StepState = 'done' | 'active' | 'todo' | 'fail'
+export type StepState = 'done' | 'active' | 'todo' | 'fail' | 'skipped'
 
 export interface Step {
   label: string
@@ -209,6 +209,28 @@ export function liveSteps(
 // corrected reading; a failed run marks the Step it stopped in.
 export function checkpointSteps(phase: string, failed = false): Step[] {
   return stepsAt(checkpointStep(phase), failed)
+}
+
+// SKIP_CLOSES_STEP names the Step a canonical skip key closes outright (ADR
+// 0037), by the Step's own label so a reordering of STEP_LABELS cannot strike
+// out the wrong one. Only Verify has an entry: Build still builds and Ship still
+// commits and opens the PR whatever the operator unticked, so lintfix, cleanup,
+// ci and merge thin their Step out without ever emptying it.
+const SKIP_CLOSES_STEP: Record<string, (typeof STEP_LABELS)[number]> = {
+  verify: 'Verify',
+}
+
+// withSkips restates a run's stepper against the work it bypassed: a Step the
+// run's skip set closes reads skipped rather than pending or complete, so the
+// stepper never claims verification a run declined to do.
+export function withSkips(steps: Step[], skips?: string[]): Step[] {
+  const closed = new Set<string>(
+    (skips ?? []).map((key) => SKIP_CLOSES_STEP[key]).filter(Boolean),
+  )
+  if (closed.size === 0) return steps
+  return steps.map((step) =>
+    closed.has(step.label) ? { ...step, state: 'skipped' as const } : step,
+  )
 }
 
 // stepPill labels a live loop by its active Step, staying on the teal active

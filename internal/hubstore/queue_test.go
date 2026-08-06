@@ -119,22 +119,22 @@ func TestAddFrontMovesPendingToFront(t *testing.T) {
 	}
 }
 
-func TestAddFrontGuardsNonPending(t *testing.T) {
+func TestAddFrontGuardsUnrunnable(t *testing.T) {
 	q := testQueue(t)
 	mustAdd(t, q, "COD-1")
 	mustAdd(t, q, "COD-2")
 	if err := q.MarkRunning("COD-1", 4242); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
-	if err := q.Pause("COD-2", "faulted"); err != nil {
-		t.Fatalf("Pause: %v", err)
+	if err := q.Finish("COD-2", queue.StatusFailed, "faulted"); err != nil {
+		t.Fatalf("Finish: %v", err)
 	}
 
 	if _, _, err := q.AddFront(queue.Item{ID: "COD-1"}); err != queue.ErrAlreadyQueued {
 		t.Fatalf("front re-add of running = %v, want ErrAlreadyQueued", err)
 	}
 	if _, _, err := q.AddFront(queue.Item{ID: "COD-2"}); err != queue.ErrAlreadyQueued {
-		t.Fatalf("front re-add of paused = %v, want ErrAlreadyQueued", err)
+		t.Fatalf("front re-add of settled = %v, want ErrAlreadyQueued", err)
 	}
 	items, err := q.Load()
 	if err != nil {

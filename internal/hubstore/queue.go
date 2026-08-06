@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/queue"
+	"github.com/RomkaLTU/trau/internal/state"
 )
 
 const legacyQueueFilename = "queue.json"
@@ -153,10 +154,12 @@ func (q *Queue) Add(item queue.Item) ([]queue.Item, error) {
 
 // AddFront inserts item at the front of the run order — behind the running item,
 // so it never displaces one — stamping it pending like Add, and returns the
-// resulting queue. When the same id is already queued pending it is
+// resulting queue. When the same id is already queued and still runnable it is
 // moved to that position instead of refused, adopting the incoming Provider
-// override so the latest gesture describes the run; moved reports which case
-// ran. Any other already-queued status keeps Add's ErrAlreadyQueued refusal.
+// override and skip set so the latest gesture describes the run; moved reports
+// which case ran. A paused row adopts them the same way and keeps its status, so
+// the resume still picks up from the checkpoint it parked at. A running or
+// settled row keeps Add's ErrAlreadyQueued refusal.
 func (q *Queue) AddFront(item queue.Item) (items []queue.Item, moved bool, err error) {
 	queueMu.Lock()
 	defer queueMu.Unlock()
@@ -168,11 +171,12 @@ func (q *Queue) AddFront(item queue.Item) (items []queue.Item, moved bool, err e
 		if st.items[i].ID != item.ID {
 			continue
 		}
-		if st.items[i].Status != queue.StatusPending {
+		if !queue.Runnable(st.items[i].Status) {
 			return nil, false, queue.ErrAlreadyQueued
 		}
 		existing := st.items[i]
 		existing.Provider = item.Provider
+		existing.Skips = item.Skips
 		st.items = append(st.items[:i], st.items[i+1:]...)
 		st.items = insertAtFront(st.items, existing)
 		if err := q.persist(st); err != nil {
@@ -713,7 +717,7 @@ func (q *Queue) load() (st queueState, err error) {
 	}
 
 	rows, err := q.db.Query(
-		`SELECT id, kind, title, source, provider, status, reason, pid, batch, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
+		`SELECT id, kind, title, source, provider, skips, status, reason, pid, batch, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
 		q.root,
 	)
 	if err != nil {
@@ -722,11 +726,12 @@ func (q *Queue) load() (st queueState, err error) {
 	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var it queue.Item
-		var kind, queuedAt string
-		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Source, &it.Provider, &it.Status, &it.Reason, &it.PID, &it.Batch, &queuedAt); scanErr != nil {
+		var kind, skips, queuedAt string
+		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Source, &it.Provider, &skips, &it.Status, &it.Reason, &it.PID, &it.Batch, &queuedAt); scanErr != nil {
 			return queueState{}, scanErr
 		}
 		it.Kind = queue.Kind(kind)
+		it.Skips = state.DecodeSkips(skips)
 		if queuedAt != "" {
 			t, perr := time.Parse(time.RFC3339Nano, queuedAt)
 			if perr != nil {
@@ -789,9 +794,9 @@ func (q *Queue) persist(st queueState) error {
 			queuedAt = it.QueuedAt.UTC().Format(time.RFC3339Nano)
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO queue_items(root, position, id, kind, title, source, provider, status, reason, pid, batch, queued_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.root, pos, it.ID, string(it.Kind), it.Title, it.Source, it.Provider, it.Status, it.Reason, it.PID, it.Batch, queuedAt,
+			`INSERT INTO queue_items(root, position, id, kind, title, source, provider, skips, status, reason, pid, batch, queued_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			q.root, pos, it.ID, string(it.Kind), it.Title, it.Source, it.Provider, state.EncodeSkips(it.Skips), it.Status, it.Reason, it.PID, it.Batch, queuedAt,
 		); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}
