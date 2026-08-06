@@ -448,6 +448,7 @@ func (s *Server) deleteGrillSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
 		return
 	}
+	s.grillEvents.removeSession(sess.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -955,7 +956,7 @@ func (s *Server) handleGrillStream(w http.ResponseWriter, r *http.Request) {
 	}
 	setSSEHeaders(w)
 
-	sub, ch := s.grillEvents.subscribe()
+	sub, ch, recent := s.grillEvents.subscribeSession(sid)
 	defer s.grillEvents.unsubscribe(sub)
 
 	after, _ := parseCursor(r.Header.Get("Last-Event-ID"))
@@ -967,6 +968,14 @@ func (s *Server) handleGrillStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			after = m.ID
+		}
+	}
+	// The running turn's activity trails the backfill rather than the state frame: both
+	// of those clear the panel's ring, so a replay written before them would be wiped by
+	// the very frames that opened the stream.
+	for _, act := range recent {
+		if writeGrillFrame(w, "activity", "", act) != nil {
+			return
 		}
 	}
 	flusher.Flush()

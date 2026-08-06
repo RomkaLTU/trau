@@ -1011,6 +1011,50 @@ func TestGrillStreamBackfillAndLive(t *testing.T) {
 	}
 }
 
+// A stream opening mid-turn — a second tab, a reconnect, the panel remounting when the
+// reader picks another inbox item — is caught up on what the turn has been doing rather
+// than sitting blank until the next tool call. The replay trails the backfill: the state
+// and message frames ahead of it clear the panel's ring.
+func TestGrillStreamReplaysRecentActivity(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	if _, _, err := stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role: hubstore.GrillRoleAgent, Kind: hubstore.GrillKindInfo,
+		Payload: `{"text":"Working on it."}`,
+	}); err != nil {
+		t.Fatalf("append reply: %v", err)
+	}
+	srv.publishGrillActivity(sid, GrillActivityView{Kind: grillActivityTool, ID: "toolu_1", Name: "Bash"})
+	srv.publishGrillActivity(sid, GrillActivityView{Kind: grillActivityThinking})
+
+	r := openSSE(t, ts, APIPrefix+"/grill/"+sess.ID+"/stream", nil)
+
+	if event, _ := readFrame(t, r); event != "state" {
+		t.Fatalf("first frame event = %q, want state", event)
+	}
+	if event, _ := readFrame(t, r); event != "message" {
+		t.Fatalf("second frame event = %q, want the backfilled message", event)
+	}
+	want := []GrillActivityView{
+		{Seq: 1, Kind: grillActivityTool, ID: "toolu_1", Name: "Bash"},
+		{Seq: 2, Kind: grillActivityThinking},
+	}
+	for i, w := range want {
+		event, data := readFrame(t, r)
+		if event != "activity" {
+			t.Fatalf("replay frame %d event = %q, want activity (%s)", i, event, data)
+		}
+		var got GrillActivityView
+		if err := json.Unmarshal([]byte(data), &got); err != nil {
+			t.Fatalf("decode replay frame %d: %v", i, err)
+		}
+		if got != w {
+			t.Errorf("replay frame %d = %+v, want %+v", i, got, w)
+		}
+	}
+}
+
 // A start-time model choice is what the session stores, so its very first turn spawns
 // on it instead of the repo default.
 func TestGrillCreateHonoursRequestedModel(t *testing.T) {
