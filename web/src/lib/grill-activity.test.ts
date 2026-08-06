@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   ACTIVITY_DETAIL_BUDGET,
+  loadActivityOpen,
   loadActivityShown,
+  storeActivityOpen,
   storeActivityShown,
   truncateActivityDetail,
 } from './grill-activity'
@@ -41,6 +43,40 @@ describe('activity preference', () => {
 
     expect(loadActivityShown()).toBe(false)
     expect(store.get('trau.grill.activity')).toBe('0')
+  })
+})
+
+describe('feed open preference', () => {
+  it('stands open until someone collapses it', () => {
+    stubStorage()
+
+    expect(loadActivityOpen()).toBe(true)
+  })
+
+  it('survives the remount that reads it back', () => {
+    const store = stubStorage()
+    storeActivityOpen(false)
+
+    expect(loadActivityOpen()).toBe(false)
+    expect(store.get('trau.grill.activity.open')).toBe('0')
+  })
+
+  it('is remembered apart from the activity switch', () => {
+    const store = stubStorage()
+    storeActivityOpen(false)
+    storeActivityShown(true)
+
+    expect(loadActivityOpen()).toBe(false)
+    expect(loadActivityShown()).toBe(true)
+    expect(store.get('trau.grill.activity')).toBe('1')
+  })
+
+  it('reopening it is remembered as such', () => {
+    const store = stubStorage({ 'trau.grill.activity.open': '0' })
+    storeActivityOpen(true)
+
+    expect(loadActivityOpen()).toBe(true)
+    expect(store.get('trau.grill.activity.open')).toBe('1')
   })
 })
 
