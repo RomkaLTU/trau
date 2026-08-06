@@ -32,8 +32,9 @@ const (
 
 // grillActivityDetailMax bounds a detail summary. Detail is a hint about a call — the
 // command run, the file touched — never the whole input and never the result, and the
-// stream is readable by any hub-token holder, so even that one field is cut short.
-const grillActivityDetailMax = 80
+// stream is readable by any hub-token holder, so even that one field is cut short. The
+// row shows less than this; the rest is what hovering it reveals.
+const grillActivityDetailMax = 200
 
 // grillActivityThinkingMax bounds a thinking summary that arrives whole rather than as
 // deltas. A summary is already a sentence rather than a field, so it gets more room

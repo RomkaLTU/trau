@@ -162,6 +162,14 @@ func TestGrillActivityDetail(t *testing.T) {
 	if len([]rune(got)) != grillActivityDetailMax+1 || !strings.HasSuffix(got, "…") {
 		t.Errorf("grillActivityDetail(long) = %q, want it cut at %d runes", got, grillActivityDetailMax)
 	}
+	long := strings.Repeat("x", 120)
+	if got := grillActivityDetail(long); got != long {
+		t.Errorf("grillActivityDetail(120 runes) = %q, want it kept whole", got)
+	}
+	multi := grillActivityDetail(strings.Repeat("é", grillActivityDetailMax+5))
+	if want := strings.Repeat("é", grillActivityDetailMax) + "…"; multi != want {
+		t.Errorf("grillActivityDetail(multibyte) = %q, want %q", multi, want)
+	}
 }
 
 func TestGrillToolInputSummary(t *testing.T) {

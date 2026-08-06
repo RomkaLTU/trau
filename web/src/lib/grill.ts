@@ -1124,16 +1124,18 @@ function appendDelta(reply: StreamingReply, delta: GrillDelta, state: GrillState
 }
 
 // appendActivity folds one frame into the turn's ring, dropping the oldest row once it
-// is full. A seq that skips means the broadcaster dropped a frame, and the ring starts
-// over from there rather than reading as a complete account of the turn — activity is
-// never stored, so nothing will backfill the gap.
+// is full. A seq that skips means what came before it is unaccounted for — a dropped
+// frame, or a stream that opened mid-turn and is being replayed what it missed — so the
+// ring starts over from this frame rather than reading as a complete account of the
+// turn. It keeps the frame itself: activity is never stored, so one discarded here is
+// gone for good.
 function appendActivity(
   feed: LiveActivity,
   activity: GrillActivity,
   state: GrillState,
 ): LiveActivity {
   if (state !== 'running') return feed
-  if (activity.seq !== feed.seq + 1) return { seq: activity.seq, items: [] }
+  if (activity.seq !== feed.seq + 1) return { seq: activity.seq, items: foldActivity([], activity) }
   return { seq: activity.seq, items: foldActivity(feed.items, activity) }
 }
 

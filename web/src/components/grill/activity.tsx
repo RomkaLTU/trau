@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from "react";
+import { type ComponentType } from "react";
 import {
   Brain,
   Check,
@@ -9,7 +9,11 @@ import {
   type LucideProps,
 } from "lucide-react";
 
-import { useActivityShown } from "@/lib/grill-activity";
+import {
+  truncateActivityDetail,
+  useActivityOpen,
+  useActivityShown,
+} from "@/lib/grill-activity";
 import { type GrillActivity } from "@/lib/grill";
 import { cn } from "@/lib/utils";
 
@@ -51,23 +55,25 @@ const WINDOW = 6;
 // row: one line per tool it reached for or stretch it spent thinking. It is a progress
 // hint, not transcript — the ring empties as soon as the turn's message lands.
 export function ActivityFeed({ items }: { items: GrillActivity[] }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useActivityOpen();
   if (items.length === 0) return null;
 
   const Chevron = open ? ChevronDown : ChevronRight;
   const shown = open ? items.slice(-WINDOW) : items.slice(-1);
 
   return (
-    <div className="flex flex-col gap-0.5">
+    <div className="flex flex-col gap-1">
       <button
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
-        className="flex items-center gap-1 self-start font-mono text-[0.65rem] uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
+        className="flex items-center gap-1.5 self-start font-mono text-xs uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground"
       >
-        <Chevron className="size-3" aria-hidden="true" />
+        <Chevron className="size-3.5" aria-hidden="true" />
         activity
-        <span className="tabular-nums">{items.length}</span>
+        <span className="tabular-nums text-muted-foreground/70">
+          {items.length}
+        </span>
       </button>
       {shown.map((activity) => (
         <ActivityRow key={activity.seq} activity={activity} />
@@ -81,21 +87,28 @@ function ActivityRow({ activity }: { activity: GrillActivity }) {
   const thinking = activity.kind === "thinking" ? activity.text : undefined;
 
   return (
-    <div className="flex min-w-0 items-center gap-1.5 pl-1 text-xs">
+    <div className="flex min-w-0 items-center gap-2 py-0.5 text-xs leading-5">
       <Icon
-        className={cn("size-3 shrink-0", toneText[tone], spin && "animate-spin")}
+        className={cn(
+          "size-3.5 shrink-0",
+          toneText[tone],
+          spin && "animate-spin",
+        )}
         aria-hidden="true"
       />
       {thinking ? (
         <ThinkingLine text={thinking} />
       ) : (
         <>
-          <span className="shrink-0 font-mono text-muted-foreground">
+          <span className="shrink-0 font-mono text-foreground">
             {rowLabel(activity)}
           </span>
           {activity.detail && (
-            <span className="truncate text-muted-foreground/70">
-              {activity.detail}
+            <span
+              title={activity.detail}
+              className="truncate font-mono text-muted-foreground"
+            >
+              {truncateActivityDetail(activity.detail)}
             </span>
           )}
         </>
@@ -110,8 +123,11 @@ function ActivityRow({ activity }: { activity: GrillActivity }) {
 // stretch that still fits reads from the left like every other row.
 function ThinkingLine({ text }: { text: string }) {
   return (
-    <span className="flex min-w-0 flex-1 justify-end overflow-hidden">
-      <span className="me-auto whitespace-nowrap italic text-muted-foreground/70">
+    <span
+      title={text}
+      className="flex min-w-0 flex-1 justify-end overflow-hidden"
+    >
+      <span className="me-auto whitespace-nowrap italic text-muted-foreground">
         {text}
       </span>
     </span>
