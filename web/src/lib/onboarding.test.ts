@@ -4,6 +4,8 @@ import {
   appURLRowIssue,
   appURLRowsToWrite,
   appURLsCanContinue,
+  bindingUnreachable,
+  bindingVisible,
   blankAppURLAccount,
   blankAppURLRow,
   credentialLayer,
@@ -12,6 +14,7 @@ import {
   essentialsProjectKeys,
   joinProject,
   laterStep,
+  matchingTeam,
   onboardPath,
   preselectProvider,
   secretPlaceholder,
@@ -22,6 +25,7 @@ import {
   writeAppURLRows,
   type AppURLRowFields,
   type RepoInspection,
+  type Team,
   type TrackerFields,
 } from './onboarding'
 
@@ -360,6 +364,53 @@ describe('essentialsConfigWrites', () => {
   })
 })
 
+describe('bindingVisible', () => {
+  const teams: Team[] = [
+    { key: 'COD', name: 'Codesome labs' },
+    { key: 'OPS', name: 'Operations' },
+  ]
+
+  it('matches the team key without regard to case', () => {
+    expect(bindingVisible(teams, 'COD')).toBe(true)
+    expect(bindingVisible(teams, 'cod')).toBe(true)
+    expect(bindingVisible(teams, ' Cod ')).toBe(true)
+  })
+
+  it('rejects a team the credentials never listed', () => {
+    expect(bindingVisible(teams, 'M4C')).toBe(false)
+  })
+
+  it('rejects a blank binding and an empty list', () => {
+    expect(bindingVisible(teams, '')).toBe(false)
+    expect(bindingVisible(teams, '   ')).toBe(false)
+    expect(bindingVisible([], 'COD')).toBe(false)
+  })
+
+  it('matches on the key, not the display name', () => {
+    expect(bindingVisible(teams, 'Codesome labs')).toBe(false)
+  })
+
+  it('hands back the team so the provider spelling of the key can be adopted', () => {
+    expect(matchingTeam(teams, 'cod')).toEqual({ key: 'COD', name: 'Codesome labs' })
+    expect(matchingTeam(teams, 'M4C')).toBeUndefined()
+    expect(matchingTeam(teams, '')).toBeUndefined()
+    expect(matchingTeam([], 'COD')).toBeUndefined()
+  })
+})
+
+describe('bindingUnreachable', () => {
+  const teams: Team[] = [{ key: 'COD', name: 'Codesome labs' }]
+
+  it('reports the stored binding until one of the fetched teams is picked', () => {
+    expect(bindingUnreachable(teams, '', 'M4C')).toBe(true)
+    expect(bindingUnreachable(teams, 'COD', 'M4C')).toBe(false)
+  })
+
+  it('stays quiet when the last test reached the stored binding', () => {
+    expect(bindingUnreachable(teams, 'COD', '')).toBe(false)
+  })
+})
+
 describe('trackerCanContinue', () => {
   it('lets internal through with no binding or test', () => {
     expect(trackerCanContinue('internal', fields(), 'idle')).toBe(true)
@@ -380,6 +431,24 @@ describe('trackerCanContinue', () => {
 
   it('blocks when no provider is chosen', () => {
     expect(trackerCanContinue(null, fields({ binding: 'COD' }), 'ok')).toBe(false)
+  })
+
+  it('blocks a binding the fetched list does not contain', () => {
+    const teams: Team[] = [{ key: 'COD', name: 'Codesome labs' }]
+    expect(trackerCanContinue('linear', fields({ binding: 'M4C' }), 'ok', teams)).toBe(false)
+    expect(trackerCanContinue('linear', fields({ binding: 'COD' }), 'ok', teams)).toBe(true)
+    expect(trackerCanContinue('linear', fields({ binding: 'cod' }), 'ok', teams)).toBe(true)
+  })
+
+  it('falls back to the binding-and-test rules while no list has been fetched', () => {
+    expect(trackerCanContinue('linear', fields({ binding: 'M4C' }), 'ok', [])).toBe(true)
+    expect(trackerCanContinue('linear', fields({ binding: 'M4C' }), 'idle', [])).toBe(false)
+  })
+
+  it('checks the fetched list for jira and azure too', () => {
+    const teams: Team[] = [{ key: 'PLAT', name: 'Platform' }]
+    expect(trackerCanContinue('jira', fields({ binding: 'WEB' }), 'ok', teams)).toBe(false)
+    expect(trackerCanContinue('azure', fields({ binding: 'PLAT' }), 'ok', teams)).toBe(true)
   })
 })
 

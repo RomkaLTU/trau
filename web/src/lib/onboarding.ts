@@ -491,14 +491,45 @@ export async function writeAppURLRows(
 
 export type TestState = 'idle' | 'testing' | 'ok' | 'fail'
 
+// Mirrors TeamByKey in internal/tracker/linearapi: keys compare upper-cased, so a
+// stored `m4c` resolves to `M4C`. Returns the team so callers can adopt the
+// provider's spelling of the key.
+export function matchingTeam(
+  teams: readonly Team[],
+  binding: string,
+): Team | undefined {
+  const want = binding.trim().toUpperCase()
+  if (want === '') return undefined
+  return teams.find((t) => t.key.trim().toUpperCase() === want)
+}
+
+export function bindingVisible(teams: readonly Team[], binding: string): boolean {
+  return matchingTeam(teams, binding) !== undefined
+}
+
+// A stored binding the last test could not reach stops being worth naming the
+// moment one of the fetched teams is picked in its place, so the warning clears
+// on the re-pick rather than on the next test run.
+export function bindingUnreachable(
+  teams: readonly Team[],
+  binding: string,
+  stored: string,
+): boolean {
+  return stored !== '' && !bindingVisible(teams, binding)
+}
+
+// An empty team list means no test has listed what the credentials reach yet, so
+// the binding cannot be ruled out.
 export function trackerCanContinue(
   provider: TrackerProvider | null,
   fields: TrackerFields,
   test: TestState,
+  teams: readonly Team[] = [],
 ): boolean {
   if (provider === 'internal') return true
   if (provider === null) return false
-  return fields.binding.trim() !== '' && test === 'ok'
+  if (fields.binding.trim() === '' || test !== 'ok') return false
+  return teams.length === 0 || bindingVisible(teams, fields.binding)
 }
 
 // Blank fields are allowed when the repo already stores a credential set the hub

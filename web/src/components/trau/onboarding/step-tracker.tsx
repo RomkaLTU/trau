@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { ArrowRight, Plug } from 'lucide-react'
 
@@ -12,8 +12,11 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
+  bindingUnreachable,
+  bindingVisible,
   credentialLayer,
   forgeLabel,
+  matchingTeam,
   preselectProvider,
   testTracker,
   trackerCanContinue,
@@ -54,6 +57,59 @@ function codeHome(inspection: RepoInspection): string {
   return forgeLabel(inspection.forge)
 }
 
+// Linear grants team access on the API key itself; Jira and Azure DevOps grant it
+// through the account and the token's scope, so the remedy differs per provider.
+const MISSING_BINDING: Partial<
+  Record<TrackerProvider, { title: string; body: (stored: ReactNode) => ReactNode }>
+> = {
+  linear: {
+    title: "The saved team isn't visible to this API key",
+    body: (stored) => (
+      <>
+        The team {stored} is stored in this config, but this API key cannot see it. The key may
+        be restricted to specific teams — check its team access under Linear → Settings →
+        Security &amp; access → Personal API keys, or pick one of the teams below.
+      </>
+    ),
+  },
+  jira: {
+    title: "The saved project isn't visible to these credentials",
+    body: (stored) => (
+      <>
+        The project {stored} is stored in this config, but the account these credentials belong
+        to cannot see it. Check the project's permissions in Jira, or pick one of the projects
+        below.
+      </>
+    ),
+  },
+  azure: {
+    title: "The saved project isn't visible to this token",
+    body: (stored) => (
+      <>
+        The project {stored} is stored in this config, but this personal access token cannot
+        see it. The token may be scoped to a different organization or set of projects — check
+        it under User settings → Personal access tokens, or pick one of the projects below.
+      </>
+    ),
+  },
+}
+
+function MissingBinding({
+  provider,
+  binding,
+}: {
+  provider: TrackerProvider
+  binding: string
+}) {
+  const copy = MISSING_BINDING[provider]
+  if (!copy) return null
+  return (
+    <Callout tone="warn" title={copy.title}>
+      {copy.body(<span className="font-mono text-foreground">{binding}</span>)}
+    </Callout>
+  )
+}
+
 function CredsFound() {
   return (
     <span className="rounded-full border border-teal/50 bg-teal/10 px-1.5 py-0.5 font-mono text-[0.6rem] text-teal">
@@ -85,6 +141,7 @@ export function StepTracker({
   const [azureOrgUrl, setAzureOrgUrl] = useState('')
   const [azurePat, setAzurePat] = useState('')
   const [binding, setBinding] = useState(inspection.prefill?.team ?? '')
+  const [unreachableBinding, setUnreachableBinding] = useState('')
 
   const fields: TrackerFields = {
     linearKey,
@@ -105,9 +162,26 @@ export function StepTracker({
         email: jiraEmail.trim() || undefined,
         api_token: (p === 'azure' ? azurePat : jiraToken).trim() || undefined,
       }),
+    // A prefilled binding is never auto-replaced: when the credentials cannot reach
+    // it the selection is cleared and named, so the re-pick is the user's own.
     onSuccess: (res) => {
-      const first = res.teams?.[0]
-      if (binding === '' && first) setBinding(first.key)
+      const teams = res.ok ? (res.teams ?? []) : []
+      if (binding === '') {
+        const first = teams[0]
+        if (first) setBinding(first.key)
+        setUnreachableBinding('')
+        return
+      }
+      const match = matchingTeam(teams, binding)
+      if (teams.length > 0 && !match) {
+        setUnreachableBinding(binding)
+        setBinding('')
+        return
+      }
+      // Adopting the provider's spelling keeps the select showing the team rather
+      // than blank when the stored key differs only in case.
+      if (match && match.key !== binding) setBinding(match.key)
+      setUnreachableBinding('')
     },
   })
 
@@ -119,11 +193,15 @@ export function StepTracker({
         : 'fail'
       : 'idle'
 
+  const fetchedTeams = useMemo<Team[]>(
+    () => (test.data?.ok ? (test.data.teams ?? []) : []),
+    [test.data],
+  )
+
   const bindingOptions = useMemo<Team[]>(() => {
-    const teams = test.data?.ok ? (test.data.teams ?? []) : []
-    if (teams.length > 0) return teams
+    if (fetchedTeams.length > 0) return fetchedTeams
     return binding !== '' ? [{ key: binding, name: binding }] : []
-  }, [test.data, binding])
+  }, [fetchedTeams, binding])
 
   const commit = useMutation({
     mutationFn: async () => {
@@ -138,18 +216,25 @@ export function StepTracker({
   const existingLayer = provider !== null ? credentialLayer(inspection, provider) : null
   const hasExisting = existingLayer !== null
   const canTest = provider !== null && trackerCanTest(provider, fields, hasExisting)
-  const canContinue = trackerCanContinue(provider, fields, testState)
+  const canContinue = trackerCanContinue(provider, fields, testState, fetchedTeams)
+  const bindingReachable = bindingVisible(fetchedTeams, binding)
+  const showUnreachable =
+    testState === 'ok' && bindingUnreachable(fetchedTeams, binding, unreachableBinding)
 
   function choose(next: TrackerProvider) {
     if (next === provider) return
     setProvider(next)
     setBinding(next === inspection.prefill?.provider ? (inspection.prefill?.team ?? '') : '')
+    setUnreachableBinding('')
     test.reset()
   }
 
   function editCredential(value: string, setter: (v: string) => void) {
     setter(value)
-    if (testState !== 'idle') test.reset()
+    if (testState !== 'idle') {
+      setUnreachableBinding('')
+      test.reset()
+    }
   }
 
   return (
@@ -336,7 +421,7 @@ export function StepTracker({
                 </Button>
                 {testState === 'ok' && (
                   <span className="font-mono text-xs text-done">
-                    authenticated{binding ? ` — ${binding} reachable` : ''}
+                    authenticated{bindingReachable ? ` — ${binding} reachable` : ''}
                   </span>
                 )}
                 {!canTest && (
@@ -345,6 +430,10 @@ export function StepTracker({
                   </span>
                 )}
               </div>
+
+              {showUnreachable && (
+                <MissingBinding provider={provider} binding={unreachableBinding} />
+              )}
 
               {testState === 'fail' && (
                 <Callout tone="fail" title="Connection failed">
