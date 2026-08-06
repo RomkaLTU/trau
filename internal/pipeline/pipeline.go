@@ -701,6 +701,13 @@ type Pipeline struct {
 	// write (config TEST_EFFORT): "off", "low", "medium", or "high" — the default,
 	// which adds nothing to the prompts.
 	TestEffort string
+	// Skips names the pipeline work this run bypasses (the internal --skip flag):
+	// lintfix, cleanup, verify, ci, merge. It is per-run rather than
+	// configuration — no ini key sets it — and is recorded on each ticket's own
+	// checkpoint so a resume honors the same set with no argv behind it (ADR 0037).
+	// Build, commit and PR carry no key: a run that produces nothing to review is
+	// not a run worth starting.
+	Skips []string
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -840,6 +847,12 @@ type Pipeline struct {
 	// localOnly caches the remote preflight's verdict for the run. Nil until the
 	// first localDelivery call resolves it.
 	localOnly *bool
+
+	// runSkips is the ticket in flight's effective skip set: this run's own Skips,
+	// or what an earlier attempt recorded on the checkpoint when this one declares
+	// none. loadSkips re-resolves it per ticket, since the loop drives many tickets
+	// through one Pipeline and a stored set belongs to its ticket alone.
+	runSkips []string
 
 	// children is a Folder repo run's scan of its Child repos; offLimits,
 	// startDirt and childBases are the start-of-run sweep's verdict on each — why
@@ -999,6 +1012,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		return err
 	}
 	p.clearFailureMarks(id)
+	p.loadSkips(id)
 	p.primeStackLayer(id)
 	if err := p.selectRunner(ctx, id); err != nil {
 		return err
@@ -2202,6 +2216,14 @@ func (p *Pipeline) handoffAndCleanup(ctx context.Context, id string, runHandoff 
 	if !runHandoff {
 		return p.lintFixAndCleanup(ctx, id)
 	}
+	// The brief exists only for the cold verifier to grade against.
+	if p.skipping(config.SkipVerify) {
+		p.logf("  ↳ handoff: skipped — no verifier will read a brief on this run")
+		if err := p.lintFixAndCleanup(ctx, id); err != nil {
+			return err
+		}
+		return p.checkpointHandoff(id)
+	}
 	if p.skipHandoff(ctx, id) {
 		p.logf("  ↳ handoff: skipped for tiny diff — verify derives its checklist from the ticket + diff")
 		if err := p.lintFixAndCleanup(ctx, id); err != nil {
@@ -2314,6 +2336,9 @@ func (p *Pipeline) restoreHandoff(id string) {
 // verified; on exhaustion it files a last-resort HITL blocker issue and
 // quarantines the original ticket.
 func (p *Pipeline) Verify(ctx context.Context, id string) error {
+	if p.skipping(config.SkipVerify) {
+		return p.skipVerify(id)
+	}
 	p.restoreHandoff(id)
 	p.restoreRubric(id)
 	// Every attempt Resets the contract directory into existence, but only the
@@ -2967,12 +2992,13 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 //
 // Every outcome that reached the base hands it to the hub reload step. An epic
 // slice is excluded: its PR targets the epic branch, so nothing reached the base
-// yet. So is a local run under AUTO_MERGE=0 — the only path that settles without
-// merging, since the remote one blocks in the manual-merge wait until the PR lands.
+// yet. So is a local run the operator merges themselves — the only path that
+// settles without merging, since the remote one blocks in the manual-merge wait
+// until the PR lands.
 func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	err := p.ciAndMerge(ctx, id)
 	settled := err == nil || errors.Is(err, ErrAlreadyDone)
-	operatorMerges := !p.AutoMerge && p.localDelivery(ctx)
+	operatorMerges := !p.autoMerge() && p.localDelivery(ctx)
 	if p.EpicID == "" && settled && !operatorMerges {
 		p.reloadHubOntoBase(ctx)
 	}
@@ -3009,7 +3035,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	if p.stackedEpic(ctx) {
 		return p.completeStackedLayer(ctx, id, pr)
 	}
-	if !p.AutoMerge {
+	if !p.autoMerge() {
 		return p.awaitManualMerge(ctx, id, pr)
 	}
 	if reason := p.foreignWorkInPR(ctx, id, pr); reason != "" {
@@ -3050,9 +3076,9 @@ func (p *Pipeline) landLocally(ctx context.Context, id string) error {
 	if err != nil {
 		return fmt.Errorf("merge %s: resolve base: %w", id, err)
 	}
-	if !p.AutoMerge {
+	if !p.autoMerge() {
 		p.setPRStatus(id, prStatusAwaitingMerge)
-		p.logf("  ⏳ %s is ready on %s — merge it into %s yourself (AUTO_MERGE=0)", id, branch, base)
+		p.logf("  ⏳ %s is ready on %s — merge it into %s yourself (%s)", id, branch, base, p.manualMergeReason())
 		return nil
 	}
 
@@ -3171,7 +3197,7 @@ func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
 // the returned outcome.
 func (p *Pipeline) waitForManualMerge(ctx context.Context, id, pr, url string) (bool, error) {
 	p.setActivity(id, activity.MergeWait, "")
-	p.logf("  ⏳ green CI — awaiting manual merge of PR #%s (AUTO_MERGE=0)", pr)
+	p.logf("  ⏳ green CI — awaiting manual merge of PR #%s (%s)", pr, p.manualMergeReason())
 	p.emitAwaitingMerge(id, pr, url)
 	warnedLookup := false
 	for {
@@ -3450,6 +3476,10 @@ func (p *Pipeline) pollCI(ctx context.Context, pr, base string) error {
 // root the checkout whose CI configuration decides whether a checkless PR is
 // checkless by design. A Folder repo runs it once per changed Child repo.
 func (p *Pipeline) pollCIWith(ctx context.Context, d Delivery, root, pr, base string) error {
+	if p.skipping(config.SkipCI) {
+		p.logf("  CI gate skipped by the operator — not waiting for checks")
+		return nil
+	}
 	if p.RequireCI == config.CIGateOff {
 		p.logf("  CI gate off (REQUIRE_CI=0) — not waiting for checks")
 		return nil

@@ -1,6 +1,7 @@
 package hubstore
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/hubdb/hubdbtest"
@@ -206,5 +207,46 @@ func TestCheckpointImportLegacyDoesNotClobberProgressed(t *testing.T) {
 	}
 	if _, exists := state.NewStore(runsDir).Load("COD-1"); exists {
 		t.Fatalf("superseded legacy state file was not removed")
+	}
+}
+
+// A run's skip set travels on its checkpoint's own key set, so both reads decode
+// it for the run board without a column of its own (ADR 0037).
+func TestCheckpointDecodesSkips(t *testing.T) {
+	c := testCheckpoints(t)
+	cases := []struct {
+		ticket string
+		data   map[string]string
+		want   []string
+	}{
+		{ticket: "COD-1", data: map[string]string{"PHASE": "merged", state.SkipsKey: "verify,ci"}, want: []string{"verify", "ci"}},
+		{ticket: "COD-2", data: map[string]string{"PHASE": "merged"}, want: nil},
+		{ticket: "COD-3", data: map[string]string{"PHASE": "merged", state.SkipsKey: ""}, want: nil},
+	}
+	for _, tc := range cases {
+		if err := c.Upsert("/repo", tc.ticket, tc.data); err != nil {
+			t.Fatalf("Upsert %s: %v", tc.ticket, err)
+		}
+	}
+	for _, tc := range cases {
+		row, ok, err := c.One("/repo", tc.ticket)
+		if err != nil || !ok {
+			t.Fatalf("One(%s) ok=%v err=%v", tc.ticket, ok, err)
+		}
+		if !slices.Equal(row.Skips, tc.want) {
+			t.Errorf("One(%s).Skips = %v, want %v", tc.ticket, row.Skips, tc.want)
+		}
+	}
+	rows, err := c.All("/repo")
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	if len(rows) != len(cases) {
+		t.Fatalf("All returned %d rows, want %d", len(rows), len(cases))
+	}
+	for i, row := range rows {
+		if !slices.Equal(row.Skips, cases[i].want) {
+			t.Errorf("All()[%d] (%s).Skips = %v, want %v", i, row.Ticket, row.Skips, cases[i].want)
+		}
 	}
 }

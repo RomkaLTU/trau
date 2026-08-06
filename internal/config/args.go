@@ -42,6 +42,11 @@ type Options struct {
 	// clean finish — to the hub keyed by this id so the drainer can settle the
 	// item. The hub's queue drainer passes it; not user-facing.
 	DrainReport string
+	// Skips is the canonical pipeline work this run bypasses (--skip lintfix,
+	// cleanup, verify, ci, merge — see ParseSkips). It is per-run, never
+	// configuration: the pipeline records it on the run's own checkpoint so a
+	// resume honors the same set. The hub spawn path passes it; not user-facing.
+	Skips []string
 }
 
 // ParseArgs parses the CLI argument vector. It returns an error on an unknown
@@ -140,6 +145,16 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.Repo = v
+		case a == "--skip":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			keys, err := ParseSkips(v)
+			if err != nil {
+				return o, err
+			}
+			o.Skips = mergeSkips(o.Skips, keys)
 		case a == "--drain-report":
 			v, err := next(a)
 			if err != nil {

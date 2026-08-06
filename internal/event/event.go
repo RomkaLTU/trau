@@ -103,6 +103,11 @@ const KindPromptOverrideSkipped = "prompt_override_skipped"
 // creation and the CI gate and lands its work by merging locally instead.
 const KindLocalDelivery = "local_delivery"
 
+// KindRunSkips names the pipeline work an operator bypassed for one run (ADR
+// 0037), emitted once per ticket as the run settles its skip set. It is the
+// durable audit trail for a delivery that no verifier or CI check ever saw.
+const KindRunSkips = "run_skips"
+
 // KindConfigChange marks a run whose resolved routing configuration differs from
 // the one its repo last ran under — the cohort boundary spend is grouped by. The
 // hub emits it, since only it holds the previous fingerprint.

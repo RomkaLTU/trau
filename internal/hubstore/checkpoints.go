@@ -21,6 +21,9 @@ type CheckpointRow struct {
 	FailureReason string
 	UpdatedAt     string
 	Data          string
+	// Skips names the pipeline work the run bypassed (ADR 0037), decoded from the
+	// key set rather than projected into a column: no query filters on it.
+	Skips []string
 }
 
 // TicketCheckpoint pairs a checkpoint with the ticket it belongs to, for the run
@@ -84,6 +87,7 @@ func (c *Checkpoints) One(root, ticket string) (CheckpointRow, bool, error) {
 	if err != nil {
 		return CheckpointRow{}, false, err
 	}
+	r.Skips = decodeCheckpointSkips(r.Data)
 	return r, true, nil
 }
 
@@ -127,6 +131,7 @@ func (c *Checkpoints) All(root string) (rows []TicketCheckpoint, err error) {
 			v := roundCents(cost.Float64)
 			r.CostUSD = &v
 		}
+		r.Skips = decodeCheckpointSkips(r.Data)
 		rows = append(rows, r)
 	}
 	return rows, q.Err()
@@ -191,4 +196,15 @@ func checkpointRowFromData(data map[string]string) (CheckpointRow, error) {
 		UpdatedAt:     data["UPDATED"],
 		Data:          string(blob),
 	}, nil
+}
+
+// decodeCheckpointSkips reads the skip set back out of a stored key-set blob. An
+// unreadable blob yields no skips: a missing audit line must never fail the read
+// the whole board depends on.
+func decodeCheckpointSkips(blob string) []string {
+	var data map[string]string
+	if json.Unmarshal([]byte(blob), &data) != nil {
+		return nil
+	}
+	return state.DecodeSkips(data[state.SkipsKey])
 }

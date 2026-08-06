@@ -14,6 +14,9 @@ const qaNoteHeading = "## Trau QA report"
 
 // deliveryQANote is the report a delivered slice leaves on its ticket: the same
 // verify facts the PR body's Testing section states, plus the PR the run opened.
+// A run that skipped the Verify Step has no such facts, so the note carries the
+// bypass statement the PR body carries — the ticket says the slice needs manual
+// QA rather than implying a verifier signed it off.
 func (p *Pipeline) deliveryQANote(ctx context.Context, id, prURL string) tracker.QANote {
 	lines := append([]string{qaNoteHeading, ""}, p.testingLines(ctx, id)...)
 	lines = append(lines, "", "PR: "+prURL)

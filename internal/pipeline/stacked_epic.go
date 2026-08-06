@@ -424,7 +424,7 @@ func (p *Pipeline) finalizeStackedEpic(ctx context.Context) error {
 	if err := p.linkStack(ctx, stackBranches(chain, top.Branch, top.Base)); err != nil {
 		p.logf("  ⚠ couldn't re-link the stack before merging (continuing): %v", err)
 	}
-	if !p.AutoMerge {
+	if !p.autoMerge() {
 		return p.awaitStackMerge(ctx, chain, top)
 	}
 	p.setActivity(p.EpicID, activity.Merge, "")
@@ -527,8 +527,8 @@ func (p *Pipeline) awaitStackMerge(ctx context.Context, chain []stackLayer, top 
 	_ = p.State.Set(p.EpicID, "PR", top.PR)
 	_ = p.State.Set(p.EpicID, "PR_URL", top.PRURL)
 	p.setActivity(p.EpicID, activity.MergeWait, "")
-	p.logf("  ⏳ epic %s: every layer is green — merge the stack from PR #%s yourself (AUTO_MERGE=0)", p.EpicID, top.PR)
-	p.emitEpicAwaitingMerge("AUTO_MERGE=0 — the whole stack is yours to merge from its top PR", top.PRURL)
+	p.logf("  ⏳ epic %s: every layer is green — merge the stack from PR #%s yourself (%s)", p.EpicID, top.PR, p.manualMergeReason())
+	p.emitEpicAwaitingMerge(p.manualMergeReason()+" — the whole stack is yours to merge from its top PR", top.PRURL)
 	for {
 		if p.stackMerged(ctx, chain) {
 			p.markLayersMerged(chain)

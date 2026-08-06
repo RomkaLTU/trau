@@ -542,6 +542,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	p.SelectRunner = newRunnerSelector(cfg, opts.Provider, repoName(repoRoot),
 		hubclient.New(hubBaseURL(cfg), cfg.ServeToken), runner, buildRunner)
+	p.Skips = opts.Skips
 	stampRouting(ctx, cfg, sink)
 	// A folder of repositories has no repository at its root to hold an epic's
 	// integration branch: running the epic is refused, and a sub-issue forced here
@@ -2875,6 +2876,7 @@ func (a *appActions) ensure() error {
 		return err
 	}
 	a.pipe = pipe
+	a.pipe.Skips = a.opts.Skips
 	a.pipe.SelectRunner = newRunnerSelector(a.cfg, a.providerOverride(), repoName(repoRoot),
 		hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), runner, buildRunner)
 	a.pipe.OnPhase = func(id, phase string) { a.reg.SetState(registry.StateWorking, id, phase) }
