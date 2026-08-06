@@ -23,14 +23,19 @@ import {
 import {
   answerText,
   isAutoAnswer,
+  isRoundAnswer,
   outcomePayload,
   questionPayload,
+  roundAnswers,
+  roundQuestions,
   type GrillActivity,
   type GrillBanner,
   type GrillMessage,
   type GrillMode,
   type GrillSession,
   type PendingAnswer,
+  type RoundAnswer,
+  type RoundQuestion,
   type StreamingReply,
 } from "@/lib/grill";
 import { cn } from "@/lib/utils";
@@ -180,11 +185,23 @@ function MessageRow({
   agent: string;
 }) {
   switch (message.kind) {
-    case "question":
+    case "question": {
+      const round = roundQuestions(message);
+      if (round) {
+        return (
+          <AgentBubble agent={agent}>
+            <RoundTranscript round={round} answers={roundAnswers(message)} />
+          </AgentBubble>
+        );
+      }
       return (
         <AgentBubble agent={agent}>{questionPayload(message).text}</AgentBubble>
       );
+    }
+    // The answer that closes a round is the whole set at once, which the round's own
+    // cards above already show one by one; repeating it as a bubble says nothing new.
     case "answer":
+      if (isRoundAnswer(message)) return null;
       return (
         <UserBubble text={answerText(message)} auto={isAutoAnswer(message)} />
       );
@@ -207,6 +224,44 @@ function MessageRow({
     default:
       return null;
   }
+}
+
+// RoundTranscript is a round as the transcript reads it: the questions numbered as
+// they were asked, each with the answer it got. An answer the hub took from the agent's
+// own recommendation is badged, exactly as a single auto-accepted answer is.
+function RoundTranscript({
+  round,
+  answers,
+}: {
+  round: RoundQuestion[];
+  answers: RoundAnswer[];
+}) {
+  const settled = new Map(answers.map((a) => [a.index, a]));
+  return (
+    <div className="flex flex-col gap-2">
+      {round.map((q, i) => {
+        const answer = settled.get(i);
+        return (
+          <div key={`${i}-${q.text}`} className="flex gap-2">
+            <span className="font-mono text-xs text-muted-foreground">
+              {i + 1}.
+            </span>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="whitespace-pre-wrap">{q.text}</span>
+              {answer && (
+                <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <span className="min-w-0 flex-1 whitespace-pre-wrap">
+                    {answer.text}
+                  </span>
+                  {answer.auto && <AutoAcceptBadge />}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function AgentBubble({

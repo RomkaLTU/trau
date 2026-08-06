@@ -253,6 +253,65 @@ func TestGrillSetAutoAccept(t *testing.T) {
 	}
 }
 
+// A round's answers are stored against the question message that posed it, keyed by
+// the position of the question in the round: they arrive one, several or all at a time,
+// in any order, and a position already settled keeps the answer it has.
+func TestGrillRoundAnswers(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	round, _, err := g.AppendMessage(sess.ID, NewGrillMessage{
+		Role: GrillRoleAgent, Kind: GrillKindQuestion, Payload: `{"text":"1. a\n2. b\n3. c"}`,
+	})
+	if err != nil {
+		t.Fatalf("append round: %v", err)
+	}
+
+	empty, err := g.RoundAnswers(round.ID)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("round answers before any = %+v (err %v), want none", empty, err)
+	}
+	if err := g.SaveRoundAnswers(round.ID, []GrillRoundAnswer{{Index: 2, Text: "third"}}); err != nil {
+		t.Fatalf("save one answer: %v", err)
+	}
+	if err := g.SaveRoundAnswers(round.ID, []GrillRoundAnswer{
+		{Index: 0, Text: "first", Auto: true},
+		{Index: 2, Text: "overwritten"},
+	}); err != nil {
+		t.Fatalf("save the rest: %v", err)
+	}
+
+	got, err := g.RoundAnswers(round.ID)
+	if err != nil {
+		t.Fatalf("round answers: %v", err)
+	}
+	want := []GrillRoundAnswer{{Index: 0, Text: "first", Auto: true}, {Index: 2, Text: "third"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("round answers = %+v, want %+v — ordered by question, first answer kept", got, want)
+	}
+
+	// A round's answers belong to the round that posed it and to no other.
+	other, _, err := g.AppendMessage(sess.ID, NewGrillMessage{
+		Role: GrillRoleAgent, Kind: GrillKindQuestion, Payload: `{"text":"1. d"}`,
+	})
+	if err != nil {
+		t.Fatalf("append second round: %v", err)
+	}
+	if got, err := g.RoundAnswers(other.ID); err != nil || len(got) != 0 {
+		t.Fatalf("second round answers = %+v (err %v), want none", got, err)
+	}
+
+	// The session's messages cascade on delete, and a round's answers go with them.
+	if _, err := g.Delete(sess.ID); err != nil {
+		t.Fatalf("delete session: %v", err)
+	}
+	if got, err := g.RoundAnswers(round.ID); err != nil || len(got) != 0 {
+		t.Fatalf("round answers after delete = %+v (err %v), want none", got, err)
+	}
+}
+
 func TestGrillInterjectionQueue(t *testing.T) {
 	tests := []struct {
 		name    string

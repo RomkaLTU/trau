@@ -54,6 +54,7 @@ var grillMCPTools = []mcpTool{
   "required": ["question"]
 }`),
 	},
+	grillAskRoundTool,
 	{
 		Name: "finish_session",
 		Description: "End the grilling session with a proposed outcome for the user to review. disposition is one of: " +
@@ -141,6 +142,8 @@ func (s *Server) grillMCPToolsCall(w http.ResponseWriter, r *http.Request, sid i
 	switch p.Name {
 	case "ask_user":
 		s.grillAskUser(w, r, sid, rpcID, p.Arguments, p.Meta.ProgressToken)
+	case "ask_round":
+		s.grillAskRound(w, r, sid, rpcID, p.Arguments, p.Meta.ProgressToken)
 	case "finish_session":
 		s.grillFinishSession(w, sid, rpcID, p.Arguments)
 	default:
@@ -175,9 +178,7 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 	// A queued interjection outranks the question, auto-accept included: the user has
 	// already moved the conversation on. The question is neither stored nor posed, so
 	// nothing later mistakes it for one the session is waiting on.
-	if steer := s.grillTakeInterjections(sid); len(steer) > 0 {
-		frame := s.grillPastedAnswer(r.Context(), sid, grillSteerFrame(steer))
-		respondRPCJSON(w, rpcID, grillAnswerResult(frame))
+	if s.grillSteerInstead(w, r, sid, rpcID) {
 		return
 	}
 	allowFreeText := true
@@ -224,13 +225,60 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 	// an answer to parks the session at once and returns the park sentinel as a plain
 	// result — the agent ends its turn and the question waits for a live session.
 	if s.isPregrill(sid) {
-		if parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, ""); err == nil {
-			s.publishGrillState(parked)
-		}
+		s.parkGrillIdle(sid)
 		respondRPCJSON(w, rpcID, grillParkResult())
 		return
 	}
 
+	s.grillBlockUntilAnswered(w, r, sid, rpcID, progressToken, grillParkResult(), func() (any, bool) {
+		answer, ok := s.grillAnswerAfter(sid, question0.ID)
+		if !ok {
+			return nil, false
+		}
+		return grillAnswerResult(s.grillPastedAnswer(r.Context(), sid, answer)), true
+	})
+}
+
+// grillSteerInstead answers a pose with whatever the user has queued while the turn
+// worked, reporting whether it did. An interjection outranks the question or round the
+// agent is about to ask — the user has already moved the conversation on — so neither
+// is stored, and nothing later mistakes one for something the session waits on.
+func (s *Server) grillSteerInstead(w http.ResponseWriter, r *http.Request, sid int64, rpcID json.RawMessage) bool {
+	steer := s.grillTakeInterjections(sid)
+	if len(steer) == 0 {
+		return false
+	}
+	frame := s.grillPastedAnswer(r.Context(), sid, grillSteerFrame(steer))
+	respondRPCJSON(w, rpcID, grillAnswerResult(frame))
+	return true
+}
+
+// parkGrillIdle puts a session down for a user who is not there to answer it, and puts
+// the park on the live stream so every watching surface follows. It carries no reason:
+// nothing went wrong, and a reason is what the panel shows when something did.
+func (s *Server) parkGrillIdle(sid int64) {
+	parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, "")
+	if err != nil {
+		return
+	}
+	s.publishGrillState(parked)
+}
+
+// grillBlockUntilAnswered holds a posed question open on an SSE stream until the user
+// settles it, the idle window elapses, or the session ends — the wait ask_user and
+// ask_round share. answered reports the result to return the moment what the caller
+// waits on has landed; it is consulted before the loop and again on every wake, so a
+// dropped broadcast or a race with the answer endpoint costs a keepalive at worst. An
+// idle window that elapses parks the session and returns park, the sentinel that tells
+// the agent to end its turn rather than ask again.
+func (s *Server) grillBlockUntilAnswered(
+	w http.ResponseWriter,
+	r *http.Request,
+	sid int64,
+	rpcID, progressToken json.RawMessage,
+	park mcpToolResult,
+	answered func() (any, bool),
+) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		respondRPCError(w, rpcID, rpcInternalError, "streaming unsupported")
@@ -253,16 +301,16 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		_ = writeMCPMessage(w, jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: rpcID, Result: result})
 		flusher.Flush()
 	}
-	answered := func() bool {
-		answer, ok := s.grillAnswerAfter(sid, question0.ID)
+	settled := func() bool {
+		result, ok := answered()
 		if !ok {
 			return false
 		}
-		respond(grillAnswerResult(s.grillPastedAnswer(r.Context(), sid, answer)))
+		respond(result)
 		return true
 	}
 
-	if answered() {
+	if settled() {
 		return
 	}
 	for {
@@ -270,16 +318,14 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		case <-r.Context().Done():
 			return
 		case <-idle.C:
-			if answered() {
+			if settled() {
 				return
 			}
-			if parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, ""); err == nil {
-				s.publishGrillState(parked)
-			}
-			respond(grillParkResult())
+			s.parkGrillIdle(sid)
+			respond(park)
 			return
 		case <-keepalive.C:
-			if answered() {
+			if settled() {
 				return
 			}
 			progress++
@@ -290,7 +336,7 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 			if ev.SessionID != sid {
 				continue
 			}
-			if answered() {
+			if settled() {
 				return
 			}
 			if ev.Event == "state" && s.grillSessionEnded(sid) {
