@@ -347,6 +347,157 @@ func TestGrillResumeSpawns(t *testing.T) {
 	}
 }
 
+func postResume(t *testing.T, ts *httptest.Server, sid string, want int) GrillSessionView {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sid+"/resume", nil)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != want {
+		t.Fatalf("resume status = %d, want %d", res.StatusCode, want)
+	}
+	var v GrillSessionView
+	if want == http.StatusOK {
+		if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+			t.Fatalf("decode resume: %v", err)
+		}
+	}
+	return v
+}
+
+func grillMessageCount(t *testing.T, stores *hubstore.Stores, sid int64) int {
+	t.Helper()
+	msgs, err := stores.Grill().Messages(sid, 0)
+	if err != nil {
+		t.Fatalf("read messages: %v", err)
+	}
+	return len(msgs)
+}
+
+// Resuming a stalled session spawns the turn its dead child left owing and writes
+// nothing to the transcript: the runner composes the prompt from the session itself.
+func TestGrillResumeStalledSession(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	spawned := make(chan hubstore.GrillSession, 2)
+	srv.startGrill = func(_ context.Context, sess hubstore.GrillSession) { spawned <- sess }
+
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	<-spawned
+	poseGrillQuestion(t, stores, sid, `{"text":"ship it?"}`, hubstore.GrillWaiting)
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillStalled, "usage limit reached"); err != nil {
+		t.Fatalf("stall session: %v", err)
+	}
+	before := grillMessageCount(t, stores, sid)
+
+	v := postResume(t, ts, sess.ID, http.StatusOK)
+	if v.State != hubstore.GrillRunning {
+		t.Fatalf("view = %+v, want running", v)
+	}
+	if v.ParkedReason != "" {
+		t.Fatalf("parked reason = %q, want the stall cleared", v.ParkedReason)
+	}
+	select {
+	case resumed := <-spawned:
+		if resumed.ID != sid || resumed.State != hubstore.GrillRunning {
+			t.Fatalf("resumed session = %+v, want %d running", resumed, sid)
+		}
+	default:
+		t.Fatal("resuming a stalled session spawned no turn")
+	}
+	if after := grillMessageCount(t, stores, sid); after != before {
+		t.Fatalf("messages after resume = %d, want the transcript untouched at %d", after, before)
+	}
+}
+
+// A session with nothing asked yet — the opening turn stalled — resumes on the same
+// bare endpoint: the runner nudges the agent, and there is still nothing to replay.
+func TestGrillResumeOpeningTurnStall(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	spawned := make(chan hubstore.GrillSession, 2)
+	srv.startGrill = func(_ context.Context, sess hubstore.GrillSession) { spawned <- sess }
+
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	<-spawned
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillStalled, "agent stopped unexpectedly"); err != nil {
+		t.Fatalf("stall session: %v", err)
+	}
+
+	if v := postResume(t, ts, sess.ID, http.StatusOK); v.State != hubstore.GrillRunning {
+		t.Fatalf("view = %+v, want running", v)
+	}
+	select {
+	case <-spawned:
+	default:
+		t.Fatal("resuming an opening-turn stall spawned no turn")
+	}
+	if got := grillMessageCount(t, stores, sid); got != 0 {
+		t.Fatalf("messages after resume = %d, want none", got)
+	}
+}
+
+// Only a stall has a turn owing. Every other state is refused rather than spawned
+// into: a running or waiting session already has its child, and a settled one is over.
+func TestGrillResumeRefusesNonStalledStates(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	spawned := make(chan hubstore.GrillSession, 4)
+	srv.startGrill = func(_ context.Context, sess hubstore.GrillSession) { spawned <- sess }
+
+	cases := []struct {
+		issue string
+		path  []string
+	}{
+		{"COD-1", nil},
+		{"COD-2", []string{hubstore.GrillWaiting}},
+		{"COD-3", []string{hubstore.GrillParked}},
+		{"COD-4", []string{hubstore.GrillFinished}},
+		{"COD-5", []string{hubstore.GrillFinished, hubstore.GrillApplied}},
+		{"COD-6", []string{hubstore.GrillAbandoned}},
+	}
+	for _, tc := range cases {
+		state := hubstore.GrillRunning
+		if len(tc.path) > 0 {
+			state = tc.path[len(tc.path)-1]
+		}
+		t.Run(state, func(t *testing.T) {
+			sess := createGrill(t, ts, repo, tc.issue)
+			sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+			<-spawned
+			for _, next := range tc.path {
+				if _, err := stores.Grill().Transition(sid, next, ""); err != nil {
+					t.Fatalf("transition to %s: %v", next, err)
+				}
+			}
+
+			postResume(t, ts, sess.ID, http.StatusConflict)
+
+			after, _, err := stores.Grill().Session(sid)
+			if err != nil {
+				t.Fatalf("read session: %v", err)
+			}
+			if after.State != state {
+				t.Fatalf("state after refused resume = %q, want %q", after.State, state)
+			}
+			select {
+			case s := <-spawned:
+				t.Fatalf("refused resume spawned a turn: %+v", s)
+			default:
+			}
+		})
+	}
+}
+
+func TestGrillResumeUnknownSessionAndMethod(t *testing.T) {
+	ts, _, repo := grillServer(t)
+
+	postResume(t, ts, "999", http.StatusNotFound)
+
+	sess := createGrill(t, ts, repo, "COD-1")
+	res, _ := get(t, ts, APIPrefix+"/grill/"+sess.ID+"/resume")
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET resume status = %d, want 405", res.StatusCode)
+	}
+}
+
 func TestGrillAbandon(t *testing.T) {
 	ts, _, repo := grillServer(t)
 	sess := createGrill(t, ts, repo, "COD-1")

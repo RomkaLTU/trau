@@ -610,6 +610,36 @@ func (s *Server) grillSubmitAnswer(
 	return msg, resumed, nil
 }
 
+// handleGrillResume picks a stalled session back up (POST): back to running, then the
+// turn its dead child never finished. The runner composes that turn's prompt from the
+// session itself, so the resume carries no text and appends nothing to the transcript.
+// Only a stall has a turn owing; every other state is refused.
+func (s *Server) handleGrillResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sess, ok := s.loadGrillSession(w, r)
+	if !ok {
+		return
+	}
+	if sess.State != hubstore.GrillStalled {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is not stalled"})
+		return
+	}
+	resumed, err := s.stores.Grill().Transition(sess.ID, hubstore.GrillRunning, "")
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	s.publishGrillState(resumed)
+	if s.startGrill != nil {
+		s.startGrill(r.Context(), resumed)
+	}
+	writeJSON(w, http.StatusOK, s.grillSessionView("", resumed))
+}
+
 // handleGrillAbandon settles a session as abandoned (POST), killing any turn still in
 // flight rather than letting it burn until its next tool call. It is idempotent on an
 // already-abandoned session and refuses one already applied.

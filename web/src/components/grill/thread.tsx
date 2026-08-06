@@ -4,7 +4,7 @@ import { AlertTriangle, Play, RotateCw, Square } from "lucide-react";
 import { ActivityFeed } from "@/components/grill/activity";
 import { AnswerBody } from "@/components/grill/answer-body";
 import { AutoAcceptBadge } from "@/components/grill/auto-accept";
-import { BannerRow } from "@/components/grill/banners";
+import { BannerRow, ErrorNote } from "@/components/grill/banners";
 import { OutcomeProposal } from "@/components/grill/outcome-review";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
@@ -67,6 +67,8 @@ export function GrillThread({
   stalled,
   stopping,
   stopError,
+  resuming,
+  resumeError,
   onRetry,
   onDiscard,
   onResume,
@@ -81,6 +83,8 @@ export function GrillThread({
   stalled: GrillBanner | null;
   stopping?: boolean;
   stopError?: string;
+  resuming?: boolean;
+  resumeError?: string;
   onRetry: (id: string) => void;
   onDiscard: (id: string) => void;
   onResume?: () => void;
@@ -131,7 +135,12 @@ export function GrillThread({
             )}
             {hydrated && stalled && (
               <MessageScrollerItem messageId="stalled">
-                <StalledNote banner={stalled} onResume={onResume} />
+                <StalledNote
+                  banner={stalled}
+                  resuming={resuming}
+                  resumeError={resumeError}
+                  onResume={onResume}
+                />
               </MessageScrollerItem>
             )}
           </MessageScrollerContent>
@@ -433,20 +442,31 @@ function ThinkingRow({
 
 function StalledNote({
   banner,
+  resuming,
+  resumeError,
   onResume,
 }: {
   banner: GrillBanner;
+  resuming?: boolean;
+  resumeError?: string;
   onResume?: () => void;
 }) {
   return (
     <div className="flex flex-col items-start gap-2.5">
       <BannerRow banner={banner} />
       {onResume && (
-        <Button variant="outline" size="sm" onClick={onResume}>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onResume}
+          disabled={resuming}
+          title="Restart the turn the agent stopped on"
+        >
           <Play />
           Resume session
         </Button>
       )}
+      {resumeError && <ErrorNote message={resumeError} />}
     </div>
   );
 }

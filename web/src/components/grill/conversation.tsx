@@ -19,13 +19,13 @@ import {
   grillDetailQueryOptions,
   grillReducer,
   grillStreamURL,
-  lastAnswer,
   latestOutcome,
   NO_ACTIVITY,
   NO_REPLY,
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  resumeGrill,
   roundAnswers,
   roundQuestions,
   stopGrill,
@@ -205,9 +205,19 @@ export function GrillConversation({
   // replaying it would roll the thread back over whatever frame arrived since.
   const stop = useMutation({ mutationFn: () => stopGrill(session.id) });
 
+  // The hub publishes the resume on its state frames, so this reply is left
+  // undispatched for the same reason.
+  const resume = useMutation({ mutationFn: () => resumeGrill(session.id) });
+
   // A refused stop belongs to the turn it was aimed at; the next turn starts clean.
   useEffect(() => {
     if (session.state !== "running") stop.reset();
+  }, [session.state]);
+
+  // A refused resume belongs to the stall it was aimed at, and the session leaving
+  // stalled — by this resume or by an answer — is what settles it.
+  useEffect(() => {
+    if (session.state !== "stalled") resume.reset();
   }, [session.state]);
 
   useEffect(() => {
@@ -237,11 +247,9 @@ export function GrillConversation({
     banner.tone !== "thinking" &&
     !reviewing;
 
-  // A session that stalled on its opening turn has no answer to replay, so the box
-  // reopens rather than stranding the user behind a Resume button with nothing to send.
-  const resume = stalled ? lastAnswer(messages) : "";
-  const answering =
-    canCompose(session.state) || (stalled !== null && resume === "");
+  // A stall leaves both ways forward open: Resume restarts the turn the agent died on,
+  // and answering resumes the session off the answer itself.
+  const answering = canCompose(session.state);
   const freeText = question?.allow_free_text ?? true;
   const sending = answer.isPending;
   // An open round is answered on its own form, and one line cannot settle a set: the
@@ -274,9 +282,11 @@ export function GrillConversation({
       stalled={stalled}
       stopping={stop.isPending}
       stopError={stop.error?.message}
+      resuming={resume.isPending}
+      resumeError={resume.error?.message}
       onRetry={retry}
       onDiscard={(id) => dispatch({ type: "send-discard", id })}
-      onResume={resume === "" ? undefined : () => send(resume)}
+      onResume={() => resume.mutate()}
       onStop={() => stop.mutate()}
     />
   );
