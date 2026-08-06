@@ -25,24 +25,36 @@ var skipKeys = []string{SkipLintFix, SkipCleanup, SkipVerify, SkipCI, SkipMerge}
 // SkipKeys returns the canonical skip keys, for callers that name them to a human.
 func SkipKeys() []string { return append([]string(nil), skipKeys...) }
 
-// ParseSkips reads one comma-separated --skip value into the canonical keys it
-// names. It rejects an unknown key naming the valid set, so a typo fails at
-// startup rather than silently running the work the operator meant to bypass.
-// Repeats collapse and the result keeps canonical order, so the same request
-// always records the same set.
-func ParseSkips(v string) ([]string, error) {
+// CanonicalSkips reads an already-split skip set — a JSON array from the hub, a
+// picker's answer — into the canonical keys it names. It rejects an unknown key
+// naming the valid set, so a typo fails at the edge rather than silently running
+// the work the operator meant to bypass. Blanks drop, repeats collapse, and the
+// result keeps canonical order, so the same choice always records the same set;
+// an empty set returns nil.
+func CanonicalSkips(keys []string) ([]string, error) {
 	named := map[string]bool{}
-	for _, raw := range strings.Split(v, ",") {
+	for _, raw := range keys {
 		key := strings.ToLower(strings.TrimSpace(raw))
 		if key == "" {
 			continue
 		}
 		if !ValidSkip(key) {
-			return nil, fmt.Errorf("--skip: unknown key %q; valid keys are %s", raw, strings.Join(skipKeys, ", "))
+			return nil, fmt.Errorf("unknown key %q; valid keys are %s", raw, strings.Join(skipKeys, ", "))
 		}
 		named[key] = true
 	}
 	return canonicalSkips(named), nil
+}
+
+// ParseSkips reads one comma-separated --skip value through the same vocabulary
+// the hub validates against, so the flag and the queue cannot disagree about
+// what a key means.
+func ParseSkips(v string) ([]string, error) {
+	keys, err := CanonicalSkips(strings.Split(v, ","))
+	if err != nil {
+		return nil, fmt.Errorf("--skip: %w", err)
+	}
+	return keys, nil
 }
 
 // mergeSkips folds a second --skip occurrence into the set an earlier one

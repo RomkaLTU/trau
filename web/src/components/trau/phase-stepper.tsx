@@ -6,6 +6,7 @@ const STEP_GLYPH: Record<StepState, string> = {
   active: '●',
   todo: '○',
   fail: '✗',
+  skipped: '⊘',
 }
 
 const STEP_TEXT: Record<StepState, string> = {
@@ -13,6 +14,7 @@ const STEP_TEXT: Record<StepState, string> = {
   active: 'text-teal',
   todo: 'text-faint',
   fail: 'text-fail',
+  skipped: 'text-faint',
 }
 
 export function PhaseStepper({
@@ -54,7 +56,9 @@ export function PhaseStepper({
               )}
             >
               <span aria-hidden="true">{STEP_GLYPH[step.state]}</span>
-              {step.label}
+              <span className={cn(step.state === 'skipped' && 'line-through')}>
+                {step.label}
+              </span>
               {step.state === 'active' && (
                 <span className="cursor-block text-teal" aria-hidden="true">
                   ▍

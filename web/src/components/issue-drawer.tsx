@@ -21,6 +21,7 @@ import {
 import { AuthorChip } from "@/components/trau/author-chip";
 import { StartIn } from "@/components/trau/member-repo-picker";
 import { ProviderPinPicker } from "@/components/trau/provider-picker";
+import { useRunSteps } from "@/components/trau/run-steps-dialog";
 import { StateGroupChip } from "@/components/trau/state-group-chip";
 import { StatusPill } from "@/components/trau/status-pill";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
@@ -141,6 +142,7 @@ function IssueDrawerBody({
 
   const queue = useQuery(queueQueryOptions(repo));
   const inQueue = queueActiveIds(queue.data?.items ?? []).has(id);
+  const queuedItem = (queue.data?.items ?? []).find((it) => it.id === id);
   const liveLoop = useLiveLoops(repo)[0];
 
   const addToQueue = useMutation({
@@ -152,13 +154,17 @@ function IssueDrawerBody({
   });
 
   const run = useMutation({
-    mutationFn: (target: string) => runOnly(target, { id }),
-    onSuccess: (res, target) => {
+    mutationFn: (vars: { target: string; skips: string[] }) =>
+      runOnly(vars.target, { id, skips: vars.skips }),
+    onSuccess: (res, { target }) => {
       publishQueue(queryClient, target, res);
       toast.success(`Running ${id}`);
     },
     onError: (err) => toast.error(err.message),
   });
+  const runSteps = useRunSteps((target, skips) =>
+    run.mutate({ target: target.repo, skips }),
+  );
 
   const assign = useMutation({
     mutationFn: (next: Assignee | null) => assignIssue(repo, id, next),
@@ -363,7 +369,19 @@ function IssueDrawerBody({
             title={runGate ?? "Run this issue now — the queue stays disarmed"}
             className="flex"
           >
-            <StartIn repo={repo} ticket={id} onStart={run.mutate}>
+            <StartIn
+              repo={repo}
+              ticket={id}
+              onStart={(target) =>
+                runSteps.request({
+                  repo: target,
+                  id,
+                  skips: queuedItem?.skips,
+                  confirmLabel: "Run",
+                  note: "The queue stays disarmed — nothing after this runs on its own.",
+                })
+              }
+            >
               {(begin) => (
                 <Button
                   variant="outline"
@@ -444,6 +462,8 @@ function IssueDrawerBody({
           onDismiss={() => setArchiveNote(null)}
         />
       )}
+
+      {runSteps.dialog}
     </>
   );
 }

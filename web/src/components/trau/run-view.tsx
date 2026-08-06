@@ -53,7 +53,7 @@ import {
 import { sessionStatePill } from "@/lib/overview";
 import { phaseLogsQueryOptions, type PhaseLog } from "@/lib/phaselogs";
 import { runDetailQueryOptions, type RunDetail } from "@/lib/rundetail";
-import { isSyncLog, syncState, type SyncState } from "@/lib/steps";
+import { isSyncLog, syncState, withSkips, type SyncState } from "@/lib/steps";
 import {
   deriveElapsedMs,
   deriveVariant,
@@ -661,7 +661,13 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         detail,
         run?.release,
       );
-  const { steps, subLabel } = runSteps(variant, phase, activity, detail);
+  const { steps: ranSteps, subLabel } = runSteps(
+    variant,
+    phase,
+    activity,
+    detail,
+  );
+  const steps = withSkips(ranSteps, run?.skips);
 
   usePageTitle(runTitle(ticket, pill.label));
 
