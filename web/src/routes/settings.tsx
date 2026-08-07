@@ -27,6 +27,7 @@ import {
   ValueWarning,
 } from '@/components/trau/settings-editor'
 import { PhaseMatrix } from '@/components/trau/settings-matrix'
+import { TrackerAdvanced } from '@/components/trau/settings-status-map'
 import { ThemeGrid } from '@/components/trau/settings-theme-grid'
 import { ThemePicker } from '@/components/trau/settings-appearance'
 import { cn } from '@/lib/utils'
@@ -43,6 +44,7 @@ import {
   APPEARANCE_SECTION,
   ROUTING_SECTION,
   THEME_KEY,
+  TRACKER_SECTION,
   deriveSections,
   displayValue,
   isModified,
@@ -263,6 +265,19 @@ function ConfigView({ repo }: { repo: string }) {
         <div className="p-4">
           <PhaseMatrix keys={section.advancedKeys} {...editorProps} />
         </div>
+      )
+    }
+
+    if (section.group === TRACKER_SECTION) {
+      return (
+        <TrackerAdvanced
+          repo={repo}
+          keys={section.advancedKeys}
+          layers={layers}
+          hubRestart={section.hubRestart}
+          onSaved={handleSaved}
+          renderRow={(item) => rowFor(item, section)}
+        />
       )
     }
 
