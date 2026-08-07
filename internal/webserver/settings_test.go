@@ -503,3 +503,79 @@ func TestConfigRejectsPost(t *testing.T) {
 		t.Errorf("status = %d, want 405", res.StatusCode)
 	}
 }
+
+// TestConfigTrackerTag covers the per-tracker catalog tag the settings surface
+// filters on: each provider's own keys carry their provider, the keys every
+// tracker shares carry none, and the tag survives the JSON encoding.
+func TestConfigTrackerTag(t *testing.T) {
+	home := t.TempDir()
+	seedConfigRepo(t, home, "acme")
+	ts := instancesServer(t, home)
+	out, body := getConfig(t, ts, "acme")
+
+	tagged := map[string]string{
+		"LINEAR_API_KEY":      "linear",
+		"LINEAR_BOARD_STATES": "linear",
+		"JIRA_BASE_URL":       "jira",
+		"JIRA_EMAIL":          "jira",
+		"JIRA_API_TOKEN":      "jira",
+		"JIRA_EPIC_TYPE":      "jira",
+		"JIRA_BOARD_STATES":   "jira",
+		"AZURE_ORG_URL":       "azure",
+		"AZURE_PAT":           "azure",
+		"AZURE_AREA_PATH":     "azure",
+		"AZURE_TEAMS":         "azure",
+		"AZURE_BOARD_STATES":  "azure",
+	}
+	for key, want := range tagged {
+		if got := mustKey(t, out.Keys, key).Tracker; got != want {
+			t.Errorf("%s tracker = %q, want %q", key, got, want)
+		}
+	}
+
+	// The keys every tracker shares stay untagged so the filter never hides them.
+	for _, key := range []string{
+		"TRACKER_PROVIDER", "LINEAR_TEAM", "PROJECT", "ISSUE_PREFIX",
+		"READY_LABEL", "QUARANTINE_LABEL", "QUEUED_LABEL", "DELIVERED_STATE",
+		"STATUS_TODO", "STATUS_IN_PROGRESS", "STATUS_IN_REVIEW", "STATUS_DONE",
+	} {
+		if got := mustKey(t, out.Keys, key).Tracker; got != "" {
+			t.Errorf("%s tracker = %q, want tracker-agnostic", key, got)
+		}
+	}
+
+	// Keys outside the tracker section are never tagged.
+	for _, v := range out.Keys {
+		if v.Tracker != "" && v.Group != "Tracker & issues" {
+			t.Errorf("%s tracker = %q outside the tracker section", v.Key, v.Tracker)
+		}
+	}
+
+	if !strings.Contains(body, `"tracker":"jira"`) {
+		t.Errorf("config response should serialize the tracker tag, got %s", body)
+	}
+}
+
+// TestConfigTrackerTagTracksCatalog keeps the tag consistent with the key
+// catalog: every tagged key is a tracker key the onboarding set already knows,
+// and a key whose name announces its provider is tagged with it.
+func TestConfigTrackerTagTracksCatalog(t *testing.T) {
+	prefixes := map[string]string{"LINEAR_": "linear", "JIRA_": "jira", "AZURE_": "azure"}
+	// LINEAR_TEAM is the overloaded team/project key every tracker binds
+	// through, so it stays agnostic despite the prefix.
+	agnostic := map[string]bool{"LINEAR_TEAM": true}
+
+	for _, meta := range config.KnownKeys() {
+		want := ""
+		if !agnostic[meta.Key] {
+			for prefix, provider := range prefixes {
+				if strings.HasPrefix(meta.Key, prefix) {
+					want = provider
+				}
+			}
+		}
+		if meta.Tracker != want {
+			t.Errorf("%s tracker = %q, want %q", meta.Key, meta.Tracker, want)
+		}
+	}
+}

@@ -14,6 +14,7 @@ export interface ConfigKey {
   suggestions?: string[]
   bool?: boolean
   advanced?: boolean
+  tracker?: string
   editable: boolean
   secret?: boolean
   set?: boolean

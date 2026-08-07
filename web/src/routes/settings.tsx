@@ -45,11 +45,14 @@ import {
   ROUTING_SECTION,
   THEME_KEY,
   TRACKER_SECTION,
+  activeTracker,
   deriveSections,
   displayValue,
+  inactiveTrackerNote,
   isModified,
   matchesQuery,
   parseSettingsSearch,
+  trackerHint,
   valueWarning,
   visibleKeys,
   type Section,
@@ -130,7 +133,8 @@ function ConfigView({ repo }: { repo: string }) {
   const keys = useMemo(() => visibleKeys(data?.keys ?? []), [data])
   const layers = data?.layers ?? ['project', 'user']
 
-  const sections = useMemo(() => deriveSections(keys), [keys])
+  const tracker = useMemo(() => activeTracker(keys), [keys])
+  const sections = useMemo(() => deriveSections(keys, tracker), [keys, tracker])
   const globalPrompts = promptsData?.prompts ?? []
   const repoPrompts = repoPromptsData?.prompts ?? []
 
@@ -151,12 +155,18 @@ function ConfigView({ repo }: { repo: string }) {
   const navSections = useMemo(
     () => [
       ...(projectDefaultsNav ? [projectDefaultsNav] : []),
-      ...sections.map((s) => ({
-        id: s.id,
-        title: s.group,
-        count: s.keys.length,
-        modified: s.modified,
-      })),
+      ...sections
+        .map((s) => ({
+          id: s.id,
+          title: s.group,
+          count:
+            s.keys.length +
+            (searching
+              ? s.hiddenKeys.filter((k) => matchesQuery(k, query)).length
+              : 0),
+          modified: s.modified,
+        }))
+        .filter((s) => s.count > 0),
       {
         id: 'prompts',
         title: 'Prompts',
@@ -176,7 +186,7 @@ function ConfigView({ repo }: { repo: string }) {
         modified: false,
       },
     ],
-    [projectDefaultsNav, sections, globalPrompts, repoPrompts],
+    [projectDefaultsNav, sections, globalPrompts, repoPrompts, searching, query],
   )
 
   if (isPending && !error) return <ConfigSkeleton />
@@ -215,13 +225,15 @@ function ConfigView({ repo }: { repo: string }) {
     )
   }
 
-  const rowFor = (item: ConfigKey, section: Section) => (
+  const rowFor = (item: ConfigKey, section: Section, revealed = false) => (
     <KeyRow
       key={item.key}
       repo={repo}
       item={item}
       layers={layers}
       hubRestart={section.hubRestart}
+      hint={trackerHint(item.key, tracker)}
+      inactiveNote={revealed ? inactiveTrackerNote(item) : null}
       landed={landed !== '' && item.key.toLowerCase() === landed}
       editing={editingKey === item.key}
       onEdit={() => setEditingKey(item.key)}
@@ -302,7 +314,8 @@ function ConfigView({ repo }: { repo: string }) {
   const renderSection = (section: Section) => {
     if (searching) {
       const matched = section.keys.filter((k) => matchesQuery(k, query))
-      if (matched.length === 0) return null
+      const revealed = section.hiddenKeys.filter((k) => matchesQuery(k, query))
+      if (matched.length === 0 && revealed.length === 0) return null
       const matchedTheme = themeItemIn(section, matched)
       return (
         <section key={section.id} id={section.id} className="scroll-mt-6">
@@ -313,11 +326,14 @@ function ConfigView({ repo }: { repo: string }) {
               {matched
                 .filter((item) => item !== matchedTheme)
                 .map((item) => rowFor(item, section))}
+              {revealed.map((item) => rowFor(item, section, true))}
             </div>
           </TerminalCard>
         </section>
       )
     }
+
+    if (section.keys.length === 0) return null
 
     const isExpanded = Boolean(expanded[section.id])
     const advancedCount = section.advancedKeys.length
@@ -580,6 +596,8 @@ function KeyRow({
   item,
   layers,
   hubRestart,
+  hint,
+  inactiveNote,
   landed,
   editing,
   onEdit,
@@ -590,6 +608,8 @@ function KeyRow({
   item: ConfigKey
   layers: string[]
   hubRestart: boolean
+  hint?: string | null
+  inactiveNote?: string | null
   landed: boolean
   editing: boolean
   onEdit: () => void
@@ -640,6 +660,11 @@ function KeyRow({
 
         <LayerChip layer={item.layer} />
         {item.secret && <SecretChip />}
+        {inactiveNote && (
+          <span className="shrink-0 rounded border border-border bg-secondary/50 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground">
+            {inactiveNote}
+          </span>
+        )}
 
         <span className="ml-auto flex shrink-0 items-center gap-2">
           <span
@@ -673,6 +698,10 @@ function KeyRow({
         <p className="mt-1 pl-4 text-xs leading-relaxed text-muted-foreground">
           {item.description}
         </p>
+      )}
+
+      {hint && (
+        <p className="mt-1 pl-4 font-mono text-[0.7rem] text-faint">{hint}</p>
       )}
 
       {item.disabled_reason && (

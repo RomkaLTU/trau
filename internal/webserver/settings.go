@@ -35,9 +35,12 @@ type ConfigKeyView struct {
 	Suggestions []string `json:"suggestions,omitempty"`
 	Bool        bool     `json:"bool,omitempty"`
 	Advanced    bool     `json:"advanced,omitempty"`
-	Editable    bool     `json:"editable"`
-	Secret      bool     `json:"secret,omitempty"`
-	Set         bool     `json:"set,omitempty"`
+	// Tracker lets the settings surface hide the keys of the trackers this repo
+	// is not pointed at; empty is tracker-agnostic.
+	Tracker  string `json:"tracker,omitempty"`
+	Editable bool   `json:"editable"`
+	Secret   bool   `json:"secret,omitempty"`
+	Set      bool   `json:"set,omitempty"`
 	// DisabledReason explains why a key the catalog marks web-editable is not
 	// editable for this repo — a fact about the repo, not about the key, so it is
 	// resolved per request rather than declared in the catalog.
@@ -222,6 +225,7 @@ func configKeyView(it config.ConfigItem) ConfigKeyView {
 		Suggestions: it.Suggestions,
 		Bool:        it.Bool,
 		Advanced:    it.Advanced,
+		Tracker:     it.Tracker,
 		Editable:    it.WebEditable,
 		Secret:      config.IsSecretKey(it.Key),
 	}
