@@ -548,6 +548,57 @@ func TestLoadTestEffort(t *testing.T) {
 	t.Error("TEST_EFFORT is missing from the settings catalog")
 }
 
+func TestLoadVerifyEffort(t *testing.T) {
+	if got := Defaults().VerifyEffort; got != "medium" {
+		t.Fatalf("default VerifyEffort = %q, want medium", got)
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("VERIFY_EFFORT=low\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VerifyEffort != "low" {
+		t.Errorf("VerifyEffort = %q, want low", cfg.VerifyEffort)
+	}
+	if got := keyValue(cfg, "VERIFY_EFFORT"); got != "low" {
+		t.Errorf("keyValue(VERIFY_EFFORT) = %q, want low", got)
+	}
+
+	t.Setenv("VERIFY_EFFORT", "high")
+	cfg, err = LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.VerifyEffort != "high" {
+		t.Errorf("env VerifyEffort = %q, want high (env outranks the project file)", cfg.VerifyEffort)
+	}
+
+	for _, m := range KnownKeys() {
+		if m.Key != "VERIFY_EFFORT" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("VERIFY_EFFORT should be web-editable")
+		}
+		if m.Default != "medium" {
+			t.Errorf("VERIFY_EFFORT catalog default = %q, want medium", m.Default)
+		}
+		if m.Group != sectionVerify {
+			t.Errorf("VERIFY_EFFORT section = %q, want %q", m.Group, sectionVerify)
+		}
+		if want := []string{"low", "medium", "high"}; !slices.Equal(m.Options, want) {
+			t.Errorf("VERIFY_EFFORT options = %v, want %v", m.Options, want)
+		}
+		return
+	}
+	t.Error("VERIFY_EFFORT is missing from the settings catalog")
+}
+
 func TestResolveConfigItemsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

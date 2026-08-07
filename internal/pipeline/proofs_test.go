@@ -54,7 +54,7 @@ func TestProofsContractShipsWithoutAppURL(t *testing.T) {
 		t.Fatal("proofsEnabled() = false with BROWSER_VERIFY=auto and no APP_URL, want the contract shipped anyway")
 	}
 
-	prompt := verifyTail(p.prompts, id, "", verifyPath(id), "", "", "", "", "", "", "", "", p.proofsEnabled())
+	prompt := verifyTail(p.prompts, id, "", verifyPath(id), "", "", "", "", "", "", "", "", "", p.proofsEnabled())
 	for _, want := range []string{proofs.Dir(id), "manifest.json", "start_recording"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("verify prompt for a run with no APP_URL is missing %q", want)

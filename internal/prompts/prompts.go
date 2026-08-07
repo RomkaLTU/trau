@@ -69,7 +69,9 @@ type HandoffData struct {
 // VerifyData feeds the verify prompt. Verdict is the JSON verdict file path;
 // an empty Handoff switches the template to its derive-from-ticket wording.
 // A non-empty TestEffort replaces the which-tests-to-run sentence, for a slice
-// built with TEST_EFFORT=off and therefore no new test files. ProofsContract
+// built with TEST_EFFORT=off and therefore no new test files. A non-empty
+// VerifyEffort narrows the investigation and the blocking bar to the level
+// VERIFY_EFFORT names, superseding the adversarial framing. ProofsContract
 // adds the browser-proofs contract (record a trace, save screenshots, write a
 // manifest) when the run harvests proofs, and ProofsDir is the directory that
 // contract writes into.
@@ -84,6 +86,7 @@ type VerifyData struct {
 	LessonsNote    string
 	SkillsNote     string
 	TestEffort     string
+	VerifyEffort   string
 	TicketContext  string
 	ProofsContract bool
 	ProofsDir      string
