@@ -143,7 +143,7 @@ func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 	}
 	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
 		d.advanceSubIssues(root, running)
-		if d.alive(running.PID) || d.srv.isRemoving(root, running.ID) {
+		if d.alive(running.PID) {
 			return drainWait, drainHold{}, nil
 		}
 		class, reason := d.reconcileOutcome(root, running)

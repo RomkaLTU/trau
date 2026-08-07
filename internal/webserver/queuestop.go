@@ -7,11 +7,11 @@ import (
 	"github.com/RomkaLTU/trau/internal/queue"
 )
 
-// stopKillGrace bounds how long a halt — a queue Stop, or one running item's
-// removal — waits for a child to exit on its own graceful stop before
-// stopAndWait escalates to a group kill. A stopped run spends that window
-// preserving its WIP on the feature branch and cleaning back to base, so the
-// grace sits above the pipeline's cleanup budget rather than cutting it short.
+// stopKillGrace bounds how long a queue Stop waits for a child to exit on its
+// own graceful stop before stopAndWait escalates to a group kill. A stopped run
+// spends that window preserving its WIP on the feature branch and cleaning back
+// to base, so the grace sits above the pipeline's cleanup budget rather than
+// cutting it short.
 // It is a var so tests can compress it instead of sleeping for real seconds.
 var stopKillGrace = 90 * time.Second
 

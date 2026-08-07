@@ -141,11 +141,6 @@ const KindQueueAutoResumed = "queue_auto_resumed"
 // queued behind it and nothing else explains the stop.
 const KindQueueBatchFinished = "queue_batch_finished"
 
-// KindQueueItemRemoved marks a running queue item taken out of the queue, whose
-// child the hub stopped first. The hub emits it, since the run ends with no
-// outcome of its own to explain why the queue dropped it.
-const KindQueueItemRemoved = "queue_item_removed"
-
 // KindQueueSpawnHeld marks a draining queue that held its next spawn while a
 // runnable item waited, carrying the gate that held it and why. The hub emits it
 // once per hold episode, since a drain that starts nothing is otherwise

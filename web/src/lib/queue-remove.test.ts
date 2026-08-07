@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  removeFromQueueLabel,
+  removableFromQueue,
   removeFromQueueTitle,
   removeFromQueueWarning,
+  REMOVE_FROM_QUEUE_LABEL,
 } from './queue-remove'
 import type { QueueItem } from './queue'
 
@@ -11,31 +12,31 @@ function item(over: Partial<QueueItem> = {}): QueueItem {
   return { position: 1, kind: 'ticket', id: 'COD-1229', status: 'pending', ...over }
 }
 
-describe('removeFromQueueTitle', () => {
-  it('asks to remove a pending item', () => {
-    expect(removeFromQueueTitle(item())).toBe('Remove COD-1229 from the queue?')
+describe('removableFromQueue', () => {
+  it('refuses a running row, which is stopped first and removed once parked', () => {
+    expect(removableFromQueue(item({ status: 'running' }))).toBe(false)
   })
 
-  it('names the stop a running item needs first', () => {
-    expect(removeFromQueueTitle(item({ status: 'running' }))).toBe(
-      'Stop COD-1229 and remove it from the queue?',
-    )
+  it('allows every row the queue is not running', () => {
+    for (const status of ['pending', 'paused', 'failed', 'done']) {
+      expect(removableFromQueue(item({ status }))).toBe(true)
+    }
+  })
+})
+
+describe('removeFromQueueTitle', () => {
+  it('asks to remove the item', () => {
+    expect(removeFromQueueTitle(item())).toBe('Remove COD-1229 from the queue?')
   })
 })
 
 describe('removeFromQueueWarning', () => {
-  it('names the wipe and never mentions a stop for a pending item', () => {
+  it('names the wipe and never mentions a stop', () => {
     const warning = removeFromQueueWarning(item())
     expect(warning).toBe(
       'The row goes, its saved progress is wiped and the ticket goes back to Ready — a later pickup starts a brand-new run.',
     )
     expect(warning).not.toContain('stops')
-  })
-
-  it('leads with the stop for a running item, still naming the wipe', () => {
-    const warning = removeFromQueueWarning(item({ status: 'running' }))
-    expect(warning).toMatch(/^The run stops first/)
-    expect(warning).toContain('the ticket goes back to Ready')
   })
 
   it('counts the sub-issues an epic takes with it, pluralized', () => {
@@ -55,11 +56,8 @@ describe('removeFromQueueWarning', () => {
   })
 })
 
-describe('removeFromQueueLabel', () => {
+describe('REMOVE_FROM_QUEUE_LABEL', () => {
   it('says what the confirm actually does', () => {
-    expect(removeFromQueueLabel(item())).toBe('Remove from queue')
-    expect(removeFromQueueLabel(item({ status: 'running' }))).toBe(
-      'Stop and remove',
-    )
+    expect(REMOVE_FROM_QUEUE_LABEL).toBe('Remove from queue')
   })
 })
