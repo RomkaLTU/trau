@@ -219,10 +219,10 @@ func TestArmBatchScopesTheDrain(t *testing.T) {
 	}
 	bid := mustBatch(t, q, "wave", "COD-2")
 
-	if err := q.ArmBatch("nope", false, queue.OnFaultHalt); !errors.Is(err, queue.ErrBatchNotFound) {
+	if err := q.ArmBatch("nope", false, queue.OnFaultHalt, nil); !errors.Is(err, queue.ErrBatchNotFound) {
 		t.Fatalf("ArmBatch unknown = %v, want ErrBatchNotFound", err)
 	}
-	if err := q.ArmBatch(bid, false, queue.OnFaultSkip); err != nil {
+	if err := q.ArmBatch(bid, false, queue.OnFaultSkip, nil); err != nil {
 		t.Fatalf("ArmBatch: %v", err)
 	}
 	_, meta, err := q.Snapshot()
@@ -247,7 +247,7 @@ func TestArmBatchRefusesABatchWithNothingRunnable(t *testing.T) {
 		t.Fatalf("Finish: %v", err)
 	}
 
-	if err := q.ArmBatch(bid, false, queue.OnFaultHalt); !errors.Is(err, queue.ErrNoRunnableItems) {
+	if err := q.ArmBatch(bid, false, queue.OnFaultHalt, nil); !errors.Is(err, queue.ErrNoRunnableItems) {
 		t.Fatalf("ArmBatch = %v, want ErrNoRunnableItems even though COD-2 is pending", err)
 	}
 	if _, meta, _ := q.Snapshot(); meta.Draining || meta.Batch != "" {
@@ -268,7 +268,7 @@ func TestArmBatchNoResumeRestartsMembersOnly(t *testing.T) {
 		t.Fatalf("Finish COD-3: %v", err)
 	}
 
-	if err := q.ArmBatch(bid, true, queue.OnFaultHalt); err != nil {
+	if err := q.ArmBatch(bid, true, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("ArmBatch: %v", err)
 	}
 	items, _ := q.Load()
@@ -311,7 +311,7 @@ func TestScopeAwareFinishDraining(t *testing.T) {
 				mustAdd(t, q, id)
 			}
 			bid := mustBatch(t, q, "wave", "COD-1")
-			if err := q.ArmBatch(bid, false, queue.OnFaultHalt); err != nil {
+			if err := q.ArmBatch(bid, false, queue.OnFaultHalt, nil); err != nil {
 				t.Fatalf("ArmBatch: %v", err)
 			}
 			for id, status := range tc.settle {
@@ -360,7 +360,7 @@ func TestScopeSurvivesPauseAndRearmAndClearsOnWholeQueueArm(t *testing.T) {
 		mustAdd(t, q, id)
 	}
 	bid := mustBatch(t, q, "wave", "COD-1")
-	if err := q.ArmBatch(bid, false, queue.OnFaultHalt); err != nil {
+	if err := q.ArmBatch(bid, false, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("ArmBatch: %v", err)
 	}
 	if err := q.MarkRunning("COD-1", 7); err != nil {
@@ -385,7 +385,7 @@ func TestScopeSurvivesPauseAndRearmAndClearsOnWholeQueueArm(t *testing.T) {
 		t.Fatalf("meta = %+v, want re-armed on the same scope", meta)
 	}
 
-	if err := q.Arm(false, queue.OnFaultHalt); err != nil {
+	if err := q.Arm(false, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("Arm: %v", err)
 	}
 	if _, meta, _ = q.Snapshot(); !meta.Draining || meta.Batch != "" {
@@ -399,7 +399,7 @@ func TestRearmRefusesWhenTheBatchRanDry(t *testing.T) {
 		mustAdd(t, q, id)
 	}
 	bid := mustBatch(t, q, "wave", "COD-1")
-	if err := q.ArmBatch(bid, false, queue.OnFaultHalt); err != nil {
+	if err := q.ArmBatch(bid, false, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("ArmBatch: %v", err)
 	}
 	if err := q.Finish("COD-1", queue.StatusDone, ""); err != nil {

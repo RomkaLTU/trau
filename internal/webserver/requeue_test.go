@@ -158,7 +158,7 @@ func TestIssueRequeueRefusedWhileDraining(t *testing.T) {
 	if _, err := store.Add(queue.Item{Kind: queue.KindTicket, ID: "COD-30", Status: queue.StatusFailed}); err != nil {
 		t.Fatalf("Add COD-30: %v", err)
 	}
-	if err := store.Arm(false, queue.OnFaultHalt); err != nil {
+	if err := store.Arm(false, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("Arm: %v", err)
 	}
 

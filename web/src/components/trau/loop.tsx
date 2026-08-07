@@ -45,7 +45,11 @@ import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
 import { useHandback } from "@/components/trau/handback-dialog";
-import { RunOptions, useRunSteps } from "@/components/trau/run-steps-dialog";
+import {
+  RunOptions,
+  UNION_NOTE,
+  useRunSteps,
+} from "@/components/trau/run-steps-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import type { PaneTab } from "@/components/trau/run-view";
@@ -106,7 +110,7 @@ import {
   releaseGateLabel,
   requeueIssue,
   runNext as runNextRequest,
-  runQueueItem,
+  runOnly,
   skipResumeApplies,
   spawnHoldReason,
   startBatch,
@@ -1081,19 +1085,36 @@ function LaunchQueueCard({
     }),
   );
 
+  // A row's own Play answers the picker down the single-item path the drawer's
+  // Run already uses: runOnly re-lands the row carrying the confirmed set, which
+  // replaces the one it was queued with, then runs it. The row keeps the provider
+  // override pinned on it because the re-land carries that too.
   const runOne = useMutation({
-    mutationFn: (id: string) => runQueueItem(repo, id),
+    mutationFn: (vars: { id: string; skips: string[] }) => {
+      const item = itemsById.get(vars.id);
+      return runOnly(repo, {
+        id: vars.id,
+        kind: item?.kind,
+        provider: item?.provider,
+        skips: vars.skips,
+      });
+    },
     onSuccess: setQueue,
   });
+  const runOneSteps = useRunSteps((target, skips) =>
+    runOne.mutate({ id: target.id, skips }),
+  );
 
   const start = useMutation({
-    mutationFn: () =>
+    mutationFn: (skips: string[]) =>
       drain(repo, true, {
         no_resume: skipResume && skipResumeShown,
         on_fault: onFault,
+        skips,
       }),
     onSuccess: setQueue,
   });
+  const startSteps = useRunSteps((_target, skips) => start.mutate(skips));
 
   const newBatch = useMutation({
     mutationFn: (name: string) => createBatch(repo, picked, name || undefined),
@@ -1105,13 +1126,17 @@ function LaunchQueueCard({
   });
 
   const launchBatch = useMutation({
-    mutationFn: (id: string) =>
-      startBatch(repo, id, {
+    mutationFn: (vars: { id: string; skips: string[] }) =>
+      startBatch(repo, vars.id, {
         no_resume: skipResume && skipResumeShown,
         on_fault: onFault,
+        skips: vars.skips,
       }),
     onSuccess: setQueue,
   });
+  const batchSteps = useRunSteps((target, skips) =>
+    launchBatch.mutate({ id: target.id, skips }),
+  );
 
   const rename = useMutation({
     mutationFn: (vars: { id: string; name: string }) =>
@@ -1131,7 +1156,7 @@ function LaunchQueueCard({
   // Every batch gesture answers on the card that asked for it, so a refusal
   // lands where the user pressed.
   const batchError = (id: string): unknown => {
-    if (launchBatch.variables === id) return launchBatch.error;
+    if (launchBatch.variables?.id === id) return launchBatch.error;
     if (rename.variables?.id === id) return rename.error;
     if (dismiss.variables === id) return dismiss.error;
     return null;
@@ -1509,11 +1534,19 @@ function LaunchQueueCard({
                     }
                     busy={busy}
                     starting={
-                      launchBatch.isPending && launchBatch.variables === b.id
+                      launchBatch.isPending && launchBatch.variables?.id === b.id
                     }
                     error={batchError(b.id)}
                     onToggle={() => toggleBatchExpand(b.id)}
-                    onStart={() => launchBatch.mutate(b.id)}
+                    onStart={() =>
+                      batchSteps.request({
+                        repo,
+                        id: b.id,
+                        title: `Start ${batchDisplayName(b)}`,
+                        confirmLabel: "Start batch",
+                        note: UNION_NOTE,
+                      })
+                    }
                     onRename={(name) => rename.mutate({ id: b.id, name })}
                     onDismiss={() => setDismissId(b.id)}
                     onPeek={onPeek}
@@ -1558,7 +1591,14 @@ function LaunchQueueCard({
                       onSelect={() => toggleSelect(item.id)}
                       onToggle={() => toggleExpand(item.id)}
                       onMove={(dir) => move.mutate({ id: item.id, dir })}
-                      onRun={() => runOne.mutate(item.id)}
+                      onRun={() =>
+                        runOneSteps.request({
+                          repo,
+                          id: item.id,
+                          skips: item.skips,
+                          confirmLabel: "Run",
+                        })
+                      }
                       onRemove={askRemove}
                       stopping={stop.isPending || (queue.data?.stopping ?? false)}
                       onStop={() => stop.mutate()}
@@ -1604,7 +1644,15 @@ function LaunchQueueCard({
               type="button"
               size="sm"
               className="w-fit font-mono"
-              onClick={() => start.mutate()}
+              onClick={() =>
+                startSteps.request({
+                  repo,
+                  id: repo,
+                  title: "Start queue",
+                  confirmLabel: "Start queue",
+                  note: UNION_NOTE,
+                })
+              }
               disabled={!runnable || start.isPending}
               title={runnable ? undefined : QUEUE_NOT_RUNNABLE}
             >
@@ -1680,6 +1728,9 @@ function LaunchQueueCard({
       ) : null}
 
       {runSteps.dialog}
+      {runOneSteps.dialog}
+      {batchSteps.dialog}
+      {startSteps.dialog}
       {handback.dialog}
     </div>
   );

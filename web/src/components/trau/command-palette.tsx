@@ -18,6 +18,7 @@ import {
   UNLISTED_ITEMS,
   type NavItem,
 } from '@/components/trau/nav-items'
+import { UNION_NOTE, useRunSteps } from '@/components/trau/run-steps-dialog'
 import { StatusPill } from '@/components/trau/status-pill'
 import { useResolvedTheme, useTheme } from '@/components/trau/theme-toggle'
 import {
@@ -124,16 +125,23 @@ function recentIcon(entry: RecentEntry) {
 
 const toastError = (err: Error) => toast.error(err.message)
 
+// LoopVars is what a loop control acts on: the repo it drains or stops, and for
+// a start the skip set the run-steps picker confirmed.
+interface LoopVars {
+  repo: string
+  skips?: string[]
+}
+
 function useLoopControl(
-  control: (repo: string) => Promise<QueueResponse>,
+  control: (vars: LoopVars) => Promise<QueueResponse>,
   verb: string,
 ) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: control,
-    onSuccess: (res, repo) => {
-      publishQueue(queryClient, repo, res)
-      toast.success(`Loop ${verb} in ${repo}`)
+    onSuccess: (res, vars) => {
+      publishQueue(queryClient, vars.repo, res)
+      toast.success(`Loop ${verb} in ${vars.repo}`)
     },
     onError: toastError,
   })
@@ -384,8 +392,15 @@ export function CommandPalette({
 
   const queryClient = useQueryClient()
 
-  const startLoop = useLoopControl((target) => drain(target, true), 'started')
-  const stopLoop = useLoopControl(stopQueue, 'stopped')
+  const startLoop = useLoopControl(
+    (vars) => drain(vars.repo, true, { skips: vars.skips }),
+    'started',
+  )
+  const stopLoop = useLoopControl((vars) => stopQueue(vars.repo), 'stopped')
+
+  const runSteps = useRunSteps((target, skips) =>
+    startLoop.mutate({ repo: target.repo, skips }),
+  )
 
   const syncBacklog = useMutation({
     mutationFn: syncRepo,
@@ -437,8 +452,21 @@ export function CommandPalette({
   // Every action id needs an entry here, so a new mutating action cannot reach
   // the list without declaring what makes it pending.
   const runners: Record<PaletteActionId, Runner<string>> = {
-    'start-loop': { pending: startLoop.isPending, run: startLoop.mutate },
-    'stop-loop': { pending: stopLoop.isPending, run: stopLoop.mutate },
+    'start-loop': {
+      pending: startLoop.isPending,
+      run: (target) =>
+        runSteps.request({
+          repo: target,
+          id: target,
+          title: 'Start queue',
+          confirmLabel: 'Start loop',
+          note: UNION_NOTE,
+        }),
+    },
+    'stop-loop': {
+      pending: stopLoop.isPending,
+      run: (repo) => stopLoop.mutate({ repo }),
+    },
     'sync-backlog': { pending: syncBacklog.isPending, run: syncBacklog.mutate },
     // ADR 0015 retired the Run once page: the Loop card owns picking the ticket
     // and the Run next gesture that launches it.
@@ -520,312 +548,316 @@ export function CommandPalette({
   }
 
   return (
-    <CommandDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      className="font-mono"
-      size="lg"
-      shouldFilter={false}
-      value={selected}
-      onValueChange={setSelected}
-    >
-      <CommandInput
-        ref={inputRef}
-        detachSearch
-        placeholder={
-          submenu ? 'Search actions…' : 'Search issues, projects and pages…'
-        }
-        leading={
-          submenu && (
-            <span className="flex shrink-0 items-center gap-1 rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[0.65rem] text-primary">
-              {submenu.id}
-              <ChevronRight className="size-3 text-muted-foreground" />
-            </span>
-          )
-        }
-        value={submenu ? submenuQuery : query}
-        onValueChange={submenu ? setSubmenuQuery : setQuery}
-        onKeyDown={(e) => {
-          if (submenu) {
-            if (!leavesSubmenu(e.nativeEvent, submenuQuery)) return
-            // Without this the restored results query is what the browser's own
-            // Backspace erases a character from, on the way back out.
-            e.preventDefault()
-            exitSubmenu(submenu)
-            return
+    <>
+      {/* Outside the dialog so the picker outlives the palette that opened it. */}
+      {runSteps.dialog}
+      <CommandDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        className="font-mono"
+        size="lg"
+        shouldFilter={false}
+        value={selected}
+        onValueChange={setSelected}
+      >
+        <CommandInput
+          ref={inputRef}
+          detachSearch
+          placeholder={
+            submenu ? 'Search actions…' : 'Search issues, projects and pages…'
           }
-          if (opensSubmenu(e.nativeEvent) && highlightedIssue) {
-            e.preventDefault()
-            enterSubmenu(highlightedIssue)
+          leading={
+            submenu && (
+              <span className="flex shrink-0 items-center gap-1 rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[0.65rem] text-primary">
+                {submenu.id}
+                <ChevronRight className="size-3 text-muted-foreground" />
+              </span>
+            )
           }
-        }}
-      />
-      <CommandList ref={listRef} className="max-h-[65vh]">
-        {!issuesPending && <CommandEmpty>No results.</CommandEmpty>}
-        {submenu ? (
-          <CommandGroup heading="Actions" className={GROUP_HEADING}>
-            {matchActions(issueActions, submenuQuery.trim()).map((action) => {
-              const runner = issueRunners[action.id]
-              return (
-                <CommandItem
-                  key={action.id}
-                  value={`issue-action:${action.id}`}
-                  disabled={runner.pending}
-                  onSelect={() => runner.run(submenu)}
-                >
-                  <action.icon />
-                  <span className="flex-1 truncate">{action.label}</span>
-                </CommandItem>
-              )
-            })}
-          </CommandGroup>
-        ) : (
-          <>
-            {trimmed === '' && suggestions.length > 0 && (
-              <>
-                <CommandGroup heading="Suggested" className={GROUP_HEADING}>
-                  {suggestions.map((entry) => (
-                    <CommandItem
-                      key={entry.key}
-                      value={`suggest:${entry.key}`}
-                      onSelect={() => pickSuggestion(entry)}
-                    >
-                      {entry.kind === 'page' ? (
-                        <>
-                          <entry.item.icon />
-                          <span className="flex-1 truncate">{entry.item.label}</span>
-                        </>
-                      ) : (
-                        <>
-                          {entry.kind === 'live' ? (
-                            <GitBranch className="text-teal" />
-                          ) : (
-                            <ListChecks />
-                          )}
-                          <span className="flex-1 truncate">{entry.label}</span>
-                          <span
-                            className={
-                              entry.kind === 'live'
-                                ? 'text-[0.65rem] text-teal'
-                                : 'text-[0.65rem] text-muted-foreground'
-                            }
-                          >
-                            {entry.kind === 'live' ? 'live' : 'run'}
-                          </span>
-                        </>
-                      )}
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-                <CommandSeparator />
-              </>
-            )}
-            {trimmed === '' && recents.length > 0 && (
-              <>
-                <CommandGroup heading="Recent" className={GROUP_HEADING}>
-                  {recents.map((entry) => {
-                    const Icon = recentIcon(entry)
-                    return (
+          value={submenu ? submenuQuery : query}
+          onValueChange={submenu ? setSubmenuQuery : setQuery}
+          onKeyDown={(e) => {
+            if (submenu) {
+              if (!leavesSubmenu(e.nativeEvent, submenuQuery)) return
+              // Without this the restored results query is what the browser's own
+              // Backspace erases a character from, on the way back out.
+              e.preventDefault()
+              exitSubmenu(submenu)
+              return
+            }
+            if (opensSubmenu(e.nativeEvent) && highlightedIssue) {
+              e.preventDefault()
+              enterSubmenu(highlightedIssue)
+            }
+          }}
+        />
+        <CommandList ref={listRef} className="max-h-[65vh]">
+          {!issuesPending && <CommandEmpty>No results.</CommandEmpty>}
+          {submenu ? (
+            <CommandGroup heading="Actions" className={GROUP_HEADING}>
+              {matchActions(issueActions, submenuQuery.trim()).map((action) => {
+                const runner = issueRunners[action.id]
+                return (
+                  <CommandItem
+                    key={action.id}
+                    value={`issue-action:${action.id}`}
+                    disabled={runner.pending}
+                    onSelect={() => runner.run(submenu)}
+                  >
+                    <action.icon />
+                    <span className="flex-1 truncate">{action.label}</span>
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+          ) : (
+            <>
+              {trimmed === '' && suggestions.length > 0 && (
+                <>
+                  <CommandGroup heading="Suggested" className={GROUP_HEADING}>
+                    {suggestions.map((entry) => (
                       <CommandItem
                         key={entry.key}
-                        value={entry.key}
-                        onSelect={() => pickRecent(entry)}
+                        value={`suggest:${entry.key}`}
+                        onSelect={() => pickSuggestion(entry)}
                       >
-                        <Icon />
-                        <span className="flex-1 truncate">{entry.label}</span>
-                        {entry.sublabel && (
-                          <span className="truncate text-[0.65rem] text-muted-foreground">
-                            {entry.sublabel}
-                          </span>
+                        {entry.kind === 'page' ? (
+                          <>
+                            <entry.item.icon />
+                            <span className="flex-1 truncate">{entry.item.label}</span>
+                          </>
+                        ) : (
+                          <>
+                            {entry.kind === 'live' ? (
+                              <GitBranch className="text-teal" />
+                            ) : (
+                              <ListChecks />
+                            )}
+                            <span className="flex-1 truncate">{entry.label}</span>
+                            <span
+                              className={
+                                entry.kind === 'live'
+                                  ? 'text-[0.65rem] text-teal'
+                                  : 'text-[0.65rem] text-muted-foreground'
+                              }
+                            >
+                              {entry.kind === 'live' ? 'live' : 'run'}
+                            </span>
+                          </>
                         )}
                       </CommandItem>
-                    )
-                  })}
-                </CommandGroup>
-                <CommandSeparator />
-              </>
-            )}
-            {actionRows.length > 0 && (
-              <>
-                <CommandGroup heading="Actions" className={GROUP_HEADING}>
-                  {actionRows.map((action) => (
-                    <CommandItem
-                      key={action.id}
-                      value={`action:${action.id}`}
-                      disabled={runners[action.id].pending}
-                      onSelect={() => runAction(action)}
-                    >
-                      <action.icon />
-                      <span className="flex-1 truncate">{action.label}</span>
-                      <ChevronRight />
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-                {(showProjects ||
-                  navRows.length > 0 ||
-                  settingRows.length > 0 ||
-                  runRows.length > 0 ||
-                  showIssues) && <CommandSeparator />}
-              </>
-            )}
-            {showProjects && (
-              <>
-                <CommandGroup heading="Projects" className={GROUP_HEADING}>
-                  {showAllScope && (
-                    <CommandItem
-                      value="All repos"
-                      onSelect={() => pickScope(ALL_SCOPE)}
-                    >
-                      <FolderGit2 />
-                      <span className="flex-1 truncate">All repos</span>
-                      {isAll && <Check className="text-primary" />}
-                    </CommandItem>
-                  )}
-                  {projectRows.map((r) => (
-                    <CommandItem
-                      key={r.root}
-                      value={r.root}
-                      onSelect={() => pickScope(r.root)}
-                    >
-                      <GitBranch />
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate">{r.name}</span>
-                        <span className="truncate text-[0.65rem] text-muted-foreground">
-                          {r.root}
-                        </span>
-                      </span>
-                      {!isAll && r.name === repo && (
-                        <Check className="text-primary" />
-                      )}
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-                {(navRows.length > 0 ||
-                  settingRows.length > 0 ||
-                  runRows.length > 0 ||
-                  showIssues) && <CommandSeparator />}
-              </>
-            )}
-            {navRows.length > 0 && (
-              <>
-                <CommandGroup heading="Navigation" className={GROUP_HEADING}>
-                  {navRows.map((item) => (
-                    <CommandItem
-                      key={item.to}
-                      value={item.label}
-                      onSelect={() => goTo(item)}
-                    >
-                      <item.icon />
-                      <span className="flex-1 truncate">{item.label}</span>
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-                {(settingRows.length > 0 ||
-                  runRows.length > 0 ||
-                  showIssues) && <CommandSeparator />}
-              </>
-            )}
-            {settingRows.length > 0 && (
-              <>
-                <CommandGroup heading="Settings" className={GROUP_HEADING}>
-                  {settingRows.map((row) => (
-                    <CommandItem
-                      key={rowValue('setting', row.key, row.repo)}
-                      value={rowValue('setting', row.key, row.repo)}
-                      onSelect={() => pickSetting(row)}
-                    >
-                      <Settings />
-                      <span className="min-w-0 flex-1 truncate">{row.key}</span>
-                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                        {row.section}
-                      </span>
-                      <span className="max-w-[10rem] shrink-0 truncate text-[0.65rem]">
-                        {row.value}
-                      </span>
-                      <RepoChip repo={row.repo} />
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-                {(runRows.length > 0 || showIssues) && <CommandSeparator />}
-              </>
-            )}
-            {runRows.length > 0 && (
-              <>
-                <CommandGroup heading="Runs" className={GROUP_HEADING}>
-                  {runRows.map((run) => {
-                    const pill = boardPill(run)
-                    return (
-                      <CommandItem
-                        key={rowValue('run', run.ticket, run.repo)}
-                        value={rowValue('run', run.ticket, run.repo)}
-                        onSelect={() => pickRun(run)}
-                      >
-                        <span className="shrink-0 text-primary">{run.ticket}</span>
-                        <span className="min-w-0 flex-1 truncate font-sans">
-                          {run.title ?? run.ticket}
-                        </span>
-                        <StatusPill state={pill.state} label={pill.label} />
-                        <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                          {runAge(run, now)}
-                        </span>
-                        <RepoChip repo={run.repo} />
-                      </CommandItem>
-                    )
-                  })}
-                </CommandGroup>
-                {showIssues && <CommandSeparator />}
-              </>
-            )}
-            {showIssues && (
-              <CommandGroup heading="Issues" className={GROUP_HEADING}>
-                {issuesPending && (
-                  <p className="px-2 py-1.5 text-xs text-muted-foreground">
-                    Searching…
-                  </p>
-                )}
-                {issueRows.map((result) => (
-                  <CommandItem
-                    key={rowValue('issue', result.id, result.repo)}
-                    value={rowValue('issue', result.id, result.repo)}
-                    className="group"
-                    onSelect={() => pickIssue(result)}
-                  >
-                    <span className="shrink-0 text-primary">{result.id}</span>
-                    <span className="min-w-0 flex-1 truncate font-sans">
-                      {result.title || 'Untitled'}
-                    </span>
-                    {result.status && (
-                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                        {result.status}
-                      </span>
-                    )}
-                    {result.labels.map((label) => (
-                      <span
-                        key={label}
-                        className="shrink-0 rounded border border-border bg-muted/60 px-1.5 text-[0.6rem] text-muted-foreground"
-                      >
-                        {label}
-                      </span>
                     ))}
-                    <RepoChip repo={result.repo} />
-                    <button
-                      type="button"
-                      aria-label={`Actions for ${result.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        enterSubmenu(result)
-                      }}
-                      className="hidden shrink-0 items-center gap-1 rounded border border-border px-1.5 text-[0.6rem] text-muted-foreground hover:text-foreground group-data-[selected=true]:inline-flex"
+                  </CommandGroup>
+                  <CommandSeparator />
+                </>
+              )}
+              {trimmed === '' && recents.length > 0 && (
+                <>
+                  <CommandGroup heading="Recent" className={GROUP_HEADING}>
+                    {recents.map((entry) => {
+                      const Icon = recentIcon(entry)
+                      return (
+                        <CommandItem
+                          key={entry.key}
+                          value={entry.key}
+                          onSelect={() => pickRecent(entry)}
+                        >
+                          <Icon />
+                          <span className="flex-1 truncate">{entry.label}</span>
+                          {entry.sublabel && (
+                            <span className="truncate text-[0.65rem] text-muted-foreground">
+                              {entry.sublabel}
+                            </span>
+                          )}
+                        </CommandItem>
+                      )
+                    })}
+                  </CommandGroup>
+                  <CommandSeparator />
+                </>
+              )}
+              {actionRows.length > 0 && (
+                <>
+                  <CommandGroup heading="Actions" className={GROUP_HEADING}>
+                    {actionRows.map((action) => (
+                      <CommandItem
+                        key={action.id}
+                        value={`action:${action.id}`}
+                        disabled={runners[action.id].pending}
+                        onSelect={() => runAction(action)}
+                      >
+                        <action.icon />
+                        <span className="flex-1 truncate">{action.label}</span>
+                        <ChevronRight />
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                  {(showProjects ||
+                    navRows.length > 0 ||
+                    settingRows.length > 0 ||
+                    runRows.length > 0 ||
+                    showIssues) && <CommandSeparator />}
+                </>
+              )}
+              {showProjects && (
+                <>
+                  <CommandGroup heading="Projects" className={GROUP_HEADING}>
+                    {showAllScope && (
+                      <CommandItem
+                        value="All repos"
+                        onSelect={() => pickScope(ALL_SCOPE)}
+                      >
+                        <FolderGit2 />
+                        <span className="flex-1 truncate">All repos</span>
+                        {isAll && <Check className="text-primary" />}
+                      </CommandItem>
+                    )}
+                    {projectRows.map((r) => (
+                      <CommandItem
+                        key={r.root}
+                        value={r.root}
+                        onSelect={() => pickScope(r.root)}
+                      >
+                        <GitBranch />
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="truncate">{r.name}</span>
+                          <span className="truncate text-[0.65rem] text-muted-foreground">
+                            {r.root}
+                          </span>
+                        </span>
+                        {!isAll && r.name === repo && (
+                          <Check className="text-primary" />
+                        )}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                  {(navRows.length > 0 ||
+                    settingRows.length > 0 ||
+                    runRows.length > 0 ||
+                    showIssues) && <CommandSeparator />}
+                </>
+              )}
+              {navRows.length > 0 && (
+                <>
+                  <CommandGroup heading="Navigation" className={GROUP_HEADING}>
+                    {navRows.map((item) => (
+                      <CommandItem
+                        key={item.to}
+                        value={item.label}
+                        onSelect={() => goTo(item)}
+                      >
+                        <item.icon />
+                        <span className="flex-1 truncate">{item.label}</span>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                  {(settingRows.length > 0 ||
+                    runRows.length > 0 ||
+                    showIssues) && <CommandSeparator />}
+                </>
+              )}
+              {settingRows.length > 0 && (
+                <>
+                  <CommandGroup heading="Settings" className={GROUP_HEADING}>
+                    {settingRows.map((row) => (
+                      <CommandItem
+                        key={rowValue('setting', row.key, row.repo)}
+                        value={rowValue('setting', row.key, row.repo)}
+                        onSelect={() => pickSetting(row)}
+                      >
+                        <Settings />
+                        <span className="min-w-0 flex-1 truncate">{row.key}</span>
+                        <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                          {row.section}
+                        </span>
+                        <span className="max-w-[10rem] shrink-0 truncate text-[0.65rem]">
+                          {row.value}
+                        </span>
+                        <RepoChip repo={row.repo} />
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                  {(runRows.length > 0 || showIssues) && <CommandSeparator />}
+                </>
+              )}
+              {runRows.length > 0 && (
+                <>
+                  <CommandGroup heading="Runs" className={GROUP_HEADING}>
+                    {runRows.map((run) => {
+                      const pill = boardPill(run)
+                      return (
+                        <CommandItem
+                          key={rowValue('run', run.ticket, run.repo)}
+                          value={rowValue('run', run.ticket, run.repo)}
+                          onSelect={() => pickRun(run)}
+                        >
+                          <span className="shrink-0 text-primary">{run.ticket}</span>
+                          <span className="min-w-0 flex-1 truncate font-sans">
+                            {run.title ?? run.ticket}
+                          </span>
+                          <StatusPill state={pill.state} label={pill.label} />
+                          <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                            {runAge(run, now)}
+                          </span>
+                          <RepoChip repo={run.repo} />
+                        </CommandItem>
+                      )
+                    })}
+                  </CommandGroup>
+                  {showIssues && <CommandSeparator />}
+                </>
+              )}
+              {showIssues && (
+                <CommandGroup heading="Issues" className={GROUP_HEADING}>
+                  {issuesPending && (
+                    <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                      Searching…
+                    </p>
+                  )}
+                  {issueRows.map((result) => (
+                    <CommandItem
+                      key={rowValue('issue', result.id, result.repo)}
+                      value={rowValue('issue', result.id, result.repo)}
+                      className="group"
+                      onSelect={() => pickIssue(result)}
                     >
-                      Actions ⇥
-                    </button>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-          </>
-        )}
-      </CommandList>
-    </CommandDialog>
+                      <span className="shrink-0 text-primary">{result.id}</span>
+                      <span className="min-w-0 flex-1 truncate font-sans">
+                        {result.title || 'Untitled'}
+                      </span>
+                      {result.status && (
+                        <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                          {result.status}
+                        </span>
+                      )}
+                      {result.labels.map((label) => (
+                        <span
+                          key={label}
+                          className="shrink-0 rounded border border-border bg-muted/60 px-1.5 text-[0.6rem] text-muted-foreground"
+                        >
+                          {label}
+                        </span>
+                      ))}
+                      <RepoChip repo={result.repo} />
+                      <button
+                        type="button"
+                        aria-label={`Actions for ${result.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          enterSubmenu(result)
+                        }}
+                        className="hidden shrink-0 items-center gap-1 rounded border border-border px-1.5 text-[0.6rem] text-muted-foreground hover:text-foreground group-data-[selected=true]:inline-flex"
+                      >
+                        Actions ⇥
+                      </button>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              )}
+            </>
+          )}
+        </CommandList>
+      </CommandDialog>
+    </>
   )
 }

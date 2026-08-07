@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -212,6 +213,24 @@ func insertAtFront(items []queue.Item, item queue.Item) []queue.Item {
 	return items
 }
 
+// addSkips folds add into the stored skip set of every item the armed scope is
+// about to run, so a launch gesture bypasses pipeline work on top of the choices
+// each item was queued with rather than replacing them. It runs after restart(),
+// so a no-resume start covers the rows it just returned to pending too — the very
+// rows the drain launches first. A running item keeps the set it spawned with,
+// and a settled row the scope will not run is left alone.
+func (st *queueState) addSkips(add []string) {
+	if len(add) == 0 {
+		return
+	}
+	for i := range st.items {
+		if !queue.Runnable(st.items[i].Status) || !st.covers(st.items[i]) {
+			continue
+		}
+		st.items[i].Skips = config.MergeSkips(st.items[i].Skips, add)
+	}
+}
+
 // Remove drops the queued item with id, keeping the order of the rest, and
 // returns the resulting queue. It reports ErrNotQueued when nothing matches and
 // ErrRunning when the item is currently being drained.
@@ -315,13 +334,14 @@ func (q *Queue) Promote(item queue.Item, ids []string) ([]queue.Item, error) {
 // that go with it: noResume returns every non-running item to pending so the
 // queue re-runs from the top, and onFault decides what a fault does to the rest.
 // It refuses a queue with nothing pending or paused with queue.ErrNoRunnableItems
-// and writes nothing in that case. Validation, the reset, the options and the arm
-// share one lock and one persist, so a concurrent enqueue or settlement can
-// neither slip past the check nor observe a half-armed queue. Arming an
-// already-draining queue keeps its stamp, so a re-arm mid-run never restarts the
-// clock. A whole-queue start is batch-blind: it clears any batch scope a previous
-// start left behind, so the run covers every item again.
-func (q *Queue) Arm(noResume bool, onFault string) error {
+// and writes nothing in that case. Validation, the reset, the skip fold, the
+// options and the arm share one lock and one persist, so a concurrent enqueue or
+// settlement can neither slip past the check nor observe a half-armed queue, and
+// a refused start leaves no skips behind. Arming an already-draining queue keeps
+// its stamp, so a re-arm mid-run never restarts the clock. A whole-queue start is
+// batch-blind: it clears any batch scope a previous start left behind, so the run
+// covers every item again.
+func (q *Queue) Arm(noResume bool, onFault string, skips []string) error {
 	queueMu.Lock()
 	defer queueMu.Unlock()
 	st, err := q.loadImported()
@@ -335,6 +355,7 @@ func (q *Queue) Arm(noResume bool, onFault string) error {
 	if noResume {
 		st.restart()
 	}
+	st.addSkips(skips)
 	st.noResume = noResume
 	st.onFault = onFault
 	st.arm()

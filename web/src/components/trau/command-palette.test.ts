@@ -379,6 +379,20 @@ function paletteRow(value: string): HTMLElement | null {
   )
 }
 
+function runStepsDialog(): HTMLElement {
+  const found = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+  if (!found) throw new Error('no run-steps dialog rendered')
+  return found
+}
+
+function runStepsConfirm(label: string): HTMLElement {
+  const found = [...runStepsDialog().querySelectorAll('button')].find(
+    (el) => el.textContent?.trim() === label,
+  )
+  if (!found) throw new Error(`no ${label} button in the run-steps dialog`)
+  return found
+}
+
 function typeQuery(text: string) {
   const input = paletteInput()
   const setValue = Object.getOwnPropertyDescriptor(
@@ -475,7 +489,9 @@ it('surfaces every repo’s hits under All projects without flipping scope', asy
   expect(opens).toEqual([false])
 })
 
-it('starts the active repo’s loop from the Actions group', async () => {
+// The Actions row no longer drains on click: it hands the launch to the run-steps
+// picker, which outlives the palette it closed and owns the drain.
+it('starts the active repo’s loop from the Actions group once the run steps are confirmed', async () => {
   const opens = renderPalette()
   typeQuery('start loop')
   await act(async () => {})
@@ -488,8 +504,14 @@ it('starts the active repo’s loop from the Actions group', async () => {
   act(() => row?.click())
   await act(async () => {})
 
-  expect(requestedUrls()).toContain('/api/v1/repos/loop/queue/drain')
+  expect(runStepsDialog().textContent).toContain('Start queue')
+  expect(sentWith('POST')).not.toContain('/api/v1/repos/loop/queue/drain')
   expect(opens).toEqual([false])
+
+  act(() => runStepsConfirm('Start loop').click())
+  await act(async () => {})
+
+  expect(sentWith('POST')).toContain('/api/v1/repos/loop/queue/drain')
 })
 
 // ADR 0015 deleted the Run once page, so the action lands on the Loop card that

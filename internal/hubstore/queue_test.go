@@ -169,7 +169,7 @@ func TestPersistsAcrossStores(t *testing.T) {
 	db := testDB(t)
 	first := NewQueue(db, "/repo/acme")
 	mustAdd(t, first, "COD-1")
-	if err := first.Arm(true, queue.OnFaultSkip); err != nil {
+	if err := first.Arm(true, queue.OnFaultSkip, nil); err != nil {
 		t.Fatalf("Arm: %v", err)
 	}
 
@@ -696,7 +696,7 @@ func TestArmRefusesAQueueWithNothingRunnable(t *testing.T) {
 				}
 			}
 
-			if err := q.Arm(true, queue.OnFaultSkip); !errors.Is(err, queue.ErrNoRunnableItems) {
+			if err := q.Arm(true, queue.OnFaultSkip, nil); !errors.Is(err, queue.ErrNoRunnableItems) {
 				t.Fatalf("Arm = %v, want ErrNoRunnableItems", err)
 			}
 			items, meta, err := q.Snapshot()
@@ -734,7 +734,7 @@ func TestArmStartsOnPendingOrPaused(t *testing.T) {
 			}
 
 			before := time.Now().UTC()
-			if err := q.Arm(false, queue.OnFaultHalt); err != nil {
+			if err := q.Arm(false, queue.OnFaultHalt, nil); err != nil {
 				t.Fatalf("Arm: %v", err)
 			}
 			_, meta, err := q.Snapshot()
@@ -748,7 +748,7 @@ func TestArmStartsOnPendingOrPaused(t *testing.T) {
 				t.Errorf("meta = %+v, want the start's options recorded", meta)
 			}
 
-			if err := q.Arm(false, queue.OnFaultHalt); err != nil {
+			if err := q.Arm(false, queue.OnFaultHalt, nil); err != nil {
 				t.Fatalf("re-arm: %v", err)
 			}
 			if _, again, _ := q.Snapshot(); !again.DrainingSince.Equal(meta.DrainingSince) {
@@ -770,7 +770,7 @@ func TestArmWithNoResumeRestartsTheQueue(t *testing.T) {
 		t.Fatalf("MarkRunning: %v", err)
 	}
 
-	if err := q.Arm(true, queue.OnFaultSkip); err != nil {
+	if err := q.Arm(true, queue.OnFaultSkip, nil); err != nil {
 		t.Fatalf("Arm: %v", err)
 	}
 	items, meta, err := q.Snapshot()

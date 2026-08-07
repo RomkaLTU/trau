@@ -229,7 +229,7 @@ func TestStartBatchGuards(t *testing.T) {
 		{
 			name: "draining queue",
 			setup: func(t *testing.T, s *Server, root string) {
-				if err := s.stores.Queue(root).Arm(false, queue.OnFaultHalt); err != nil {
+				if err := s.stores.Queue(root).Arm(false, queue.OnFaultHalt, nil); err != nil {
 					t.Fatalf("arm: %v", err)
 				}
 			},
@@ -346,7 +346,7 @@ func TestWholeQueueStartClearsTheBatchScope(t *testing.T) {
 		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
 	)
 	bid := seedBatch(t, s, root, "wave", "COD-2")
-	if err := s.stores.Queue(root).ArmBatch(bid, false, queue.OnFaultHalt); err != nil {
+	if err := s.stores.Queue(root).ArmBatch(bid, false, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("arm batch: %v", err)
 	}
 	if err := s.stores.Queue(root).SetDraining(false); err != nil {
