@@ -42,7 +42,6 @@ export function BabysitterCard({ repo, root }: { repo: string; root?: string }) 
   return (
     <TerminalCard
       title="babysit from your terminal"
-      className="max-w-page"
       bodyClassName="flex flex-col gap-4 p-4"
     >
       <p className="font-sans text-sm leading-relaxed text-muted-foreground">

@@ -1192,7 +1192,7 @@ function LaunchQueueCard({
     );
 
   return (
-    <div className="flex max-w-page flex-col gap-6">
+    <div className="flex flex-col gap-6">
       <TerminalCard title="loop-launch">
         <form
           className="flex flex-col gap-6"
@@ -2421,7 +2421,7 @@ function RunningQueueView({
         heldSince={queue.held_since}
       />
 
-      <TerminalCard title="loop" className="max-w-page">
+      <TerminalCard title="loop">
         <div className="flex flex-col gap-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3">
@@ -2614,7 +2614,7 @@ function RunningQueueView({
         </div>
       </TerminalCard>
 
-      <div className="flex max-w-page flex-wrap items-end justify-end gap-4">
+      <div className="flex flex-wrap items-end justify-end gap-4">
         <div className="flex flex-col items-end gap-2">
           {stopError ? (
             <p className="font-mono text-xs text-destructive">
@@ -2793,7 +2793,7 @@ export function haltNotice(halt: LoopHalt): HaltNotice {
 
 function TakeoverBanner({ repo, ticket }: { repo: string; ticket?: string }) {
   return (
-    <div className="flex max-w-page items-start gap-2.5 rounded-lg border border-info/40 bg-info/10 px-4 py-3">
+    <div className="flex items-start gap-2.5 rounded-lg border border-info/40 bg-info/10 px-4 py-3">
       <SquareTerminal
         className="mt-0.5 size-4 shrink-0 text-info"
         aria-hidden="true"
@@ -2858,7 +2858,7 @@ function HeldBanner({ reason, since }: { reason: string; since?: string }) {
   return (
     <div
       role="status"
-      className="flex max-w-page items-start gap-2.5 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3"
+      className="flex items-start gap-2.5 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3"
     >
       <TriangleAlert
         className="mt-0.5 size-4 shrink-0 text-warn"
@@ -2885,7 +2885,7 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
   return (
     <div
       className={cn(
-        "flex max-w-page items-start gap-2.5 rounded-lg border px-4 py-3",
+        "flex items-start gap-2.5 rounded-lg border px-4 py-3",
         border,
         bg,
       )}
@@ -3170,7 +3170,7 @@ export function Loop() {
 
 function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
   return (
-    <TerminalCard title="loop" className="max-w-page">
+    <TerminalCard title="loop">
       <div className="flex flex-col items-start gap-4">
         <p className="font-sans text-sm leading-relaxed text-muted-foreground">
           {repo
