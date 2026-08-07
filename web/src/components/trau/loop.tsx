@@ -37,6 +37,7 @@ import { MakeStartableButton } from "@/components/make-startable-button";
 import { useProposeFix } from "@/components/grill/propose-fix";
 import { useActiveRepo } from "@/components/trau/active-repo";
 import { AddTicketDialog } from "@/components/trau/add-ticket-dialog";
+import { BabysitterCard } from "@/components/trau/babysitter-card";
 import { MemberRepoField } from "@/components/trau/member-repo-picker";
 import { RepoPicker } from "@/components/trau/repo-picker";
 import { TargetRepoField } from "@/components/trau/target-repo-field";
@@ -3115,21 +3116,33 @@ export function Loop() {
     />
   );
 
+  // Keyed on the armed drain rather than the running view: a held or halted
+  // drain is exactly when a pasted terminal agent earns its keep.
+  const babysitter = queue.data?.draining ? (
+    <BabysitterCard
+      repo={repo}
+      root={repos.find((r) => r.name === repo)?.root}
+    />
+  ) : null;
+
   if (view === "running" && queue.data && timeline) {
     return (
       <>
-        <RunningQueueView
-          repo={repo}
-          queue={queue.data}
-          timeline={timeline}
-          instance={liveInstance}
-          takeover={takeoverInstance}
-          halt={halt}
-          onStop={() => stop.mutate()}
-          stopping={stop.isPending || queue.data.stopping}
-          stopError={stop.error}
-          onPeek={onPeek}
-        />
+        <div className="flex flex-col gap-6">
+          <RunningQueueView
+            repo={repo}
+            queue={queue.data}
+            timeline={timeline}
+            instance={liveInstance}
+            takeover={takeoverInstance}
+            halt={halt}
+            onStop={() => stop.mutate()}
+            stopping={stop.isPending || queue.data.stopping}
+            stopError={stop.error}
+            onPeek={onPeek}
+          />
+          {babysitter}
+        </div>
         {drawer}
       </>
     );
@@ -3149,6 +3162,7 @@ export function Loop() {
         freshness={repos.find((r) => r.name === repo)?.freshness}
         onPeek={onPeek}
       />
+      {babysitter}
       {drawer}
     </div>
   );
