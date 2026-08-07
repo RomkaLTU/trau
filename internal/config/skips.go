@@ -57,9 +57,10 @@ func ParseSkips(v string) ([]string, error) {
 	return keys, nil
 }
 
-// mergeSkips folds a second --skip occurrence into the set an earlier one
-// produced, keeping the canonical order and dropping the repeats.
-func mergeSkips(have, add []string) []string {
+// MergeSkips folds a second skip set into the one an earlier gesture produced —
+// a repeated --skip occurrence, or a launch-time choice landing on the set an
+// item was queued with — keeping the canonical order and dropping the repeats.
+func MergeSkips(have, add []string) []string {
 	named := map[string]bool{}
 	for _, key := range append(append([]string(nil), have...), add...) {
 		named[key] = true

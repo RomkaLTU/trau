@@ -264,10 +264,13 @@ export async function dequeue(
 export type OnFault = 'halt' | 'skip'
 
 // DrainOptions are the run-level knobs a Start carries: whether to ignore stored
-// checkpoints, and what a fault does to the rest of the queue.
+// checkpoints, what a fault does to the rest of the queue, and the pipeline work
+// the launch bypasses. The hub adds skips on top of each targeted item's stored
+// set, so a launch-time choice never drops one made when an item was queued.
 export interface DrainOptions {
   no_resume?: boolean
   on_fault?: OnFault
+  skips?: string[]
 }
 
 export async function drain(

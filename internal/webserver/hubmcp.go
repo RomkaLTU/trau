@@ -473,7 +473,7 @@ func (s *Server) mcpStartQueue(args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.setDraining(root, true, false, onFault); err != nil {
+	if err := s.setDraining(root, true, false, onFault, nil); err != nil {
 		return nil, err
 	}
 	return s.mcpDrainState(root)
@@ -490,7 +490,7 @@ func (s *Server) mcpPauseQueue(args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := s.setDraining(root, false, false, ""); err != nil {
+	if err := s.setDraining(root, false, false, "", nil); err != nil {
 		return nil, err
 	}
 	return s.mcpDrainState(root)

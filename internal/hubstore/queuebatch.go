@@ -163,10 +163,10 @@ func (q *Queue) DismissBatch(id string) error {
 // members in queue order and stops at the batch's boundary, leaving whatever else
 // is queued pending. It is Arm with a scope — the same run-level knobs, the same
 // stamp on an already-draining queue — except that a no-resume start restarts the
-// members alone. It refuses an unknown batch with queue.ErrBatchNotFound and a
-// batch with nothing pending or paused in it with queue.ErrNoRunnableItems,
-// writing nothing in either case.
-func (q *Queue) ArmBatch(id string, noResume bool, onFault string) error {
+// members alone, and the skip fold covers those members alone. It refuses an
+// unknown batch with queue.ErrBatchNotFound and a batch with nothing pending or
+// paused in it with queue.ErrNoRunnableItems, writing nothing in either case.
+func (q *Queue) ArmBatch(id string, noResume bool, onFault string, skips []string) error {
 	queueMu.Lock()
 	defer queueMu.Unlock()
 	st, err := q.loadImported()
@@ -183,6 +183,7 @@ func (q *Queue) ArmBatch(id string, noResume bool, onFault string) error {
 	if noResume {
 		st.restart()
 	}
+	st.addSkips(skips)
 	st.noResume = noResume
 	st.onFault = onFault
 	st.arm()

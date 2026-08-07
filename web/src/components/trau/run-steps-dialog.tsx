@@ -23,14 +23,22 @@ import { cn } from "@/lib/utils";
 
 // RunStepsTarget is one pending run gesture the picker is standing in front of:
 // the repo it lands in, the id it runs, the skip set the item already carries,
-// and the label the confirm button wears when nothing is unticked.
+// and the label the confirm button wears when nothing is unticked. A launch that
+// covers more than one item — a batch, the whole queue — names itself with title
+// instead, since there is no single id to head the dialog with.
 export interface RunStepsTarget {
   repo: string;
   id: string;
+  title?: string;
   skips?: string[];
   confirmLabel: string;
   note?: ReactNode;
 }
+
+// UNION_NOTE says what a multi-item launch does with the choices already stored
+// on its items: this dialog adds to them, it never clears one.
+export const UNION_NOTE =
+  "Disabled phases apply in addition to any choices made when items were queued.";
 
 function ActivityRow({
   activity,
@@ -185,10 +193,10 @@ export function RunOptions({
   );
 }
 
-// RunStepsDialog is the confirmation both run gestures show: the whole pipeline
+// RunStepsDialog is the confirmation every run gesture shows: the whole pipeline
 // laid out Activity by Activity under its Step, with the five skippable ones as
-// checkboxes. Unticking one bypasses that work for this run and nothing else —
-// the choice is never remembered past the launch it confirms.
+// checkboxes. Unticking one bypasses that work on the items this launch covers
+// and nothing else — no answer here is ever kept as a preference (ADR 0037).
 export function RunStepsDialog({
   target,
   onOpenChange,
@@ -218,11 +226,11 @@ export function RunStepsDialog({
         </div>
         <AlertDialogHeader className="shrink-0 gap-2 px-4 pb-2 pt-4 text-left">
           <AlertDialogTitle className="font-mono text-sm font-normal text-foreground">
-            Run {target.id}
+            {target.title ?? `Run ${target.id}`}
           </AlertDialogTitle>
           <AlertDialogDescription className="font-sans text-sm leading-relaxed text-muted-foreground">
-            Every Activity below runs unless you untick it. The choice applies to
-            this run only — it is not remembered anywhere else.
+            Every Activity below runs unless you untick it. The choice rides with
+            the work you are launching — it is never kept as a preference.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="min-h-0 max-h-[55dvh] flex-1 overflow-y-auto overscroll-contain px-4 pb-2">

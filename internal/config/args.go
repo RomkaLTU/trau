@@ -154,7 +154,7 @@ func ParseArgs(args []string) (Options, error) {
 			if err != nil {
 				return o, err
 			}
-			o.Skips = mergeSkips(o.Skips, keys)
+			o.Skips = MergeSkips(o.Skips, keys)
 		case a == "--drain-report":
 			v, err := next(a)
 			if err != nil {

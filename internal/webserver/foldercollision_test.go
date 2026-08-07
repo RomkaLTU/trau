@@ -18,7 +18,8 @@ import (
 // TestQueueStartRefusesAFolderRepoWhileAChildIsLive is the collision guard at the
 // hub: a Folder repo whose child already has a loop in it cannot arm its queue,
 // and the 409 names both the repo holding the working tree and the ticket its loop
-// is on.
+// is on. A refused start also leaves the queue exactly as it found it — its skip
+// set arms nothing, so it must not be written onto the items either.
 func TestQueueStartRefusesAFolderRepoWhileAChildIsLive(t *testing.T) {
 	s, _, root := drainServer(t, "PortalPro")
 	child := filepath.Join(root, "api-companies")
@@ -36,7 +37,10 @@ func TestQueueStartRefusesAFolderRepoWhileAChildIsLive(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
-	res := postJSON(t, ts.URL+APIPrefix+"/repos/PortalPro/queue/drain", DrainRequest{Draining: true})
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/PortalPro/queue/drain", DrainRequest{
+		Draining: true,
+		Skips:    []string{"ci"},
+	})
 	body, _ := io.ReadAll(res.Body)
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusConflict {
@@ -55,5 +59,8 @@ func TestQueueStartRefusesAFolderRepoWhileAChildIsLive(t *testing.T) {
 	}
 	if drainingOf(t, s, root) {
 		t.Error("the refused start armed the queue anyway")
+	}
+	if got := skipsOf(t, ts, "PortalPro", "COD-9"); len(got) != 0 {
+		t.Errorf("skips = %v, want the refused start to have written none", got)
 	}
 }

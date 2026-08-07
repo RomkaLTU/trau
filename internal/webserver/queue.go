@@ -91,11 +91,15 @@ type QueueResponse struct {
 // should be draining the repo's queue. Setting it true starts sequential
 // execution; false pauses it, taking effect after the current child exits. On a
 // start it also carries the run-level knobs — whether to ignore stored
-// checkpoints, and what a fault does to the rest of the queue.
+// checkpoints, what a fault does to the rest of the queue, and the pipeline work
+// the launch bypasses. Skips are validated like a QueueRequest's and folded into
+// every item the drain is about to run, so a launch-time choice never drops the
+// set an item was queued with (ADR 0037).
 type DrainRequest struct {
-	Draining bool   `json:"draining"`
-	NoResume bool   `json:"no_resume,omitempty"`
-	OnFault  string `json:"on_fault,omitempty"`
+	Draining bool     `json:"draining"`
+	NoResume bool     `json:"no_resume,omitempty"`
+	OnFault  string   `json:"on_fault,omitempty"`
+	Skips    []string `json:"skips,omitempty"`
 }
 
 // MoveRequest is the body of POST /repos/{repo}/queue/{id}/move: either the
@@ -149,8 +153,10 @@ func (s *Server) handleQueueItem(w http.ResponseWriter, r *http.Request) {
 // proves it shipped, and launches the drain loop; pausing clears the flag and the
 // loop stops after the current child exits — there is no mid-run kill, which is
 // what the stop route adds on top. A start against a queue with nothing pending
-// or paused is refused 409 and changes nothing. It is gated on the workspace
-// allowlist like registration: only a Registered repo can be drained.
+// or paused is refused 409 and changes nothing. A start's skip set is folded
+// into every item the drain will run, so the launch bypasses that work on top of
+// whatever each item was queued with. It is gated on the workspace allowlist like
+// registration: only a Registered repo can be drained.
 func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -171,14 +177,19 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	onFault := ""
+	var skips []string
 	if req.Draining {
 		var err error
 		if onFault, err = normalizeOnFault(req.OnFault); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		var ok bool
+		if skips, ok = requestSkips(w, req.Skips); !ok {
+			return
+		}
 	}
-	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); queueStartConflict(err) {
+	if err := s.setDraining(root, req.Draining, req.NoResume, onFault, skips); queueStartConflict(err) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	} else if err != nil {
@@ -194,6 +205,20 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 func queueStartConflict(err error) bool {
 	var collision folderCollisionError
 	return errors.Is(err, queue.ErrNoRunnableItems) || errors.As(err, &collision)
+}
+
+// requestSkips reads the skip set off a request body against the vocabulary the
+// flag parser owns, so a key the CLI accepts and one the hub stores can never
+// drift apart, and answers 400 naming the offending key when one is not. It
+// reports false only once that refusal is written, which is the caller's cue to
+// return without touching the queue.
+func requestSkips(w http.ResponseWriter, raw []string) ([]string, bool) {
+	skips, err := config.CanonicalSkips(raw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return nil, false
+	}
+	return skips, true
 }
 
 func normalizeOnFault(raw string) (string, error) {
@@ -214,7 +239,11 @@ func normalizeOnFault(raw string) (string, error) {
 // would silently pick up, and with a folderCollisionError when a loop already
 // holds a working tree this repo shares. Pausing only clears the flag, so the loop
 // stops after the current child exits. onFault must already be normalized.
-func (s *Server) setDraining(root string, draining, noResume bool, onFault string) error {
+//
+// skips ride into Arm rather than being written ahead of it, so the fold lands on
+// the same rows the arm will run — including the ones a no-resume start returns to
+// pending — and a refused start leaves no skip set behind.
+func (s *Server) setDraining(root string, draining, noResume bool, onFault string, skips []string) error {
 	store := s.stores.Queue(root)
 	if !draining {
 		if err := store.SetDraining(false); err != nil {
@@ -225,7 +254,7 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
 	if collision, blocked := s.folderCollision(root); blocked {
 		return collision
 	}
-	if err := store.Arm(noResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
+	if err := store.Arm(noResume, onFault, skips); errors.Is(err, queue.ErrNoRunnableItems) {
 		return err
 	} else if err != nil {
 		return fmt.Errorf("arm queue: %w", err)
@@ -592,11 +621,8 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("kind %q must be %q, %q, or empty to auto-detect", req.Kind, queue.KindTicket, queue.KindEpic)})
 		return
 	}
-	// The vocabulary lives with the flag parser, so a key the CLI accepts and one
-	// the hub stores can never drift apart.
-	skips, err := config.CanonicalSkips(req.Skips)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	skips, ok := requestSkips(w, req.Skips)
+	if !ok {
 		return
 	}
 

@@ -1012,7 +1012,7 @@ func TestDrainOnFaultSkipContinues(t *testing.T) {
 		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 7},
 		queue.Item{ID: "COD-2"},
 	)
-	if err := s.stores.Queue(root).Arm(false, queue.OnFaultSkip); err != nil {
+	if err := s.stores.Queue(root).Arm(false, queue.OnFaultSkip, nil); err != nil {
 		t.Fatalf("arm on-fault skip: %v", err)
 	}
 	seedOutcome(t, s, root, "COD-1", queue.DrainReport{Class: state.FailFaulted, Reason: "boom"})
@@ -1784,7 +1784,7 @@ func seedBatch(t *testing.T, s *Server, root, name string, ids ...string) string
 
 func armBatch(t *testing.T, s *Server, root, bid string) {
 	t.Helper()
-	if err := s.stores.Queue(root).ArmBatch(bid, false, queue.OnFaultHalt); err != nil {
+	if err := s.stores.Queue(root).ArmBatch(bid, false, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("arm batch %s: %v", bid, err)
 	}
 }

@@ -196,3 +196,149 @@ func TestQueueRunItemSpawnsWithSkips(t *testing.T) {
 	}
 	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--skip", "verify,merge", "--drain-report", "COD-1"})
 }
+
+// TestDrainStartUnionsSkipsOntoQueuedItems proves a whole-queue Start folds the
+// launch's skip set into every item it is about to run rather than replacing what
+// each one was queued with, and leaves a settled row alone.
+func TestDrainStartUnionsSkipsOntoQueuedItems(t *testing.T) {
+	s, _, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1", Skips: []string{"verify"}},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-3", Status: queue.StatusDone},
+	)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/drain", DrainRequest{
+		Draining: true,
+		Skips:    []string{"ci", "Verify"},
+	})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", res.StatusCode, errorReason(t, res))
+	}
+	if got := skipsOf(t, ts, "acme", "COD-1"); !reflect.DeepEqual(got, []string{"verify", "ci"}) {
+		t.Errorf("COD-1 skips = %v, want the launch set added to the stored one, deduped", got)
+	}
+	if got := skipsOf(t, ts, "acme", "COD-2"); !reflect.DeepEqual(got, []string{"verify", "ci"}) {
+		t.Errorf("COD-2 skips = %v, want the launch set alone on an item queued without one", got)
+	}
+	if got := skipsOf(t, ts, "acme", "COD-3"); len(got) != 0 {
+		t.Errorf("COD-3 skips = %v, want a settled row untouched", got)
+	}
+}
+
+// TestDrainStartNoResumeUnionsSkipsOntoRestartedItems proves the fold covers the
+// rows a no-resume start returns to pending. Those settled rows are the ones the
+// drain launches first, so folding before the arm would run the very item the
+// operator is watching on its stale stored set instead of the picker's answer.
+func TestDrainStartNoResumeUnionsSkipsOntoRestartedItems(t *testing.T) {
+	s, _, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusDone, Skips: []string{"lintfix"}},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/drain", DrainRequest{
+		Draining: true,
+		NoResume: true,
+		Skips:    []string{"merge"},
+	})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", res.StatusCode, errorReason(t, res))
+	}
+	if got := skipsOf(t, ts, "acme", "COD-1"); !reflect.DeepEqual(got, []string{"lintfix", "merge"}) {
+		t.Errorf("COD-1 skips = %v, want the launch set folded onto the restarted row", got)
+	}
+	if got := skipsOf(t, ts, "acme", "COD-2"); !reflect.DeepEqual(got, []string{"merge"}) {
+		t.Errorf("COD-2 skips = %v, want the launch set on the row that was already pending", got)
+	}
+}
+
+// TestDrainStartRejectsUnknownSkip proves a key the loop cannot act on is refused
+// at the start endpoint the same way it is at enqueue, arming nothing and writing
+// no skip onto the queue.
+func TestDrainStartRejectsUnknownSkip(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/drain", DrainRequest{
+		Draining: true,
+		Skips:    []string{"verify", "deploy"},
+	})
+	reason := errorReason(t, res)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	if !strings.Contains(reason, "deploy") {
+		t.Errorf("reason = %q, want the offending key named", reason)
+	}
+	if got := skipsOf(t, ts, "acme", "COD-1"); len(got) != 0 {
+		t.Errorf("skips = %v, want the refused start to write nothing", got)
+	}
+	if _, view := getQueue(t, ts, "acme"); view.Draining {
+		t.Error("draining = true, want a refused start to arm nothing")
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want none — a refused start launches nothing", len(fake.spawns))
+	}
+}
+
+// TestStartBatchUnionsSkipsOntoMembers proves a batch Start folds its skip set
+// into the members it is about to run and leaves the rest of the queue alone.
+func TestStartBatchUnionsSkipsOntoMembers(t *testing.T) {
+	s, _, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1", Skips: []string{"lintfix"}},
+		queue.Item{Kind: queue.KindEpic, ID: "COD-2"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-3", Skips: []string{"verify"}},
+	)
+	bid := seedBatch(t, s, root, "wave", "COD-1", "COD-2")
+
+	res := postJSON(t, batchURL(ts, "acme", "/", bid, "/start"), BatchStartRequest{
+		Skips: []string{"merge"},
+	})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d (%s), want 200", res.StatusCode, errorReason(t, res))
+	}
+	if got := skipsOf(t, ts, "acme", "COD-1"); !reflect.DeepEqual(got, []string{"lintfix", "merge"}) {
+		t.Errorf("COD-1 skips = %v, want the launch set added to the stored one", got)
+	}
+	if got := skipsOf(t, ts, "acme", "COD-2"); !reflect.DeepEqual(got, []string{"merge"}) {
+		t.Errorf("COD-2 skips = %v, want the epic member carrying the launch set", got)
+	}
+	if got := skipsOf(t, ts, "acme", "COD-3"); !reflect.DeepEqual(got, []string{"verify"}) {
+		t.Errorf("COD-3 skips = %v, want a row outside the batch untouched", got)
+	}
+}
+
+// TestStartBatchRejectsUnknownSkip proves the batch start validates its skip set
+// through the same vocabulary, arming nothing and writing nothing when it fails.
+func TestStartBatchRejectsUnknownSkip(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
+	bid := seedBatch(t, s, root, "wave", "COD-1")
+
+	res := postJSON(t, batchURL(ts, "acme", "/", bid, "/start"), BatchStartRequest{
+		Skips: []string{"deploy"},
+	})
+	reason := errorReason(t, res)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+	if !strings.Contains(reason, "deploy") {
+		t.Errorf("reason = %q, want the offending key named", reason)
+	}
+	if got := skipsOf(t, ts, "acme", "COD-1"); len(got) != 0 {
+		t.Errorf("skips = %v, want the refused start to write nothing", got)
+	}
+	if got := drainingBatchOf(t, s, root); got != "" {
+		t.Errorf("scope = %q, want nothing armed by a refused start", got)
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want none — a refused start launches nothing", len(fake.spawns))
+	}
+}

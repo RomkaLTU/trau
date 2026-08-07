@@ -33,10 +33,14 @@ type BatchEditRequest struct {
 }
 
 // BatchStartRequest is the body of POST /repos/{repo}/queue/batches/{bid}/start:
-// the same run-level knobs a whole-queue drain start carries.
+// the same run-level knobs a whole-queue drain start carries, including the
+// pipeline work the launch bypasses. Skips are validated like a QueueRequest's
+// and folded into every member the batch is about to run, so a launch-time
+// choice never drops the set a member was queued with (ADR 0037).
 type BatchStartRequest struct {
-	NoResume bool   `json:"no_resume,omitempty"`
-	OnFault  string `json:"on_fault,omitempty"`
+	NoResume bool     `json:"no_resume,omitempty"`
+	OnFault  string   `json:"on_fault,omitempty"`
+	Skips    []string `json:"skips,omitempty"`
 }
 
 // BatchView is one batch as the Queue view reads it. Name may be empty, in which
@@ -149,6 +153,10 @@ func (s *Server) handleQueueBatchStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	skips, ok := requestSkips(w, req.Skips)
+	if !ok {
+		return
+	}
 	store := s.stores.Queue(root)
 	items, meta, err := store.Snapshot()
 	if err != nil {
@@ -189,7 +197,7 @@ func (s *Server) handleQueueBatchStart(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := store.ArmBatch(bid, req.NoResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
+	if err := store.ArmBatch(bid, req.NoResume, onFault, skips); errors.Is(err, queue.ErrNoRunnableItems) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	} else if writeBatchError(w, "arm batch", err) {

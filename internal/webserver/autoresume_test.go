@@ -87,7 +87,7 @@ func TestAutoResumeKeepsSettledWorkSettled(t *testing.T) {
 		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
 	)
 	store := s.stores.Queue(root)
-	if err := store.Arm(true, queue.OnFaultHalt); err != nil {
+	if err := store.Arm(true, queue.OnFaultHalt, nil); err != nil {
 		t.Fatalf("arm no-resume: %v", err)
 	}
 	if err := store.Finish("COD-1", queue.StatusDone, ""); err != nil {
