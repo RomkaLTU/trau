@@ -395,6 +395,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/{name}", s.handleSkillItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/{$}", s.handleSkillItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/config", s.handleConfig)
+	mux.HandleFunc(APIPrefix+"/config", s.handleGlobalConfig)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/qa/accounts", s.handleQAAccounts)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/qa/accounts/{id}", s.handleQAAccount)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/qa/notes", s.handleQANotes)

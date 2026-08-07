@@ -14,7 +14,12 @@ import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { ThemeEditor } from '@/components/trau/theme-editor'
 import { useResolvedTheme } from '@/components/trau/theme-toggle'
 import { cn } from '@/lib/utils'
-import { writeConfig, type ConfigKey } from '@/lib/config'
+import {
+  configScopeKey,
+  writeConfigIn,
+  type ConfigKey,
+  type ConfigScope,
+} from '@/lib/config'
 import {
   deleteTheme,
   fetchThemeDocument,
@@ -54,7 +59,7 @@ export function ThemePicker({
   hubRestart,
   onSaved,
 }: {
-  repo: string
+  repo: ConfigScope
   item: ConfigKey
   layers: string[]
   hubRestart: boolean
@@ -62,7 +67,7 @@ export function ThemePicker({
 }) {
   const queryClient = useQueryClient()
   const mode = useResolvedTheme()
-  const { data, error, isPending } = useQuery(themesQueryOptions(repo))
+  const { data, error, isPending } = useQuery(themesQueryOptions(repo ?? ''))
   const [target, setTarget] = useState(() => initialTarget(item, layers))
   const [written, setWritten] = useState<ThemeWrite | null>(null)
   const [draft, setDraft] = useState<ThemeDraft | null>(null)
@@ -73,11 +78,11 @@ export function ThemePicker({
 
   const mutation = useMutation({
     mutationFn: (write: ThemeWrite) =>
-      writeConfig(repo, { key: item.key, value: write.slug, layer: write.layer }),
+      writeConfigIn(repo, { key: item.key, value: write.slug, layer: write.layer }),
     onSuccess: async (_data, write) => {
-      await queryClient.invalidateQueries({ queryKey: ['config', repo] })
+      await queryClient.invalidateQueries({ queryKey: configScopeKey(repo) })
       await queryClient.invalidateQueries({ queryKey: ['themes'] })
-      await refreshPalettes(repo)
+      await refreshPalettes(repo ?? undefined)
       setWritten(write)
       setSaved(null)
       onSaved(item.key, write.layer, false)
@@ -88,8 +93,8 @@ export function ThemePicker({
     mutationFn: (slug: string) => deleteTheme(slug),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['themes'] })
-      await queryClient.invalidateQueries({ queryKey: ['config', repo] })
-      await refreshPalettes(repo)
+      await queryClient.invalidateQueries({ queryKey: configScopeKey(repo) })
+      await refreshPalettes(repo ?? undefined)
       setRemoving(null)
     },
   })

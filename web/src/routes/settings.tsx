@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { Check, Lock, Pencil, Search, TriangleAlert, X } from 'lucide-react'
+import { Check, Globe, Lock, Pencil, Search, TriangleAlert, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -32,7 +32,11 @@ import { ThemeGrid } from '@/components/trau/settings-theme-grid'
 import { ThemePicker } from '@/components/trau/settings-appearance'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
-import { configQueryOptions, type ConfigKey } from '@/lib/config'
+import {
+  configScopeQueryOptions,
+  type ConfigKey,
+  type ConfigScope,
+} from '@/lib/config'
 import {
   matchesPrompt,
   promptsQueryOptions,
@@ -74,7 +78,8 @@ export const Route = createFileRoute('/settings')({
 
 function Settings() {
   usePageTitle(standardTitle('Settings'))
-  const { repo: active, repos } = useActiveRepo()
+  const { repo: active, repos, isAll } = useActiveRepo()
+  const { q } = Route.useSearch()
 
   return (
     <div className="flex flex-col gap-6">
@@ -86,8 +91,9 @@ function Settings() {
           Settings
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          Layered config resolved from project → user → default. Edit any key
-          and choose which layer the change writes to.
+          {isAll
+            ? 'Layered config resolved from user → default. Every key you edit here is written to ~/.trau.ini.'
+            : 'Layered config resolved from project → user → default. Edit any key and choose which layer the change writes to.'}
         </p>
       </header>
 
@@ -98,16 +104,25 @@ function Settings() {
         />
       )}
 
-      {active ? <ConfigView repo={active} /> : <PromptsSection />}
+      {active || isAll ? (
+        <ConfigView repo={active} q={q} />
+      ) : (
+        <PromptsSection />
+      )}
     </div>
   )
 }
 
-function ConfigView({ repo }: { repo: string }) {
-  const { data, error, isPending, refetch } = useQuery(configQueryOptions(repo))
+// ConfigView is the sectioned editor for one scope. A null repo is the global
+// scope: the defaults every project inherits, with the repo-scoped panels left
+// out because there is no repo to own them.
+export function ConfigView({ repo, q }: { repo: ConfigScope; q?: string }) {
+  const isGlobal = repo === null
+  const { data, error, isPending, refetch } = useQuery(
+    configScopeQueryOptions(repo),
+  )
   const promptsData = useQuery(promptsQueryOptions).data
-  const repoPromptsData = useQuery(repoPromptsQueryOptions(repo)).data
-  const { q } = Route.useSearch()
+  const repoPromptsData = useQuery(repoPromptsQueryOptions(repo ?? '')).data
   const [search, setSearch] = useState(q ?? '')
   const [landedKey, setLandedKey] = useState(q ?? '')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -131,12 +146,17 @@ function ConfigView({ repo }: { repo: string }) {
   }, [q, isPending])
 
   const keys = useMemo(() => visibleKeys(data?.keys ?? []), [data])
-  const layers = data?.layers ?? ['project', 'user']
+  const layers = data?.layers ?? (isGlobal ? ['user'] : ['project', 'user'])
 
+  // No repo means no active tracker to filter by: shared credentials in
+  // ~/.trau.ini are legitimate whichever tracker a project points at.
   const tracker = useMemo(() => activeTracker(keys), [keys])
-  const sections = useMemo(() => deriveSections(keys, tracker), [keys, tracker])
+  const sections = useMemo(
+    () => deriveSections(keys, isGlobal ? undefined : tracker),
+    [keys, isGlobal, tracker],
+  )
   const globalPrompts = promptsData?.prompts ?? []
-  const repoPrompts = repoPromptsData?.prompts ?? []
+  const repoPrompts = isGlobal ? [] : (repoPromptsData?.prompts ?? [])
 
   const query = search.trim().toLowerCase()
   const searching = query.length > 0
@@ -145,12 +165,13 @@ function ConfigView({ repo }: { repo: string }) {
     () => (searching ? keys.filter((k) => matchesQuery(k, query)).length : 0),
     [keys, query, searching],
   )
-  const projectDefaultsNav = useProjectDefaultsNav(repo)
+  const repoDefaultsNav = useProjectDefaultsNav(repo ?? '')
+  const projectDefaultsNav = isGlobal ? null : repoDefaultsNav
   const panelMatches =
     !searching ||
     [...globalPrompts, ...repoPrompts].some((p) => matchesPrompt(p, query)) ||
     (projectDefaultsNav !== null && matchesProjectDefaults(query)) ||
-    matchesTeamSync(query)
+    (!isGlobal && matchesTeamSync(query))
 
   const navSections = useMemo(
     () => [
@@ -173,20 +194,32 @@ function ConfigView({ repo }: { repo: string }) {
         count: globalPrompts.length,
         modified: globalPrompts.some((p) => p.override !== null),
       },
-      {
-        id: 'repo-prompts',
-        title: 'Repo prompts',
-        count: repoPrompts.length,
-        modified: repoPrompts.some((p) => p.repo_override !== null),
-      },
-      {
-        id: 'team-sync-status',
-        title: 'Team sync status',
-        count: 0,
-        modified: false,
-      },
+      ...(isGlobal
+        ? []
+        : [
+            {
+              id: 'repo-prompts',
+              title: 'Repo prompts',
+              count: repoPrompts.length,
+              modified: repoPrompts.some((p) => p.repo_override !== null),
+            },
+            {
+              id: 'team-sync-status',
+              title: 'Team sync status',
+              count: 0,
+              modified: false,
+            },
+          ]),
     ],
-    [projectDefaultsNav, sections, globalPrompts, repoPrompts, searching, query],
+    [
+      projectDefaultsNav,
+      sections,
+      globalPrompts,
+      repoPrompts,
+      isGlobal,
+      searching,
+      query,
+    ],
   )
 
   if (isPending && !error) return <ConfigSkeleton />
@@ -232,7 +265,7 @@ function ConfigView({ repo }: { repo: string }) {
       item={item}
       layers={layers}
       hubRestart={section.hubRestart}
-      hint={trackerHint(item.key, tracker)}
+      hint={isGlobal ? null : trackerHint(item.key, tracker)}
       inactiveNote={revealed ? inactiveTrackerNote(item) : null}
       landed={landed !== '' && item.key.toLowerCase() === landed}
       editing={editingKey === item.key}
@@ -280,7 +313,9 @@ function ConfigView({ repo }: { repo: string }) {
       )
     }
 
-    if (section.group === TRACKER_SECTION) {
+    // The status-mapping editor reads a repo's own /tracker/status-options, so
+    // outside a repo the mapping keys fall back to their generic rows.
+    if (section.group === TRACKER_SECTION && repo !== null) {
       return (
         <TrackerAdvanced
           repo={repo}
@@ -376,6 +411,8 @@ function ConfigView({ repo }: { repo: string }) {
 
   return (
     <div className="flex flex-col gap-4">
+      {isGlobal && <GlobalScopeBanner />}
+
       <div className="flex flex-wrap items-center gap-3">
         <div className="relative w-full max-w-sm">
           <Search
@@ -428,7 +465,7 @@ function ConfigView({ repo }: { repo: string }) {
         <SectionNav sections={navSections} variant="desktop" />
 
         <div className="flex min-w-0 flex-1 flex-col gap-4">
-          <ProjectDefaultsSection repo={repo} query={query} />
+          {repo !== null && <ProjectDefaultsSection repo={repo} query={query} />}
           {visibleSections.length === 0 && !panelMatches && (
             <TerminalCard
               title="search"
@@ -448,11 +485,31 @@ function ConfigView({ repo }: { repo: string }) {
           )}
           {visibleSections}
           <PromptsSection query={query} />
-          <RepoPromptsSection repo={repo} query={query} />
-          <TeamSyncSection repo={repo} query={query} />
+          {repo !== null && (
+            <>
+              <RepoPromptsSection repo={repo} query={query} />
+              <TeamSyncSection repo={repo} query={query} />
+            </>
+          )}
         </div>
       </div>
     </div>
+  )
+}
+
+function GlobalScopeBanner() {
+  return (
+    <p
+      className="inline-flex items-start gap-2 rounded-md border border-info/50 bg-info/10 px-3 py-2 text-xs leading-relaxed text-muted-foreground"
+      role="status"
+    >
+      <Globe className="mt-0.5 size-3.5 shrink-0 text-info" aria-hidden="true" />
+      <span>
+        <span className="font-medium text-foreground">Global defaults</span> —
+        apply to every project unless a project overrides them. Edits are written
+        to <span className="font-mono">~/.trau.ini</span>.
+      </span>
+    </p>
   )
 }
 
@@ -604,7 +661,7 @@ function KeyRow({
   onCancel,
   onSaved,
 }: {
-  repo: string
+  repo: ConfigScope
   item: ConfigKey
   layers: string[]
   hubRestart: boolean

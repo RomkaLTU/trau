@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 
 import { cn } from '@/lib/utils'
-import type { ConfigKey } from '@/lib/config'
+import type { ConfigKey, ConfigScope } from '@/lib/config'
 import { isModified, themeRoleLabel } from '@/lib/settings'
 import { InlineEditor } from '@/components/trau/settings-editor'
 
@@ -16,7 +16,7 @@ export function ThemeGrid({
   onSaved,
 }: {
   keys: ConfigKey[]
-  repo: string
+  repo: ConfigScope
   layers: string[]
   hubRestart: boolean
   editingKey: string | null

@@ -28,7 +28,13 @@ import {
   shadowNote,
   valueWarning,
 } from '@/lib/settings'
-import { writeConfig, type ConfigKey, type ConfigWrite } from '@/lib/config'
+import {
+  configScopeKey,
+  writeConfigIn,
+  type ConfigKey,
+  type ConfigScope,
+  type ConfigWrite,
+} from '@/lib/config'
 
 const LAYER_STYLES: Record<string, string> = {
   project: 'border-teal/50 bg-teal/12 text-teal',
@@ -84,6 +90,7 @@ export function initialTarget(item: ConfigKey, layers: string[]): string {
   return layers[0] ?? 'project'
 }
 
+// A scope with a single layer to write to has no choice to offer.
 export function WriteTarget({
   item,
   layers,
@@ -95,6 +102,7 @@ export function WriteTarget({
   value: string
   onChange: (target: string) => void
 }) {
+  if (layers.length < 2) return null
   return (
     <span className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">
       write to:
@@ -147,7 +155,7 @@ export function InlineEditor({
   onCancel,
   onSaved,
 }: {
-  repo: string
+  repo: ConfigScope
   item: ConfigKey
   layers: string[]
   hubRestart: boolean
@@ -159,9 +167,9 @@ export function InlineEditor({
   const [target, setTarget] = useState(() => initialTarget(item, layers))
 
   const mutation = useMutation({
-    mutationFn: (body: ConfigWrite) => writeConfig(repo, body),
+    mutationFn: (body: ConfigWrite) => writeConfigIn(repo, body),
     onSuccess: (_data, body) => {
-      queryClient.invalidateQueries({ queryKey: ['config', repo] })
+      queryClient.invalidateQueries({ queryKey: configScopeKey(repo) })
       onSaved(body.layer, Boolean(body.unset))
     },
   })

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { cn } from '@/lib/utils'
-import type { ConfigKey } from '@/lib/config'
+import type { ConfigKey, ConfigScope } from '@/lib/config'
 import {
   COLUMN_LABELS,
   derivePhaseMatrix,
@@ -21,7 +21,7 @@ export function PhaseMatrix({
   onSaved,
 }: {
   keys: ConfigKey[]
-  repo: string
+  repo: ConfigScope
   layers: string[]
   hubRestart: boolean
   editingKey: string | null

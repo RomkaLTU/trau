@@ -28,6 +28,10 @@ export interface ConfigResponse {
   keys: ConfigKey[]
 }
 
+// ConfigScope is the repo a settings surface edits, or null for the global
+// defaults every project inherits from ~/.trau.ini.
+export type ConfigScope = string | null
+
 export interface ConfigWrite {
   key: string
   value: string
@@ -67,3 +71,48 @@ export const configQueryOptions = (repo: string) =>
     queryFn: () => fetchConfig(repo),
     enabled: repo !== '',
   })
+
+async function fetchGlobalConfig(): Promise<ConfigResponse> {
+  const res = await apiFetch('/api/v1/config')
+  if (!res.ok) {
+    throw new Error(`config request failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function writeGlobalConfig(
+  body: ConfigWrite,
+): Promise<ConfigKey> {
+  const res = await apiFetch('/api/v1/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as {
+      error?: string
+    } | null
+    throw new Error(detail?.error ?? `config write failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export const globalConfigQueryOptions = queryOptions({
+  queryKey: ['config', 'global'],
+  queryFn: fetchGlobalConfig,
+})
+
+export function configScopeQueryOptions(scope: ConfigScope) {
+  return scope === null ? globalConfigQueryOptions : configQueryOptions(scope)
+}
+
+export function configScopeKey(scope: ConfigScope): string[] {
+  return ['config', scope ?? 'global']
+}
+
+export function writeConfigIn(
+  scope: ConfigScope,
+  body: ConfigWrite,
+): Promise<ConfigKey> {
+  return scope === null ? writeGlobalConfig(body) : writeConfig(scope, body)
+}
