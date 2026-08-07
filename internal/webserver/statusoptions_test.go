@@ -12,6 +12,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
 
@@ -143,7 +144,7 @@ func TestStatusOptionsIs404ForOtherProviders(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	runsDir := seedRepo(t, home, "acme")
-	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)), "TRACKER_PROVIDER=jira\nLINEAR_TEAM=COD\n")
+	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)), "TRACKER_PROVIDER=github\nLINEAR_TEAM=COD\n")
 	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
 	ts := httptest.NewServer(s.Handler())
@@ -302,5 +303,113 @@ func TestReadStatusOptionsRoutesLinearToLinear(t *testing.T) {
 		config.Config{LinearTeam: "COD", TrackerProvider: "linear"})
 	if !errors.Is(err, linearapi.ErrNotEnabled) {
 		t.Errorf("err = %v, want linearapi.ErrNotEnabled from the Linear reader", err)
+	}
+}
+
+// And a Jira repo reaches the Jira reader: with no token the read stops at
+// Jira's own not-enabled sentinel, which no other provider's path produces.
+func TestReadStatusOptionsRoutesJiraToJira(t *testing.T) {
+	_, err := readStatusOptions(context.Background(), "jira",
+		config.Config{LinearTeam: "PROJ", TrackerProvider: "jira", JiraBaseURL: "https://acme.atlassian.net"})
+	if !errors.Is(err, jiraapi.ErrNotEnabled) {
+		t.Errorf("err = %v, want jiraapi.ErrNotEnabled from the Jira reader", err)
+	}
+}
+
+// jiraStatusOptionsServer wires a hub whose "acme" repo is a Jira repo, with the
+// provider read stubbed: JiraStatusOptions itself is covered against a fake REST
+// server in the tracker package, and what this asserts is the arm — that a Jira
+// repo reaches it at all, with the repo's own project key, and that its answer
+// reaches the editor's shape.
+func jiraStatusOptionsServer(t *testing.T, opts tracker.StatusOptions, readErr error) *httptest.Server {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)),
+		"TRACKER_PROVIDER=jira\nLINEAR_TEAM=PROJ\nJIRA_BASE_URL=https://acme.atlassian.net\n"+
+			"JIRA_EMAIL=me@acme.com\nJIRA_API_TOKEN=tok\n")
+
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	s.statusOptions = func(_ context.Context, provider string, cfg config.Config) (tracker.StatusOptions, error) {
+		if provider != "jira" {
+			t.Errorf("status options read as provider %q, want jira", provider)
+		}
+		if cfg.LinearTeam != "PROJ" {
+			t.Errorf("read with project %q, want the repo's own PROJ", cfg.LinearTeam)
+		}
+		return opts, readErr
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// A Jira repo lists its project's statuses as both the groupable rows and the pin
+// choices — one vocabulary, as on Linear, because a Jira board's columns are built
+// out of the project's own statuses.
+func TestStatusOptionsServesTheJiraProjectStatuses(t *testing.T) {
+	ts := jiraStatusOptionsServer(t, tracker.StatusOptions{
+		Columns: []tracker.BoardColumnSuggestion{
+			{Name: "To Do", SuggestedGroup: "unstarted"},
+			{Name: "Ready for QA", SuggestedGroup: "started"},
+		},
+		Pins: []tracker.WorkflowOption{
+			{Name: "To Do", Category: "new"},
+			{Name: "Ready for QA", Category: "indeterminate"},
+		},
+	}, nil)
+
+	res, out := getStatusOptions(t, ts, "acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if out.Provider != "jira" {
+		t.Errorf("provider = %q, want jira", out.Provider)
+	}
+	want := []StatusColumn{
+		{Name: "To Do", SuggestedGroup: "unstarted"},
+		{Name: "Ready for QA", SuggestedGroup: "started"},
+	}
+	if len(out.Grouping) != len(want) {
+		t.Fatalf("grouping = %+v, want %+v", out.Grouping, want)
+	}
+	for i, col := range want {
+		if out.Grouping[i] != col {
+			t.Errorf("grouping[%d] = %+v, want %+v", i, out.Grouping[i], col)
+		}
+	}
+	if len(out.PinOptions) != 2 || out.PinOptions[1] != (StatusPinOption{Name: "Ready for QA", Category: "indeterminate"}) {
+		t.Errorf("pinOptions = %+v, want the same statuses with their categories", out.PinOptions)
+	}
+}
+
+// A Jira repo missing its credentials never reaches the network: the gap is named
+// the way the connection test names it, and the editor still gets its empty lists.
+func TestStatusOptionsNamesTheMissingJiraCredentials(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)), "TRACKER_PROVIDER=jira\nLINEAR_TEAM=PROJ\n")
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	res, out := getStatusOptions(t, ts, "acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	for _, want := range []string{"Jira site URL", "account email", "API token"} {
+		if !strings.Contains(out.Error, want) {
+			t.Errorf("error = %q, want %q named", out.Error, want)
+		}
+	}
+	if !strings.Contains(out.Hint, "API token") {
+		t.Errorf("hint = %q, want the Jira remediation", out.Hint)
+	}
+	if out.Grouping == nil || out.PinOptions == nil {
+		t.Error("grouping/pinOptions are null, want empty lists so the editor can render its fallback")
 	}
 }

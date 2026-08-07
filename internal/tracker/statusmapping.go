@@ -23,9 +23,20 @@ var mappableGroups = []StatusGroup{
 // for a board column or a workflow state, normalized, against the group trau
 // files its work under. AZURE_BOARD_STATES and LINEAR_BOARD_STATES share this
 // grammar and this parse; what an *unlisted* name means is provider-specific —
-// exhaustive on Azure DevOps, an overlay on Linear (ADR 0038) — so each provider
-// wraps the map with its own lookup rather than sharing one.
+// exhaustive on Azure DevOps, an overlay on Linear and Jira (ADR 0038) — so each
+// provider wraps the map with its own group resolution rather than sharing one.
 type statusMapping map[string]StatusGroup
+
+// override reports the section this repo pins the named status to. ok is false
+// when the mapping does not name it, which is the ordinary case on an overlay
+// key: the caller then keeps whatever the status's own metadata derives.
+func (m statusMapping) override(status string) (StatusGroup, bool) {
+	group, mapped := m[normalizeStatus(status)]
+	if !mapped {
+		return StatusGroupUnknown, false
+	}
+	return group, true
+}
 
 // parseStatusMapping reads a mapping spec: comma-separated "<name>=<group>"
 // pairs, as in "New=backlog, Ready to Develop=unstarted, Done=done". Names are

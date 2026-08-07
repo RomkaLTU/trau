@@ -20,17 +20,6 @@ func parseLinearBoardStates(spec string) linearBoardStates {
 	return linearBoardStates{parseStatusMapping("LINEAR_BOARD_STATES", "workflow state name", spec)}
 }
 
-// override reports the section this repo pins the named workflow state to. ok is
-// false when the mapping does not name it, which is the ordinary case: the
-// caller then keeps whatever the state's own type derives.
-func (m linearBoardStates) override(state string) (StatusGroup, bool) {
-	group, mapped := m.statusMapping[normalizeStatus(state)]
-	if !mapped {
-		return StatusGroupUnknown, false
-	}
-	return group, true
-}
-
 // group resolves the section a Linear issue files under: the override this repo
 // pins for its workflow state, and the state's own type when it pins none. It
 // never answers unknown — mapLinearGroup floors an unrecognized type at backlog —

@@ -43,6 +43,7 @@ export const statusOptionsQueryOptions = (repo: string) =>
 
 export const BOARD_STATES_KEY = 'AZURE_BOARD_STATES'
 export const LINEAR_STATES_KEY = 'LINEAR_BOARD_STATES'
+export const JIRA_STATES_KEY = 'JIRA_BOARD_STATES'
 
 export const PIN_KEYS = [
   'STATUS_TODO',
@@ -73,17 +74,33 @@ export interface MappingSpec {
   // to Other.
   overlay: boolean
   noun: string
+  // nounPlural is spelled out rather than derived: "status" pluralizes to
+  // "statuses", not "statuss".
+  nounPlural: string
   title: string
   description: string
   placeholder: string
   addLabel: string
   pinNote: string
+  // emptyNote is what the write preview shows for an empty key: no grouping of
+  // its own on an exhaustive key, no overrides at all on an overlay.
+  emptyNote: string
+  // conditionalSections are the sections a provider derives for a row only
+  // *conditionally* — some of the row's work still groups elsewhere. Mapping a
+  // row to a section on this list is therefore a real edit even though it equals
+  // the suggestion, and dropping such a pair as redundant would change what its
+  // work groups as. Jira derives done from the status category while a won't-do
+  // or duplicate resolution sends that same issue to canceled; naming the status
+  // by hand pins every issue in it. Linear's state types carry no such nuance,
+  // and an exhaustive key writes every row anyway.
+  conditionalSections: readonly StateGroup[]
 }
 
 const AZURE_SPEC: MappingSpec = {
   key: BOARD_STATES_KEY,
   overlay: false,
   noun: 'column',
+  nounPlural: 'columns',
   title: 'board column grouping',
   description:
     "Each Kanban column the team's boards carry, and the section trau files its work under. Leave every column unmapped to keep grouping by the state categories the project reports.",
@@ -91,12 +108,15 @@ const AZURE_SPEC: MappingSpec = {
   addLabel: 'Add column',
   pinNote:
     'The workflow status each lifecycle stage writes. A pin names a work-item state, never a board column — Azure DevOps refuses a board-column write. Leave one empty to resolve it from the workflow itself.',
+  emptyNote: '(empty — grouping stays category-derived)',
+  conditionalSections: [],
 }
 
 const LINEAR_SPEC: MappingSpec = {
   key: LINEAR_STATES_KEY,
   overlay: true,
   noun: 'state',
+  nounPlural: 'states',
   title: 'workflow state grouping',
   description:
     "Each workflow state the team declares, and the section trau files its work under. Every row starts on the section its Linear state type gives it; saving records only the ones you change, so a state added later keeps its own type's section rather than falling to Other.",
@@ -104,6 +124,24 @@ const LINEAR_SPEC: MappingSpec = {
   addLabel: 'Add state',
   pinNote:
     'The workflow status each lifecycle stage writes. Leave one empty to resolve it from the team’s own workflow.',
+  emptyNote: '(empty — every state keeps its own type’s section)',
+  conditionalSections: [],
+}
+
+const JIRA_SPEC: MappingSpec = {
+  key: JIRA_STATES_KEY,
+  overlay: true,
+  noun: 'status',
+  nounPlural: 'statuses',
+  title: 'workflow status grouping',
+  description:
+    "Every workflow status the project's issue types can reach, and the section trau files its work under. Each row starts on the section its Jira status category gives it; saving records only the ones you change, so a status added later keeps its category's section rather than falling to Other. Mapping a status by hand is final for it — including the done-category status a won't-do or duplicate resolution would otherwise group as canceled.",
+  placeholder: 'status the project did not report',
+  addLabel: 'Add status',
+  pinNote:
+    'The workflow status each lifecycle stage writes. A pin only names the destination — the loop still resolves an issue’s own available transitions at write time. Leave one empty to resolve it from the workflow itself.',
+  emptyNote: '(empty — every status keeps its own category’s section)',
+  conditionalSections: ['done'],
 }
 
 // mappingSpec picks the editor a provider gets, or null for one with no mapping
@@ -111,6 +149,7 @@ const LINEAR_SPEC: MappingSpec = {
 export function mappingSpec(provider: string): MappingSpec | null {
   if (provider === 'azure') return AZURE_SPEC
   if (provider === 'linear') return LINEAR_SPEC
+  if (provider === 'jira') return JIRA_SPEC
   return null
 }
 
@@ -168,17 +207,34 @@ export function serializeBoardStates(rows: readonly BoardStatePair[]): string {
     .join(',')
 }
 
-// serializeGrouping renders what Save writes. An overlay key stays minimal: a row
-// still sitting on the section its own state type derives is not written at all,
-// so the key records only the repo's overrides and a state Linear adds later is
-// governed by its type rather than by a stale exhaustive list.
+// conditionallyDerived reports whether the section this row is suggested holds
+// for only part of its work, so mapping the row to that same section is the
+// operator's way of pinning the rest of it there too.
+export function conditionallyDerived(
+  row: GroupingRow,
+  spec: MappingSpec,
+): boolean {
+  return spec.overlay && spec.conditionalSections.includes(row.suggested)
+}
+
+// writesRow reports whether Save records this row. An overlay key stays minimal:
+// a row still sitting on the section its own state type derives is not written,
+// so the key records only the repo's overrides and a state added later is
+// governed by its type rather than by a stale exhaustive list. A row whose
+// suggestion is only conditional is the exception — there the mapping is what
+// makes the section unconditional, so an equal pair is kept once it is mapped.
+function writesRow(row: GroupingRow, spec: MappingSpec): boolean {
+  if (!spec.overlay) return true
+  if (row.group !== row.suggested) return true
+  return row.mapped && conditionallyDerived(row, spec)
+}
+
+// serializeGrouping renders what Save writes.
 export function serializeGrouping(
   rows: readonly GroupingRow[],
   spec: MappingSpec,
 ): string {
-  return serializeBoardStates(
-    spec.overlay ? rows.filter((row) => row.group !== row.suggested) : rows,
-  )
+  return serializeBoardStates(rows.filter((row) => writesRow(row, spec)))
 }
 
 // boardNameError rejects a name the grammar cannot express: , separates pairs
@@ -197,6 +253,11 @@ export interface GroupingRow extends BoardStatePair {
   // onBoard is false for a row that exists only because the repo's mapping names
   // it — a column since renamed, or every row when the board could not be read.
   onBoard: boolean
+  // mapped is true for a row the key names by hand. It is not the same question
+  // as `group !== suggested`: a row mapped to the section it was already
+  // suggested is still mapped, and on a provider whose suggestion is conditional
+  // that is the only way to say so.
+  mapped: boolean
 }
 
 // deriveGroupingRows builds the editor's rows from the board's columns and the
@@ -228,6 +289,7 @@ export function deriveGroupingRows(
       suggested,
       group: byName.get(key) ?? unlisted,
       onBoard: true,
+      mapped: byName.has(key),
     })
   }
   for (const pair of mapped) {
@@ -239,6 +301,7 @@ export function deriveGroupingRows(
       group: pair.group,
       suggested: UNMAPPED,
       onBoard: false,
+      mapped: true,
     })
   }
   return rows

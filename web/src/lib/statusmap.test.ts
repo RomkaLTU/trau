@@ -16,6 +16,7 @@ import {
 // tests name the real provider specs rather than a hand-built stand-in.
 const azure = mappingSpec('azure')!
 const linear = mappingSpec('linear')!
+const jira = mappingSpec('jira')!
 
 const columns: StatusColumn[] = [
   { name: 'New', suggestedGroup: 'backlog' },
@@ -108,6 +109,7 @@ describe('deriveGroupingRows', () => {
       group: 'backlog',
       suggested: UNMAPPED,
       onBoard: false,
+      mapped: true,
     })
   })
 
@@ -158,6 +160,71 @@ describe('deriveGroupingRows on an overlay key', () => {
     expect(serializeGrouping(reset, linear)).toBe('')
   })
 
+  // The Jira key is the same overlay under a different vocabulary: rows prefill
+  // from the status category, and only a status the operator actually moved is
+  // written — including the done-category status whose won't-do resolution the
+  // hub would otherwise group as canceled.
+  it('overlays a Jira project the same way, writing only the moved statuses', () => {
+    const statuses: StatusColumn[] = [
+      { name: 'To Do', suggestedGroup: 'unstarted' },
+      { name: 'In Progress', suggestedGroup: 'started' },
+      { name: 'Ready for QA', suggestedGroup: 'started' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ]
+    const rows = deriveGroupingRows(statuses, 'Ready for QA=done', jira)
+    expect(rows.map((r) => [r.name, r.group])).toEqual([
+      ['To Do', 'unstarted'],
+      ['In Progress', 'started'],
+      ['Ready for QA', 'done'],
+      ['Closed', 'done'],
+    ])
+    expect(rows.some((r) => r.group === UNMAPPED)).toBe(false)
+    expect(serializeGrouping(rows, jira)).toBe('Ready for QA=done')
+    expect(
+      serializeGrouping(
+        rows.map((r) => ({ ...r, group: r.suggested })),
+        jira,
+      ),
+    ).toBe('')
+  })
+
+  // Jira derives done from the status category alone, while the same issue
+  // resolved won't-do or duplicate groups as canceled until the status is named
+  // by hand. That pair therefore says something its equality with the suggestion
+  // cannot, so neither deriving nor serializing may treat it as redundant.
+  it('keeps a Jira pair that pins a conditionally derived section', () => {
+    const statuses: StatusColumn[] = [
+      { name: 'Backlog', suggestedGroup: 'unstarted' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ]
+    const rows = deriveGroupingRows(statuses, 'Closed=done', jira)
+    expect(rows.map((r) => [r.name, r.group, r.mapped])).toEqual([
+      ['Backlog', 'unstarted', false],
+      ['Closed', 'done', true],
+    ])
+    expect(serializeGrouping(rows, jira)).toBe('Closed=done')
+
+    const elsewhere = rows.map((r) =>
+      r.name === 'Backlog' ? { ...r, group: 'backlog' as const } : r,
+    )
+    expect(serializeGrouping(elsewhere, jira)).toBe('Backlog=backlog,Closed=done')
+  })
+
+  it('reaches that pair from a Jira row that starts out derived', () => {
+    const statuses: StatusColumn[] = [
+      { name: 'Backlog', suggestedGroup: 'unstarted' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ]
+    const rows = deriveGroupingRows(statuses, '', jira)
+    expect(rows.some((r) => r.mapped)).toBe(false)
+    expect(serializeGrouping(rows, jira)).toBe('')
+
+    const pinned = rows.map((r) =>
+      r.name === 'Closed' ? { ...r, mapped: true } : r,
+    )
+    expect(serializeGrouping(pinned, jira)).toBe('Closed=done')
+  })
+
   it('still writes every row of an exhaustive key', () => {
     const rows = deriveGroupingRows(states, '', azure)
     expect(serializeGrouping(rows, azure)).toBe(
@@ -176,7 +243,16 @@ describe('mappingSpec', () => {
       key: 'LINEAR_BOARD_STATES',
       overlay: true,
     })
-    expect(mappingSpec('jira')).toBeNull()
+    expect(mappingSpec('jira')).toMatchObject({
+      key: 'JIRA_BOARD_STATES',
+      overlay: true,
+    })
     expect(mappingSpec('internal')).toBeNull()
+  })
+
+  it('spells each plural out, since "status" does not take a bare s', () => {
+    expect(mappingSpec('jira')!.nounPlural).toBe('statuses')
+    expect(mappingSpec('linear')!.nounPlural).toBe('states')
+    expect(mappingSpec('azure')!.nounPlural).toBe('columns')
   })
 })

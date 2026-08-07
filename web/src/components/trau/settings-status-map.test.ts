@@ -66,6 +66,10 @@ function button(text: string): HTMLButtonElement {
   )!
 }
 
+function pin(name: string): HTMLButtonElement {
+  return container.querySelector(`button[aria-label="Map ${name} by hand"]`)!
+}
+
 function select(label: string): HTMLElement {
   return container.querySelector(`[aria-label="${label}"]`)!
 }
@@ -242,6 +246,123 @@ it('keeps an uncommitted overlay edit when the shared write target moves', async
 
   await act(async () => {
     layerButton('LINEAR_BOARD_STATES write target', 'user').click()
+  })
+  expect(container.textContent).toContain('Archived')
+})
+
+// jiraKeys is the same set a Jira repo carries: the Jira overlay key in place of
+// the Azure one, already holding a single override.
+const jiraKeys: ConfigKey[] = [
+  { key: 'READY_LABEL', value: 'ready', layer: 'default', editable: true },
+  {
+    key: 'JIRA_BOARD_STATES',
+    value: 'Closed=done',
+    layer: 'repo',
+    editable: true,
+  },
+  { key: 'STATUS_TODO', value: '', layer: 'default', editable: true },
+  { key: 'STATUS_IN_PROGRESS', value: '', layer: 'default', editable: true },
+  { key: 'STATUS_IN_REVIEW', value: '', layer: 'default', editable: true },
+  { key: 'STATUS_DONE', value: '', layer: 'default', editable: true },
+]
+
+it('renders the overlay editor for a Jira repo, prefilled from the status categories', async () => {
+  stubFetch(200, {
+    provider: 'jira',
+    grouping: [
+      { name: 'To Do', suggestedGroup: 'unstarted' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ],
+    pinOptions: [{ name: 'Closed', category: 'done' }],
+  })
+
+  const text = await render(jiraKeys)
+  expect(text).toContain('workflow status grouping')
+  expect(text).toContain('JIRA_BOARD_STATES')
+  expect(genericRows()).toEqual(['READY_LABEL'])
+  // To Do is unlisted, so it sits on the section its own status category gives
+  // it rather than on Other, and the preview reads the one pair the key carries.
+  expect(select('To Do group').textContent).toContain('Todo')
+  expect(select('Closed group').textContent).toContain('Done')
+  expect(select('To Do group').textContent).not.toContain('Other')
+  // Closed is mapped to the very section its category derives, so the badge is
+  // the only place that pair shows at all.
+  expect(pin('Closed').getAttribute('aria-pressed')).toBe('true')
+  expect(text).toContain('Closed=done')
+  expect(text).not.toContain('board column grouping')
+  expect(text).not.toContain('workflow state grouping')
+})
+
+it('pluralizes a Jira status list without spelling it statuss', async () => {
+  stubFetch(200, {
+    provider: 'jira',
+    grouping: [],
+    pinOptions: [],
+    error: 'jira: unauthorized',
+    hint: 'Regenerate the API token.',
+  })
+
+  const text = await render(
+    jiraKeys.map((k) =>
+      k.key === 'JIRA_BOARD_STATES' ? { ...k, value: '' } : k,
+    ),
+  )
+  expect(text).toContain('no statuses yet')
+  expect(text).not.toContain('statuss')
+})
+
+// A Jira status whose category already derives done still needs the mapping to
+// hold every issue in it — an unmapped one resolved won't-do or duplicate groups
+// as canceled. The section select cannot say that, so the badge is where the
+// pair is made.
+it('maps a Jira status to the section its category already derives', async () => {
+  stubFetch(200, {
+    provider: 'jira',
+    grouping: [
+      { name: 'To Do', suggestedGroup: 'unstarted' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ],
+    pinOptions: [],
+  })
+
+  await render(
+    jiraKeys.map((k) =>
+      k.key === 'JIRA_BOARD_STATES' ? { ...k, value: '' } : k,
+    ),
+  )
+  expect(pin('Closed').textContent).toBe('derived')
+  // Only a section the category derives conditionally carries the choice.
+  expect(
+    container.querySelector('button[aria-label="Map To Do by hand"]'),
+  ).toBeNull()
+
+  await act(async () => {
+    pin('Closed').click()
+  })
+  expect(pin('Closed').getAttribute('aria-pressed')).toBe('true')
+  expect(container.textContent).toContain('will write: Closed=done')
+})
+
+it('keeps an uncommitted Jira overlay edit when the shared write target moves', async () => {
+  stubFetch(200, {
+    provider: 'jira',
+    grouping: [],
+    pinOptions: [],
+    error: 'jira: unauthorized',
+    hint: 'Regenerate the API token.',
+  })
+
+  await render(jiraKeys)
+  await act(async () => {
+    type(input('New status name'), 'Archived')
+  })
+  await act(async () => {
+    button('Add status').click()
+  })
+  expect(container.textContent).toContain('Archived')
+
+  await act(async () => {
+    layerButton('JIRA_BOARD_STATES write target', 'user').click()
   })
   expect(container.textContent).toContain('Archived')
 })

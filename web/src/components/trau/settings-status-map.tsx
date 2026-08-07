@@ -48,6 +48,7 @@ import {
   PIN_LABELS,
   UNMAPPED,
   boardNameError,
+  conditionallyDerived,
   deriveGroupingRows,
   mappingSpec,
   serializeGrouping,
@@ -67,10 +68,6 @@ const SYNC_NOTE =
   'Saved. The board regroups on the next sync pull for this repo.'
 
 const PIN_NOTE = 'Saved. Pins apply to the next write this repo makes.'
-
-const EMPTY_MAPPING = '(empty — grouping stays category-derived)'
-
-const EMPTY_OVERLAY = '(empty — every state keeps its own type\u2019s section)'
 
 // The board reads as no columns at all when it could not be read; a shared
 // constant keeps that a stable value rather than a fresh array each render.
@@ -349,6 +346,12 @@ function GroupingBlock({
     )
   }
 
+  const setMapped = (name: string, mapped: boolean) => {
+    edit((prev) =>
+      prev.map((row) => (row.name === name ? { ...row, mapped } : row)),
+    )
+  }
+
   const addRow = () => {
     const invalid = boardNameError(draftName, spec.noun)
     if (invalid) {
@@ -362,7 +365,13 @@ function GroupingBlock({
     }
     edit((prev) => [
       ...prev,
-      { name, group: draftGroup, suggested: UNMAPPED, onBoard: false },
+      {
+        name,
+        group: draftGroup,
+        suggested: UNMAPPED,
+        onBoard: false,
+        mapped: true,
+      },
     ])
     setDraftName('')
     setNameError(null)
@@ -384,7 +393,7 @@ function GroupingBlock({
       <div className="flex flex-col divide-y divide-border/60 rounded-md border border-border">
         {rows.length === 0 && (
           <p className="px-3 py-3 font-mono text-xs text-faint">
-            no {spec.noun}s yet — add one below
+            no {spec.nounPlural} yet — add one below
           </p>
         )}
         {rows.map((row) => (
@@ -395,6 +404,7 @@ function GroupingBlock({
             boardRead={boardRead}
             exhaustive={exhaustive}
             onChange={(group) => setGroup(row.name, group)}
+            onMapped={(mapped) => setMapped(row.name, mapped)}
           />
         ))}
       </div>
@@ -450,7 +460,7 @@ function GroupingBlock({
           <span>
             {unmapped === 1
               ? `1 ${spec.noun} stays unmapped`
-              : `${unmapped} ${spec.noun}s stay unmapped`}
+              : `${unmapped} ${spec.nounPlural} stay unmapped`}
             . A mapping that is set is exhaustive, so that work groups as{' '}
             {sectionLabel(UNMAPPED)}.
           </span>
@@ -479,7 +489,10 @@ function edited(rows: GroupingRow[], stored: GroupingRow[]): boolean {
   return (
     rows.length !== stored.length ||
     rows.some(
-      (row, i) => row.name !== stored[i].name || row.group !== stored[i].group,
+      (row, i) =>
+        row.name !== stored[i].name ||
+        row.group !== stored[i].group ||
+        row.mapped !== stored[i].mapped,
     )
   )
 }
@@ -496,8 +509,7 @@ function groupingPreview(
   spec: MappingSpec,
 ): string {
   const shown = dirty ? serialized : value.trim()
-  const text =
-    shown === '' ? (spec.overlay ? EMPTY_OVERLAY : EMPTY_MAPPING) : shown
+  const text = shown === '' ? spec.emptyNote : shown
   return dirty ? `will write: ${text}` : text
 }
 
@@ -507,13 +519,16 @@ function GroupingRowView({
   boardRead,
   exhaustive,
   onChange,
+  onMapped,
 }: {
   row: GroupingRow
   spec: MappingSpec
   boardRead: boolean
   exhaustive: boolean
   onChange: (group: StateGroup) => void
+  onMapped: (mapped: boolean) => void
 }) {
+  const overridden = spec.overlay && row.group !== row.suggested
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
       <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
@@ -529,8 +544,11 @@ function GroupingRowView({
           → {sectionLabel(UNMAPPED)}
         </span>
       )}
-      {spec.overlay && row.group !== row.suggested && (
+      {overridden && (
         <span className="font-mono text-[0.65rem] text-faint">overridden</span>
+      )}
+      {!overridden && conditionallyDerived(row, spec) && (
+        <MappedToggle row={row} spec={spec} onToggle={onMapped} />
       )}
       <GroupSelect
         label={`${row.name} group`}
@@ -539,6 +557,42 @@ function GroupingRowView({
         onChange={onChange}
       />
     </div>
+  )
+}
+
+// A row whose section the provider derives only conditionally carries a choice
+// the select cannot express: the same section, but named by hand so the nuance
+// behind the suggestion stops moving part of its work elsewhere. This is that
+// choice, and the only place a mapping equal to the suggestion is visible at all.
+function MappedToggle({
+  row,
+  spec,
+  onToggle,
+}: {
+  row: GroupingRow
+  spec: MappingSpec
+  onToggle: (mapped: boolean) => void
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={row.mapped}
+      aria-label={`Map ${row.name} by hand`}
+      title={
+        row.mapped
+          ? `Mapped by hand — every issue in this ${spec.noun} groups under ${sectionLabel(row.group)}.`
+          : `Derived — some issues in this ${spec.noun} still group elsewhere. Map it by hand to hold them all under ${sectionLabel(row.group)}.`
+      }
+      onClick={() => onToggle(!row.mapped)}
+      className={cn(
+        'rounded border px-1.5 py-0.5 font-mono text-[0.65rem] transition-colors',
+        row.mapped
+          ? 'border-border bg-secondary/60 text-foreground'
+          : 'border-transparent text-faint hover:border-border/60 hover:text-muted-foreground',
+      )}
+    >
+      {row.mapped ? 'mapped' : 'derived'}
+    </button>
   )
 }
 

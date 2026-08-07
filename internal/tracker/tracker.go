@@ -77,6 +77,11 @@ type Config struct {
 	// it does not name keeps the grouping its Linear state type derives (ADR 0038).
 	// Unused by every other provider.
 	LinearStates string
+	// JiraStates is the raw JIRA_BOARD_STATES spec mapping the project's workflow
+	// statuses onto trau's status groups. Like LinearStates it is an overlay: a
+	// status it does not name keeps the grouping its Jira status category derives
+	// (ADR 0038). Unused by every other provider.
+	JiraStates string
 	// linearEndpoint overrides the Linear GraphQL endpoint; empty targets the
 	// public API. It is the same seam Linear.endpoint is, so a test can point a
 	// direct-API read at a fake server without the field leaving this package.
@@ -407,6 +412,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			Email:           cfg.Email,
 			APIToken:        cfg.APIKey,
 			StatusOverrides: cfg.StatusOverrides,
+			boardStates:     parseJiraBoardStates(cfg.JiraStates),
 		}, nil
 	case "azure":
 		// Azure DevOps has no MCP path, so the runner is unused: the PAT is the only

@@ -766,6 +766,7 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
+		tc.JiraStates = cfg.JiraBoardStates
 		// A full set of per-repo REST credentials makes the Jira tracker act solely
 		// as that Atlassian identity: drop the agent runner so no operation can fall
 		// back to the shared Rovo MCP, which authenticates as a different account.

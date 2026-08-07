@@ -193,10 +193,11 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 			return nil, ErrReaderUnavailable
 		}
 		return &jiraReader{
-			client:     jiraapi.New(cfg.BaseURL, cfg.Email, cfg.APIKey),
-			baseURL:    cfg.BaseURL,
-			project:    cfg.Team,
-			readyLabel: cfg.ReadyLabel,
+			client:      jiraapi.New(cfg.BaseURL, cfg.Email, cfg.APIKey),
+			baseURL:     cfg.BaseURL,
+			project:     cfg.Team,
+			readyLabel:  cfg.ReadyLabel,
+			boardStates: parseJiraBoardStates(cfg.JiraStates),
 		}, nil
 	case "azure":
 		if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
@@ -289,6 +290,9 @@ type jiraReader struct {
 	baseURL    string
 	project    string
 	readyLabel string
+	// boardStates overlays JIRA_BOARD_STATES onto the grouping the status's own
+	// category derives; empty leaves grouping purely category-derived (ADR 0038).
+	boardStates jiraBoardStates
 }
 
 func (r *jiraReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
@@ -302,7 +306,7 @@ func (r *jiraReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
 			ID:          iss.Key,
 			Title:       iss.Summary,
 			Status:      iss.StatusName,
-			Group:       mapJiraGroup(iss.StatusCategory, iss.Resolution),
+			Group:       r.boardStates.group(iss.StatusName, iss.StatusCategory, iss.Resolution),
 			Labels:      iss.Labels,
 			Parent:      iss.ParentKey,
 			HasChildren: iss.HasChildren,
@@ -325,7 +329,7 @@ func (r *jiraReader) Issue(ctx context.Context, id string) (IssueSummary, error)
 			ID:          iss.Key,
 			Title:       iss.Summary,
 			Status:      iss.Status.Name,
-			Group:       mapJiraGroup(iss.Status.Category, iss.Resolution),
+			Group:       r.boardStates.group(iss.Status.Name, iss.Status.Category, iss.Resolution),
 			Labels:      iss.Labels,
 			Parent:      iss.Parent,
 			HasChildren: iss.HasChildren,
@@ -513,10 +517,12 @@ func mapLinearGroup(stateType string) StatusGroup {
 // mapJiraGroup maps a Jira statusCategory key onto a normalized status group.
 // Jira has no backlog or canceled category, so a To-Do issue groups as unstarted
 // and a done-category issue closed with a won't-do/duplicate resolution groups as
-// canceled rather than done.
+// canceled rather than done. Its fourth key, "undefined" (the "No Category" a
+// status can be created without), groups as unstarted so such a status stays on
+// the board instead of falling under Other.
 func mapJiraGroup(category, resolution string) StatusGroup {
 	switch strings.ToLower(strings.TrimSpace(category)) {
-	case "new":
+	case "new", "undefined":
 		return StatusGroupUnstarted
 	case "indeterminate":
 		return StatusGroupStarted
