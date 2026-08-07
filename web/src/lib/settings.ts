@@ -59,6 +59,9 @@ export interface Section {
   keys: ConfigKey[]
   primaryKeys: ConfigKey[]
   advancedKeys: ConfigKey[]
+  // Inactive-tracker keys: rendered only when a search matches them, and never
+  // counted in the advanced expander.
+  hiddenKeys: ConfigKey[]
   modified: boolean
   hubRestart: boolean
 }
@@ -284,7 +287,55 @@ export function visibleKeys(keys: ConfigKey[]): ConfigKey[] {
   return keys.filter((k) => !HIDDEN_KEYS.has(k.key))
 }
 
-export function deriveSections(keys: ConfigKey[]): Section[] {
+export const TRACKER_PROVIDER_KEY = 'TRACKER_PROVIDER'
+export const DEFAULT_TRACKER = 'linear'
+
+// The tracker the TRACKER_PROVIDER dropdown itself shows — the key value, not
+// the provider the loop falls back to — so the fields on screen always belong
+// to the tracker the dropdown names.
+export function activeTracker(keys: ConfigKey[]): string {
+  const item = keys.find((k) => k.key === TRACKER_PROVIDER_KEY)
+  const value = (item?.value || item?.default || '').trim().toLowerCase()
+  return value || DEFAULT_TRACKER
+}
+
+// Besides the keys tagged for another tracker, two keys the active tracker
+// renders meaningless: ISSUE_PREFIX under azure, whose work items are addressed
+// by number, and the team/project binding under internal, which binds to no
+// external tracker.
+export function isInactiveTrackerKey(item: ConfigKey, tracker: string): boolean {
+  if (item.tracker) return item.tracker !== tracker
+  if (item.group !== TRACKER_SECTION) return false
+  if (tracker === 'azure') return item.key === 'ISSUE_PREFIX'
+  if (tracker === 'internal') {
+    return item.key === 'LINEAR_TEAM' || item.key === 'PROJECT'
+  }
+  return false
+}
+
+const TRACKER_HINTS: Record<string, Record<string, string>> = {
+  LINEAR_TEAM: {
+    jira: 'holds your Jira project key',
+    azure: 'holds your Azure DevOps project name',
+    github: 'holds your GitHub repo',
+  },
+  PROJECT: {
+    jira: 'fallback tracker key when LINEAR_TEAM is unset',
+    azure: 'fallback tracker key when LINEAR_TEAM is unset',
+  },
+}
+
+export function trackerHint(key: string, tracker: string): string | null {
+  return TRACKER_HINTS[key]?.[tracker] ?? null
+}
+
+export function inactiveTrackerNote(item: ConfigKey): string | null {
+  return item.tracker ? `${item.tracker} — inactive tracker` : null
+}
+
+// Omitting tracker filters nothing — the command palette searches every key,
+// including the ones the settings screen hides.
+export function deriveSections(keys: ConfigKey[], tracker?: string): Section[] {
   const buckets = new Map<string, ConfigKey[]>()
   for (const item of keys) {
     const group =
@@ -302,8 +353,13 @@ export function deriveSections(keys: ConfigKey[]): Section[] {
   const ordered = [...SECTION_ORDER, OTHER_SECTION]
   const sections: Section[] = []
   for (const group of ordered) {
-    const items = buckets.get(group)
-    if (!items) continue
+    const bucket = buckets.get(group)
+    if (!bucket) continue
+    const hidden =
+      tracker === undefined
+        ? []
+        : bucket.filter((k) => isInactiveTrackerKey(k, tracker))
+    const items = bucket.filter((k) => !hidden.includes(k))
     sections.push({
       id: sectionSlug(group),
       group,
@@ -311,6 +367,7 @@ export function deriveSections(keys: ConfigKey[]): Section[] {
       keys: items,
       primaryKeys: items.filter((k) => !k.advanced),
       advancedKeys: items.filter((k) => k.advanced),
+      hiddenKeys: hidden,
       modified: items.some(isModified),
       hubRestart: appliesOnHubRestart(group),
     })

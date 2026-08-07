@@ -655,6 +655,8 @@ type ConfigItem struct {
 	// explain what it does and what value it falls back to.
 	Description string
 	Default     string
+	// Tracker mirrors KeyMeta.Tracker.
+	Tracker string
 }
 
 // Config file names. The keys in these files are environment-variable names, so
@@ -1821,6 +1823,9 @@ type KeyMeta struct {
 	// Suggestions are non-binding picker hints for a free-text key (model ids);
 	// unlike Options a custom value stays valid.
 	Suggestions []string
+	// Tracker names the one tracker provider a key belongs to — linear, jira, or
+	// azure. Empty means the key is tracker-agnostic and applies to all of them.
+	Tracker string
 }
 
 // Config Sections group the key catalog for the settings surface. Clients own
@@ -1871,18 +1876,18 @@ func KnownKeys() []KeyMeta {
 	keys := []KeyMeta{
 		{Key: "LINEAR_TEAM", Group: sectionTracker, WebEditable: true, Description: "Linear team / Jira project / Azure DevOps project / GitHub repo"},
 		{Key: "ISSUE_PREFIX", Group: sectionTracker, WebEditable: true, Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG); ignored for azure, whose work items are addressed by number"},
-		{Key: "LINEAR_API_KEY", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Linear personal API key"},
-		{Key: "LINEAR_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated \"<workflow state name>=<group>\" pairs mapping the team's Linear workflow states onto backlog | unstarted | started | done | canceled (e.g. Triage=backlog,Ready for QA=started); an OVERLAY, not an exhaustive mapping — a state it does not name keeps the grouping its Linear state type gives it, so a state added later never groups as unknown; empty groups purely by state type"},
-		{Key: "JIRA_BASE_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
-		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
-		{Key: "JIRA_API_TOKEN", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
-		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
-		{Key: "JIRA_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated \"<status name>=<group>\" pairs mapping the project's Jira workflow statuses onto backlog | unstarted | started | done | canceled (e.g. Backlog=backlog,Ready for QA=started); an OVERLAY, not an exhaustive mapping — a status it does not name keeps the grouping its Jira status category gives it, including the won't-do/duplicate resolution reading as canceled; empty groups purely by category"},
-		{Key: "AZURE_ORG_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps organization URL for the direct REST adapter (e.g. https://dev.azure.com/acme)"},
-		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
-		{Key: "AZURE_AREA_PATH", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Area Path the hub's Azure DevOps sync is narrowed to, including everything under it (e.g. Acme\\Platform); empty syncs the whole team project"},
-		{Key: "AZURE_TEAMS", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated Azure DevOps team names whose board areas scope this repo (e.g. Platform,Payments); empty syncs the whole team project"},
-		{Key: "AZURE_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated \"<board column>=<group>\" pairs mapping the team's Kanban columns onto backlog | unstarted | started | done | canceled (e.g. New=backlog,Ready to Develop=unstarted,Done=done); set, it is exhaustive and an unlisted column groups as unknown; empty groups by the state categories the project reports"},
+		{Key: "LINEAR_API_KEY", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "linear", Description: "Linear personal API key"},
+		{Key: "LINEAR_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "linear", Description: "Comma-separated \"<workflow state name>=<group>\" pairs mapping the team's Linear workflow states onto backlog | unstarted | started | done | canceled (e.g. Triage=backlog,Ready for QA=started); an OVERLAY, not an exhaustive mapping — a state it does not name keeps the grouping its Linear state type gives it, so a state added later never groups as unknown; empty groups purely by state type"},
+		{Key: "JIRA_BASE_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "jira", Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
+		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "jira", Description: "Atlassian account email for Jira REST Basic auth"},
+		{Key: "JIRA_API_TOKEN", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "jira", Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
+		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "jira", Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
+		{Key: "JIRA_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "jira", Description: "Comma-separated \"<status name>=<group>\" pairs mapping the project's Jira workflow statuses onto backlog | unstarted | started | done | canceled (e.g. Backlog=backlog,Ready for QA=started); an OVERLAY, not an exhaustive mapping — a status it does not name keeps the grouping its Jira status category gives it, including the won't-do/duplicate resolution reading as canceled; empty groups purely by category"},
+		{Key: "AZURE_ORG_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "azure", Description: "Azure DevOps organization URL for the direct REST adapter (e.g. https://dev.azure.com/acme)"},
+		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "azure", Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
+		{Key: "AZURE_AREA_PATH", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "azure", Description: "Area Path the hub's Azure DevOps sync is narrowed to, including everything under it (e.g. Acme\\Platform); empty syncs the whole team project"},
+		{Key: "AZURE_TEAMS", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "azure", Description: "Comma-separated Azure DevOps team names whose board areas scope this repo (e.g. Platform,Payments); empty syncs the whole team project"},
+		{Key: "AZURE_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Tracker: "azure", Description: "Comma-separated \"<board column>=<group>\" pairs mapping the team's Kanban columns onto backlog | unstarted | started | done | canceled (e.g. New=backlog,Ready to Develop=unstarted,Done=done); set, it is exhaustive and an unlisted column groups as unknown; empty groups by the state categories the project reports"},
 		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | azure | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "azure", "github", "internal"}},
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
@@ -2428,6 +2433,7 @@ func ResolveConfigItems(cfg Config, localPath, projectPath, userPath string, pro
 			WebEditable: meta.WebEditable,
 			Description: meta.Description,
 			Default:     meta.Default,
+			Tracker:     meta.Tracker,
 		})
 	}
 	return items, nil

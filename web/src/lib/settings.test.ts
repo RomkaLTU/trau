@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ConfigKey } from '@/lib/config'
 import {
+  activeTracker,
   appliesOnHubRestart,
   canResetLayer,
   comboboxFreeEntry,
@@ -9,6 +10,8 @@ import {
   deriveSections,
   displayValue,
   editorVariant,
+  inactiveTrackerNote,
+  isInactiveTrackerKey,
   isHexColor,
   isModified,
   matchSettings,
@@ -19,6 +22,7 @@ import {
   sectionSlug,
   shadowNote,
   themeRoleLabel,
+  trackerHint,
   valueWarning,
   visibleKeys,
 } from '@/lib/settings'
@@ -450,5 +454,296 @@ describe('parseSettingsSearch', () => {
 
   it('ignores unrelated params', () => {
     expect(parseSettingsSearch({ issue: 'COD-1341' })).toEqual({})
+  })
+})
+
+const TRACKER = 'Tracker & issues'
+
+// trackerCatalog mirrors the server's Tracker & issues section: the shared keys,
+// the per-provider keys with their catalog tracker tag, and one key from another
+// section that the filter must never touch.
+function trackerCatalog(provider: string): ConfigKey[] {
+  const shared = (k: string, advanced = false) =>
+    key({ key: k, group: TRACKER, advanced })
+  const owned = (k: string, tracker: string) =>
+    key({ key: k, group: TRACKER, advanced: true, tracker })
+  return [
+    key({
+      key: 'TRACKER_PROVIDER',
+      group: TRACKER,
+      value: provider,
+      default: 'linear',
+    }),
+    shared('LINEAR_TEAM'),
+    shared('ISSUE_PREFIX'),
+    shared('PROJECT'),
+    shared('READY_LABEL'),
+    shared('QUARANTINE_LABEL'),
+    shared('QUEUED_LABEL'),
+    shared('STATUS_TODO', true),
+    shared('STATUS_IN_PROGRESS', true),
+    shared('STATUS_IN_REVIEW', true),
+    shared('STATUS_DONE', true),
+    shared('DELIVERED_STATE', true),
+    owned('LINEAR_API_KEY', 'linear'),
+    owned('LINEAR_BOARD_STATES', 'linear'),
+    owned('JIRA_BASE_URL', 'jira'),
+    owned('JIRA_EMAIL', 'jira'),
+    owned('JIRA_API_TOKEN', 'jira'),
+    owned('JIRA_EPIC_TYPE', 'jira'),
+    owned('JIRA_BOARD_STATES', 'jira'),
+    owned('AZURE_ORG_URL', 'azure'),
+    owned('AZURE_PAT', 'azure'),
+    owned('AZURE_AREA_PATH', 'azure'),
+    owned('AZURE_TEAMS', 'azure'),
+    owned('AZURE_BOARD_STATES', 'azure'),
+    key({ key: 'BASE_BRANCH', group: 'Git & merge' }),
+  ]
+}
+
+function trackerSection(provider: string) {
+  const keys = trackerCatalog(provider)
+  const sections = deriveSections(keys, activeTracker(keys))
+  return sections.find((s) => s.group === TRACKER)!
+}
+
+describe('activeTracker', () => {
+  it('reads the value the dropdown shows', () => {
+    expect(activeTracker(trackerCatalog('jira'))).toBe('jira')
+  })
+
+  it('falls back to linear on a fresh repo rather than the internal provider', () => {
+    expect(
+      activeTracker([
+        key({ key: 'TRACKER_PROVIDER', group: TRACKER, default: 'linear' }),
+      ]),
+    ).toBe('linear')
+    expect(activeTracker([])).toBe('linear')
+  })
+
+  it('normalizes a stray case or spacing in the stored value', () => {
+    expect(
+      activeTracker([
+        key({ key: 'TRACKER_PROVIDER', group: TRACKER, value: ' Azure ' }),
+      ]),
+    ).toBe('azure')
+  })
+})
+
+describe('isInactiveTrackerKey', () => {
+  it('hides a tagged key belonging to another tracker', () => {
+    const jiraKey = key({ key: 'JIRA_EMAIL', group: TRACKER, tracker: 'jira' })
+    expect(isInactiveTrackerKey(jiraKey, 'linear')).toBe(true)
+    expect(isInactiveTrackerKey(jiraKey, 'jira')).toBe(false)
+  })
+
+  it('hides ISSUE_PREFIX only under azure, whose items are addressed by number', () => {
+    const prefix = key({ key: 'ISSUE_PREFIX', group: TRACKER })
+    expect(isInactiveTrackerKey(prefix, 'azure')).toBe(true)
+    expect(isInactiveTrackerKey(prefix, 'jira')).toBe(false)
+  })
+
+  it('hides the tracker binding only under internal, which binds to nothing', () => {
+    for (const k of ['LINEAR_TEAM', 'PROJECT']) {
+      const item = key({ key: k, group: TRACKER })
+      expect(isInactiveTrackerKey(item, 'internal')).toBe(true)
+      expect(isInactiveTrackerKey(item, 'github')).toBe(false)
+    }
+  })
+
+  it('never filters a key outside the tracker section', () => {
+    const base = key({ key: 'BASE_BRANCH', group: 'Git & merge' })
+    for (const tracker of ['linear', 'jira', 'azure', 'github', 'internal']) {
+      expect(isInactiveTrackerKey(base, tracker)).toBe(false)
+    }
+  })
+})
+
+describe('deriveSections tracker visibility', () => {
+  const alwaysVisible = [
+    'TRACKER_PROVIDER',
+    'READY_LABEL',
+    'QUARANTINE_LABEL',
+    'QUEUED_LABEL',
+    'STATUS_TODO',
+    'STATUS_IN_PROGRESS',
+    'STATUS_IN_REVIEW',
+    'STATUS_DONE',
+    'DELIVERED_STATE',
+  ]
+
+  const matrix: Record<string, { shown: string[]; hidden: string[] }> = {
+    linear: {
+      shown: [
+        'LINEAR_API_KEY',
+        'LINEAR_BOARD_STATES',
+        'LINEAR_TEAM',
+        'PROJECT',
+        'ISSUE_PREFIX',
+      ],
+      hidden: [
+        'JIRA_BASE_URL',
+        'JIRA_BOARD_STATES',
+        'AZURE_ORG_URL',
+        'AZURE_PAT',
+      ],
+    },
+    jira: {
+      shown: [
+        'JIRA_BASE_URL',
+        'JIRA_EMAIL',
+        'JIRA_API_TOKEN',
+        'JIRA_EPIC_TYPE',
+        'JIRA_BOARD_STATES',
+        'LINEAR_TEAM',
+        'PROJECT',
+        'ISSUE_PREFIX',
+      ],
+      hidden: [
+        'LINEAR_API_KEY',
+        'LINEAR_BOARD_STATES',
+        'AZURE_ORG_URL',
+        'AZURE_BOARD_STATES',
+      ],
+    },
+    azure: {
+      shown: [
+        'AZURE_ORG_URL',
+        'AZURE_PAT',
+        'AZURE_AREA_PATH',
+        'AZURE_TEAMS',
+        'AZURE_BOARD_STATES',
+        'LINEAR_TEAM',
+        'PROJECT',
+      ],
+      hidden: [
+        'ISSUE_PREFIX',
+        'LINEAR_API_KEY',
+        'JIRA_BASE_URL',
+        'JIRA_BOARD_STATES',
+      ],
+    },
+    github: {
+      shown: ['LINEAR_TEAM', 'PROJECT', 'ISSUE_PREFIX'],
+      hidden: ['LINEAR_API_KEY', 'JIRA_BASE_URL', 'AZURE_ORG_URL'],
+    },
+    internal: {
+      shown: ['ISSUE_PREFIX'],
+      hidden: [
+        'LINEAR_TEAM',
+        'PROJECT',
+        'LINEAR_API_KEY',
+        'JIRA_EMAIL',
+        'AZURE_PAT',
+      ],
+    },
+  }
+
+  for (const [provider, { shown, hidden }] of Object.entries(matrix)) {
+    it(`shows only ${provider}'s own fields`, () => {
+      const section = trackerSection(provider)
+      const visible = section.keys.map((k) => k.key)
+      const rendered = [
+        ...section.primaryKeys.map((k) => k.key),
+        ...section.advancedKeys.map((k) => k.key),
+      ]
+
+      for (const k of [...shown, ...alwaysVisible]) {
+        expect(visible).toContain(k)
+        expect(rendered).toContain(k)
+      }
+      for (const k of hidden) {
+        expect(visible).not.toContain(k)
+        expect(rendered).not.toContain(k)
+        expect(section.hiddenKeys.map((h) => h.key)).toContain(k)
+      }
+    })
+  }
+
+  it('shrinks the advanced count by the hidden trackers', () => {
+    const all = deriveSections(trackerCatalog('jira'))
+    const filtered = trackerSection('jira')
+    expect(all.find((s) => s.group === TRACKER)!.advancedKeys.length).toBe(
+      filtered.advancedKeys.length + filtered.hiddenKeys.length,
+    )
+    expect(filtered.hiddenKeys).toHaveLength(7)
+  })
+
+  it('leaves the active provider board key for the mapping editor to own', () => {
+    expect(trackerSection('jira').advancedKeys.map((k) => k.key)).toContain(
+      'JIRA_BOARD_STATES',
+    )
+    expect(trackerSection('linear').advancedKeys.map((k) => k.key)).toContain(
+      'LINEAR_BOARD_STATES',
+    )
+  })
+
+  it('keeps every key when no tracker is given, so the palette still finds them', () => {
+    const section = deriveSections(trackerCatalog('jira')).find(
+      (s) => s.group === TRACKER,
+    )!
+    expect(section.hiddenKeys).toHaveLength(0)
+    expect(section.keys.map((k) => k.key)).toContain('AZURE_PAT')
+  })
+
+  it('does not filter other sections', () => {
+    const git = deriveSections(trackerCatalog('internal'), 'internal').find(
+      (s) => s.group === 'Git & merge',
+    )!
+    expect(git.keys.map((k) => k.key)).toEqual(['BASE_BRANCH'])
+    expect(git.hiddenKeys).toHaveLength(0)
+  })
+})
+
+describe('search reveals hidden tracker keys', () => {
+  it('surfaces the linear keys on a jira project and labels them inactive', () => {
+    const section = trackerSection('jira')
+    const revealed = section.hiddenKeys.filter((k) => matchesQuery(k, 'linear'))
+    expect(revealed.map((k) => k.key)).toEqual([
+      'LINEAR_API_KEY',
+      'LINEAR_BOARD_STATES',
+    ])
+    expect(inactiveTrackerNote(revealed[0])).toBe('linear — inactive tracker')
+  })
+
+  it('leaves an untagged hide without a tracker badge', () => {
+    const prefix = trackerSection('azure').hiddenKeys.find(
+      (k) => k.key === 'ISSUE_PREFIX',
+    )!
+    expect(inactiveTrackerNote(prefix)).toBeNull()
+  })
+
+  it('reveals nothing when the query matches no hidden key', () => {
+    const section = trackerSection('jira')
+    expect(section.hiddenKeys.filter((k) => matchesQuery(k, 'ready'))).toEqual(
+      [],
+    )
+  })
+})
+
+describe('trackerHint', () => {
+  it('explains what LINEAR_TEAM holds under each other tracker', () => {
+    expect(trackerHint('LINEAR_TEAM', 'jira')).toBe(
+      'holds your Jira project key',
+    )
+    expect(trackerHint('LINEAR_TEAM', 'azure')).toBe(
+      'holds your Azure DevOps project name',
+    )
+    expect(trackerHint('LINEAR_TEAM', 'github')).toBe('holds your GitHub repo')
+    expect(trackerHint('LINEAR_TEAM', 'linear')).toBeNull()
+  })
+
+  it('marks PROJECT as the fallback binding for the project-keyed trackers', () => {
+    expect(trackerHint('PROJECT', 'jira')).toBe(
+      'fallback tracker key when LINEAR_TEAM is unset',
+    )
+    expect(trackerHint('PROJECT', 'azure')).toBe(
+      'fallback tracker key when LINEAR_TEAM is unset',
+    )
+    expect(trackerHint('PROJECT', 'linear')).toBeNull()
+  })
+
+  it('stays silent for keys that are not overloaded', () => {
+    expect(trackerHint('READY_LABEL', 'jira')).toBeNull()
   })
 })
