@@ -68,10 +68,6 @@ const SYNC_NOTE =
 
 const PIN_NOTE = 'Saved. Pins apply to the next write this repo makes.'
 
-const EMPTY_MAPPING = '(empty — grouping stays category-derived)'
-
-const EMPTY_OVERLAY = '(empty — every state keeps its own type\u2019s section)'
-
 // The board reads as no columns at all when it could not be read; a shared
 // constant keeps that a stable value rather than a fresh array each render.
 const NO_COLUMNS: StatusColumn[] = []
@@ -384,7 +380,7 @@ function GroupingBlock({
       <div className="flex flex-col divide-y divide-border/60 rounded-md border border-border">
         {rows.length === 0 && (
           <p className="px-3 py-3 font-mono text-xs text-faint">
-            no {spec.noun}s yet — add one below
+            no {spec.nounPlural} yet — add one below
           </p>
         )}
         {rows.map((row) => (
@@ -450,7 +446,7 @@ function GroupingBlock({
           <span>
             {unmapped === 1
               ? `1 ${spec.noun} stays unmapped`
-              : `${unmapped} ${spec.noun}s stay unmapped`}
+              : `${unmapped} ${spec.nounPlural} stay unmapped`}
             . A mapping that is set is exhaustive, so that work groups as{' '}
             {sectionLabel(UNMAPPED)}.
           </span>
@@ -496,8 +492,7 @@ function groupingPreview(
   spec: MappingSpec,
 ): string {
   const shown = dirty ? serialized : value.trim()
-  const text =
-    shown === '' ? (spec.overlay ? EMPTY_OVERLAY : EMPTY_MAPPING) : shown
+  const text = shown === '' ? spec.emptyNote : shown
   return dirty ? `will write: ${text}` : text
 }
 

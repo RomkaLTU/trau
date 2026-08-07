@@ -16,6 +16,7 @@ import {
 // tests name the real provider specs rather than a hand-built stand-in.
 const azure = mappingSpec('azure')!
 const linear = mappingSpec('linear')!
+const jira = mappingSpec('jira')!
 
 const columns: StatusColumn[] = [
   { name: 'New', suggestedGroup: 'backlog' },
@@ -158,6 +159,34 @@ describe('deriveGroupingRows on an overlay key', () => {
     expect(serializeGrouping(reset, linear)).toBe('')
   })
 
+  // The Jira key is the same overlay under a different vocabulary: rows prefill
+  // from the status category, and only a status the operator actually moved is
+  // written — including the done-category status whose won't-do resolution the
+  // hub would otherwise group as canceled.
+  it('overlays a Jira project the same way, writing only the moved statuses', () => {
+    const statuses: StatusColumn[] = [
+      { name: 'To Do', suggestedGroup: 'unstarted' },
+      { name: 'In Progress', suggestedGroup: 'started' },
+      { name: 'Ready for QA', suggestedGroup: 'started' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ]
+    const rows = deriveGroupingRows(statuses, 'Ready for QA=done', jira)
+    expect(rows.map((r) => [r.name, r.group])).toEqual([
+      ['To Do', 'unstarted'],
+      ['In Progress', 'started'],
+      ['Ready for QA', 'done'],
+      ['Closed', 'done'],
+    ])
+    expect(rows.some((r) => r.group === UNMAPPED)).toBe(false)
+    expect(serializeGrouping(rows, jira)).toBe('Ready for QA=done')
+    expect(
+      serializeGrouping(
+        rows.map((r) => ({ ...r, group: r.suggested })),
+        jira,
+      ),
+    ).toBe('')
+  })
+
   it('still writes every row of an exhaustive key', () => {
     const rows = deriveGroupingRows(states, '', azure)
     expect(serializeGrouping(rows, azure)).toBe(
@@ -176,7 +205,16 @@ describe('mappingSpec', () => {
       key: 'LINEAR_BOARD_STATES',
       overlay: true,
     })
-    expect(mappingSpec('jira')).toBeNull()
+    expect(mappingSpec('jira')).toMatchObject({
+      key: 'JIRA_BOARD_STATES',
+      overlay: true,
+    })
     expect(mappingSpec('internal')).toBeNull()
+  })
+
+  it('spells each plural out, since "status" does not take a bare s', () => {
+    expect(mappingSpec('jira')!.nounPlural).toBe('statuses')
+    expect(mappingSpec('linear')!.nounPlural).toBe('states')
+    expect(mappingSpec('azure')!.nounPlural).toBe('columns')
   })
 })

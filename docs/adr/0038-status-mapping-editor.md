@@ -102,3 +102,9 @@ later. A free-text add row covers a column the API missed, and a name carrying
   own Linear type derives, so the editor prefills every row with its effective
   section and saves only the rows that differ. ADR 0039 records why the two keys
   share a grammar but not that rule.
+- The Jira arm (COD-1537) followed the Linear one: `JIRA_BOARD_STATES` overlays
+  the grouping a status's own `statusCategory` derives, keyed on the status name
+  the project reports. It carries one extra rule Linear has no analogue for — a
+  listed status also displaces the won't-do/duplicate *resolution* nuance, since
+  naming a status by hand is a statement about every issue in it, while the
+  suggestion the editor prefills reads the category alone.

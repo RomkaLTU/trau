@@ -454,6 +454,28 @@ JIRA_API_TOKEN=              # classic API token (never commit)
 # "regenerate at id.atlassian.com/manage-profile/security/api-tokens" hint. Run
 # `trau doctor` to validate the three keys and live-ping the site before a run.
 
+# JIRA_BOARD_STATES maps the project's workflow statuses onto the groups trau's
+# board and its reconcile read use: backlog | unstarted | started | done |
+# canceled. Key off the status name — the name Jira prints on the issue and builds
+# its board columns from.
+#
+# It is an OVERLAY, not an exhaustive mapping (the same shape LINEAR_BOARD_STATES
+# has, and the one place both differ from AZURE_BOARD_STATES). A status listed here
+# takes the group it is mapped to; a status NOT listed keeps the grouping its Jira
+# status category gives it automatically (new -> unstarted, indeterminate ->
+# started, done -> done, plus the nuance that a done-category issue resolved
+# Won't Do / Duplicate groups as canceled). So a status your project adds later
+# degrades to its own category's section rather than falling to Other, and you only
+# ever write the statuses you actually want to move. Deleting the key restores pure
+# category-derived grouping.
+#
+# A status you DO list is authoritative for that status — it also overrides the
+# won't-do/duplicate nuance, which is the point of naming one by hand.
+#
+# It drives grouping only; a status WRITE still resolves an issue's own available
+# transitions at write time through the STATUS_* pins and the project's workflow.
+JIRA_BOARD_STATES=           # e.g. Ready for QA=done,Backlog=backlog
+
 # Azure DevOps Services direct REST access (TRACKER_PROVIDER=azure). Unlike Jira
 # there is no MCP fallback: both keys are REQUIRED, and without them the provider
 # cannot reach the tracker at all. Auth is per-request Basic auth with an empty

@@ -48,10 +48,14 @@ type StatusOptionsResponse struct {
 	Hint       string            `json:"hint,omitempty"`
 }
 
+// mappingProviders are the trackers whose metadata carries both halves a status
+// mapping is made of: the names a grouping keys on and the statuses a pin may
+// write. Every other provider answers 404 and the settings page keeps its generic
+// rows.
+var mappingProviders = map[string]bool{"azure": true, "linear": true, "jira": true}
+
 // handleTrackerStatusOptions serves the choices a repo's status mapping is made
-// of. Azure DevOps and Linear each have both halves — the names a grouping keys
-// on and the states a pin may write — so every other provider answers 404 and the
-// settings page keeps its generic rows.
+// of.
 func (s *Server) handleTrackerStatusOptions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -69,7 +73,7 @@ func (s *Server) handleTrackerStatusOptions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	provider := cfg.EffectiveTrackerProvider()
-	if provider != "azure" && provider != "linear" {
+	if !mappingProviders[provider] {
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error": "this repo's tracker has no status-mapping options",
 		})
@@ -122,6 +126,8 @@ func readStatusOptions(ctx context.Context, provider string, cfg config.Config) 
 	switch provider {
 	case "linear":
 		return tracker.LinearStatusOptions(ctx, readerConfig(cfg, provider))
+	case "jira":
+		return tracker.JiraStatusOptions(ctx, readerConfig(cfg, provider))
 	case "azure":
 		return tracker.AzureStatusOptions(ctx, readerConfig(cfg, provider))
 	default:

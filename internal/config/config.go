@@ -80,11 +80,18 @@ type Config struct {
 	// state type derives, so a state added later degrades to its type rather than to
 	// unknown (ADR 0038).
 	LinearBoardStates string
-	ReadyLabel        string
-	QuarantineLabel   string
-	QueuedLabel       string
-	SplitLabel        string
-	Project           string
+	// JiraBoardStates maps the project's workflow statuses onto trau's status
+	// groups, as comma-separated "<status name>=<group>" pairs. Like
+	// LinearBoardStates it is an OVERLAY: a status it names takes the mapped group
+	// — authoritatively, so an explicit mapping also overrides the won't-do /
+	// duplicate resolution nuance — and a status it does not keeps the grouping its
+	// Jira statusCategory derives (ADR 0038).
+	JiraBoardStates string
+	ReadyLabel      string
+	QuarantineLabel string
+	QueuedLabel     string
+	SplitLabel      string
+	Project         string
 	// StatusTodo, StatusInProgress, StatusInReview and StatusDone pin a lifecycle
 	// stage to an exact tracker status name. Empty leaves the stage to resolve
 	// against the workflow the tracker reports.
@@ -824,6 +831,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("JIRA_EMAIL", &c.JiraEmail)
 	str("JIRA_API_TOKEN", &c.JiraAPIToken)
 	str("JIRA_EPIC_TYPE", &c.JiraEpicType)
+	str("JIRA_BOARD_STATES", &c.JiraBoardStates)
 	str("AZURE_ORG_URL", &c.AzureOrgURL)
 	str("AZURE_PAT", &c.AzurePAT)
 	str("AZURE_AREA_PATH", &c.AzureAreaPath)
@@ -1859,6 +1867,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
 		{Key: "JIRA_API_TOKEN", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
 		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
+		{Key: "JIRA_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated \"<status name>=<group>\" pairs mapping the project's Jira workflow statuses onto backlog | unstarted | started | done | canceled (e.g. Backlog=backlog,Ready for QA=started); an OVERLAY, not an exhaustive mapping — a status it does not name keeps the grouping its Jira status category gives it, including the won't-do/duplicate resolution reading as canceled; empty groups purely by category"},
 		{Key: "AZURE_ORG_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps organization URL for the direct REST adapter (e.g. https://dev.azure.com/acme)"},
 		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
 		{Key: "AZURE_AREA_PATH", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Area Path the hub's Azure DevOps sync is narrowed to, including everything under it (e.g. Acme\\Platform); empty syncs the whole team project"},
@@ -2139,6 +2148,7 @@ var trackerConfigKeys = []string{
 	"JIRA_BASE_URL",
 	"JIRA_EMAIL",
 	"JIRA_API_TOKEN",
+	"JIRA_BOARD_STATES",
 	"AZURE_ORG_URL",
 	"AZURE_PAT",
 	"AZURE_AREA_PATH",
@@ -2423,6 +2433,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.JiraAPIToken
 	case "JIRA_EPIC_TYPE":
 		return cfg.JiraEpicType
+	case "JIRA_BOARD_STATES":
+		return cfg.JiraBoardStates
 	case "AZURE_ORG_URL":
 		return cfg.AzureOrgURL
 	case "AZURE_PAT":

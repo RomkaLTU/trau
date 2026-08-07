@@ -28,6 +28,10 @@ type Jira struct {
 	Email           string // Atlassian account email (Basic-auth username)
 	APIToken        string // classic Jira API token (Basic-auth password)
 	StatusOverrides map[Stage]string
+	// boardStates overlays JIRA_BOARD_STATES onto the grouping a status's own
+	// category derives, so a --status reconcile agrees with the board a repo's
+	// mapping produces (ADR 0038).
+	boardStates jiraBoardStates
 }
 
 func (j *Jira) api() *jiraapi.Client {
@@ -452,27 +456,20 @@ func (j *Jira) issueStatusAPI(ctx context.Context, id string) (IssueStatus, erro
 	if err != nil {
 		return StatusUnknown, err
 	}
+	if group, ok := j.boardStates.override(issue.Status.Name); ok {
+		return issueStatusOf(group), nil
+	}
 	return mapJiraStatus(issue.Status.Category, issue.Resolution), nil
 }
 
-// mapJiraStatus maps a Jira statusCategory key onto the normalized status. Jira
-// has no "canceled" category, so a done-category issue closed with a won't-do or
-// duplicate resolution reports as canceled; an unrecognized category is unknown
-// so reconcile leaves the checkpoint intact.
+// mapJiraStatus maps a Jira statusCategory key onto the normalized status,
+// through the group that category files under, so a reconcile pass and the board
+// cannot read one status two ways. Jira has no "canceled" category, so a
+// done-category issue closed with a won't-do or duplicate resolution reports as
+// canceled; a category trau cannot read at all is unknown, so reconcile leaves
+// the checkpoint intact.
 func mapJiraStatus(category, resolution string) IssueStatus {
-	switch strings.ToLower(strings.TrimSpace(category)) {
-	case "done":
-		if isCanceledResolution(resolution) {
-			return StatusCanceled
-		}
-		return StatusDone
-	case "new":
-		return StatusOpen
-	case "indeterminate":
-		return StatusStarted
-	default:
-		return StatusUnknown
-	}
+	return issueStatusOf(mapJiraGroup(category, resolution))
 }
 
 // isCanceledResolution reports whether a Jira resolution name denotes a
