@@ -1,8 +1,14 @@
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { writeFailure } from './config'
 import { removeBlocked, type RepoView } from './instances'
-import { matchesTerms } from './settings'
+import {
+  INTERNAL_TRACKER,
+  TRACKER_PROVIDER_KEY,
+  internalSwitchWarning,
+  matchesTerms,
+} from './settings'
 
 // ProjectView is one logical project: a group of registered repos under a display
 // name. Members are repo roots, joined against the repos list by the caller.
@@ -316,6 +322,9 @@ export interface ProjectTracker {
   project: string
   repos: string[]
   keys: ProjectTrackerKey[]
+  // How many issues each member repo still mirrors from an external tracker,
+  // keyed by repo root.
+  synced_issues?: Record<string, number>
 }
 
 async function fetchProjectTracker(id: string): Promise<ProjectTracker> {
@@ -392,10 +401,76 @@ const PROJECT_DEFAULT_TERMS = [
   'ready_label',
   'epic flow',
   'epic_flow',
+  'tracker',
+  'tracker_provider',
+  'internal tracker',
+  'switch to internal',
 ]
 
 export function matchesProjectDefaults(query: string): boolean {
   return matchesTerms(query, PROJECT_DEFAULT_TERMS)
+}
+
+// projectProvider is the tracker the project stores for every member, lowercased;
+// empty when the project holds no answer of its own.
+export function projectProvider(tracker: ProjectTracker | undefined): string {
+  const value =
+    tracker?.keys.find((k) => k.key === TRACKER_PROVIDER_KEY)?.value ?? ''
+  return value.trim().toLowerCase()
+}
+
+// Only a project already talking to an external tracker has somewhere to switch
+// from: one already internal is where the action lands, and one holding no
+// provider at all has never been set up — that is the wizard's job.
+export function offersInternalSwitch(
+  tracker: ProjectTracker | undefined,
+): boolean {
+  const provider = projectProvider(tracker)
+  return provider !== '' && provider !== INTERNAL_TRACKER
+}
+
+// ProjectSyncedRepo is one line of the switch dialog: the mirrored issues a
+// member repo would lose, named against the repo holding them.
+export interface ProjectSyncedRepo {
+  name: string
+  root: string
+  synced: number
+}
+
+export function projectSyncedRepos(
+  tracker: ProjectTracker | undefined,
+  members: readonly RepoView[],
+): ProjectSyncedRepo[] {
+  const counts = tracker?.synced_issues ?? {}
+  return members.map((repo) => ({
+    name: repo.name,
+    root: repo.root,
+    synced: counts[repo.root] ?? 0,
+  }))
+}
+
+export function projectSyncedTotal(
+  repos: readonly ProjectSyncedRepo[],
+): number {
+  return repos.reduce((total, repo) => total + repo.synced, 0)
+}
+
+// What the switch costs the project as a whole, said before the per-repo list. A
+// project mirroring nothing still confirms — the provider every member talks to
+// changes either way — so it says plainly that there is nothing to lose.
+export function projectSwitchWarning(total: number, provider: string): string {
+  if (total === 0) {
+    return `No issues are mirrored from ${provider} right now, so none are removed. History stays in ${provider}; switching back re-imports it.`
+  }
+  return internalSwitchWarning(total, provider)
+}
+
+// switchProjectToInternal points the whole project at the internal tracker,
+// leaving the credentials alone: they are what a switch back needs.
+export async function switchProjectToInternal(
+  id: string,
+): Promise<ProjectTracker> {
+  return writeProjectTracker(id, { [TRACKER_PROVIDER_KEY]: INTERNAL_TRACKER })
 }
 
 // writeProjectTracker configures the tracker once for the whole project; the hub
@@ -414,7 +489,7 @@ export async function writeProjectTracker(
     },
   )
   if (!res.ok) {
-    throw new Error(await errorMessage(res, 'save project tracker failed'))
+    throw await writeFailure(res, 'save project tracker failed')
   }
   return res.json()
 }

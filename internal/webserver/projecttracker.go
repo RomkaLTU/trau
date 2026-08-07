@@ -31,6 +31,10 @@ type ProjectTrackerResponse struct {
 	Project string              `json:"project"`
 	Repos   []string            `json:"repos"`
 	Keys    []ProjectTrackerKey `json:"keys"`
+	// SyncedIssues is how many issues each member repo still mirrors from an
+	// external tracker, keyed by repo root — the rows a project-wide switch to
+	// the internal tracker would drop.
+	SyncedIssues map[string]int `json:"synced_issues"`
 }
 
 // ProjectTrackerRequest is the body of a project tracker edit. A key left out
@@ -56,7 +60,7 @@ func (s *Server) handleProjectTracker(w http.ResponseWriter, r *http.Request) {
 			writeTrackerReadError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, projectTrackerResponse(proj, keys))
+		s.writeProjectTracker(w, proj, keys)
 	case http.MethodPut:
 		s.putProjectTracker(w, r, proj)
 	default:
@@ -119,7 +123,35 @@ func (s *Server) putProjectTracker(w http.ResponseWriter, r *http.Request, proj 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "seed project tracker: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, projectTrackerResponse(proj, keys))
+	s.writeProjectTracker(w, proj, keys)
+}
+
+// writeProjectTracker answers with the project's tracker resource, recounting
+// what each member mirrors so a write sees the same numbers a read would.
+func (s *Server) writeProjectTracker(w http.ResponseWriter, proj hubstore.Project, keys map[string]string) {
+	resp := projectTrackerResponse(proj, keys)
+	synced, err := s.syncedIssuesByRepo(proj.Repos)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "count synced issues: " + err.Error()})
+		return
+	}
+	resp.SyncedIssues = synced
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// syncedIssuesByRepo counts, per member root, the issues the repo holds on an
+// external tracker's behalf.
+func (s *Server) syncedIssuesByRepo(roots []string) (map[string]int, error) {
+	store := s.stores.Issues()
+	counts := make(map[string]int, len(roots))
+	for _, root := range roots {
+		n, err := store.CountSynced(root)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", root, err)
+		}
+		counts[root] = n
+	}
+	return counts, nil
 }
 
 // projectTracker returns the tracker the project's members share. A lone repo
@@ -255,7 +287,12 @@ func writeTrackerReadError(w http.ResponseWriter, err error) {
 }
 
 func projectTrackerResponse(proj hubstore.Project, keys map[string]string) ProjectTrackerResponse {
-	resp := ProjectTrackerResponse{Project: proj.ID, Repos: proj.Repos, Keys: []ProjectTrackerKey{}}
+	resp := ProjectTrackerResponse{
+		Project:      proj.ID,
+		Repos:        proj.Repos,
+		Keys:         []ProjectTrackerKey{},
+		SyncedIssues: map[string]int{},
+	}
 	for _, key := range config.ProjectSeededKeys() {
 		value, ok := keys[key]
 		if !ok {

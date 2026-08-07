@@ -419,3 +419,65 @@ func TestConfigReportsNoSyncedIssuesForAHubOnlyRepo(t *testing.T) {
 		t.Errorf("synced_issues = %d, want 0", got.SyncedIssues)
 	}
 }
+
+// The project settings surface names the cost of a project-wide switch repo by
+// repo, so the tracker resource counts each member's mirror on its own — and
+// reports them all gone once the switch has run.
+func TestProjectTrackerReportsSyncedIssuesPerRepo(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	api := gitRepo(t, base, "api", "dir")
+	web := gitRepo(t, base, "web", "dir")
+	_, ts := controlServer(t, home, nil)
+	registerRepoReq(t, ts, api)
+	registerRepoReq(t, ts, web)
+
+	project := createProjectReq(t, ts, "Platform")
+	for _, root := range []string{api, web} {
+		if res, body := addProjectRepo(t, ts, project.ID, root); res.StatusCode != http.StatusOK {
+			t.Fatalf("add %s = %d (%s)", root, res.StatusCode, body)
+		}
+	}
+	if res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{
+		"TRACKER_PROVIDER": "jira",
+		"JIRA_BASE_URL":    "https://acme.atlassian.net",
+		"JIRA_API_TOKEN":   "jira-secret",
+	}); res.StatusCode != http.StatusOK {
+		t.Fatalf("seed tracker = %d (%s)", res.StatusCode, body)
+	}
+
+	store := testStoresAt(t, home).Issues()
+	if _, _, err := store.Upsert(api, "jira", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "One", StatusGroup: "unstarted", ExternalID: "j-1"},
+		{Identifier: "COD-2", Title: "Two", StatusGroup: "unstarted", ExternalID: "j-2"},
+	}); err != nil {
+		t.Fatalf("seed api mirror: %v", err)
+	}
+	if _, _, err := store.Upsert(web, "jira", []hubstore.Issue{
+		{Identifier: "COD-3", Title: "Three", StatusGroup: "unstarted", ExternalID: "j-3"},
+	}); err != nil {
+		t.Fatalf("seed web mirror: %v", err)
+	}
+	if _, err := store.CreateInternal(api, "COD", hubstore.InternalDraft{Title: "Hub-only work"}); err != nil {
+		t.Fatalf("mint internal: %v", err)
+	}
+
+	res, body := get(t, ts, APIPrefix+"/projects/"+project.ID+"/tracker")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("get tracker = %d (%s)", res.StatusCode, body)
+	}
+	counts := decodeProjectTracker(t, body).SyncedIssues
+	if counts[api] != 2 || counts[web] != 1 {
+		t.Fatalf("synced_issues = %v, want 2 for %s and 1 for %s, leaving the internal issue out", counts, api, web)
+	}
+
+	switched, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{"TRACKER_PROVIDER": "internal"})
+	if switched.StatusCode != http.StatusOK {
+		t.Fatalf("switch = %d (%s)", switched.StatusCode, body)
+	}
+	for root, n := range decodeProjectTracker(t, body).SyncedIssues {
+		if n != 0 {
+			t.Errorf("synced_issues[%s] = %d after the switch, want 0", root, n)
+		}
+	}
+}

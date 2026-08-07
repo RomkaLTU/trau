@@ -61,10 +61,13 @@ interface ConfigWriteFailure {
   blocked?: TrackerSwitchBlocker[]
 }
 
-async function writeFailure(res: Response): Promise<ConfigWriteError> {
+export async function writeFailure(
+  res: Response,
+  fallback = 'config write failed',
+): Promise<ConfigWriteError> {
   const detail = (await res.json().catch(() => null)) as ConfigWriteFailure | null
   return new ConfigWriteError(
-    detail?.error ?? `config write failed: ${res.status}`,
+    detail?.error ?? `${fallback}: ${res.status}`,
     detail?.reason,
     detail?.blocked,
   )
