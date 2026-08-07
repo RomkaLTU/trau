@@ -446,10 +446,12 @@ func (s *Server) apiHandler() http.Handler {
 	return h
 }
 
-// Health is the /api/v1/health resource.
+// Health is the /api/v1/health resource. WebBuild names the SPA build this hub
+// serves, which is how a page notices its own bundle has gone stale.
 type Health struct {
 	Status        string                        `json:"status"`
 	Version       string                        `json:"version"`
+	WebBuild      string                        `json:"webBuild"`
 	UptimeSeconds float64                       `json:"uptime_seconds"`
 	TokenRequired bool                          `json:"token_required"`
 	Attachments   hubstore.AttachmentCacheStats `json:"attachments"`
@@ -465,6 +467,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, Health{
 		Status:        "ok",
 		Version:       s.version,
+		WebBuild:      webBuild(),
 		UptimeSeconds: time.Since(s.started).Seconds(),
 		TokenRequired: s.tokenGated(),
 		Attachments:   stats,
