@@ -178,6 +178,28 @@ describe('trackerConfigValues', () => {
     const keys = trackerConfigValues('internal', fields())
     expect(keys).toEqual({ TRACKER_PROVIDER: 'internal' })
   })
+
+  it('writes nothing extra when the mapping section was never touched', () => {
+    const keys = trackerConfigValues('jira', fields({ binding: 'PROJ', mapping: {} }))
+    expect(keys).toEqual({ TRACKER_PROVIDER: 'jira', LINEAR_TEAM: 'PROJ' })
+  })
+
+  it('rides the mapping key and the pins the section set', () => {
+    const keys = trackerConfigValues(
+      'jira',
+      fields({
+        binding: 'PROJ',
+        mapping: {
+          JIRA_BOARD_STATES: 'Ready for QA=started,Closed=done',
+          STATUS_IN_REVIEW: 'Ready for QA',
+          STATUS_DONE: '',
+        },
+      }),
+    )
+    expect(keys.JIRA_BOARD_STATES).toBe('Ready for QA=started,Closed=done')
+    expect(keys.STATUS_IN_REVIEW).toBe('Ready for QA')
+    expect(keys).not.toHaveProperty('STATUS_DONE')
+  })
 })
 
 describe('essentialsProjectKeys', () => {

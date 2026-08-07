@@ -281,7 +281,7 @@ func (a *AzureDevOps) IssueStatus(ctx context.Context, id string) (IssueStatus, 
 		return StatusUnknown, err
 	}
 	if group, ok := a.boardStates.group(item.BoardColumn, item.State, item.Reason); ok {
-		return azureIssueStatus(group), nil
+		return issueStatusOf(group), nil
 	}
 	return mapAzureStatus(a.stateCategory(ctx, item), item.Reason), nil
 }

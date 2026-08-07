@@ -181,16 +181,23 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, ErrReaderUnavailable
 		}
-		return &linearReader{client: linearapi.New(cfg.APIKey), team: cfg.Team, project: cfg.Project, readyLabel: cfg.ReadyLabel}, nil
+		return &linearReader{
+			client:      linearapi.New(cfg.APIKey),
+			team:        cfg.Team,
+			project:     cfg.Project,
+			readyLabel:  cfg.ReadyLabel,
+			boardStates: parseLinearBoardStates(cfg.LinearStates),
+		}, nil
 	case "jira":
 		if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIKey == "" {
 			return nil, ErrReaderUnavailable
 		}
 		return &jiraReader{
-			client:     jiraapi.New(cfg.BaseURL, cfg.Email, cfg.APIKey),
-			baseURL:    cfg.BaseURL,
-			project:    cfg.Team,
-			readyLabel: cfg.ReadyLabel,
+			client:      jiraapi.New(cfg.BaseURL, cfg.Email, cfg.APIKey),
+			baseURL:     cfg.BaseURL,
+			project:     cfg.Team,
+			readyLabel:  cfg.ReadyLabel,
+			boardStates: parseJiraBoardStates(cfg.JiraStates),
 		}, nil
 	case "azure":
 		if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
@@ -218,6 +225,10 @@ type linearReader struct {
 	team       string
 	project    string
 	readyLabel string
+	// boardStates overlays LINEAR_BOARD_STATES onto the grouping the workflow
+	// state's own type derives, empty when the repo sets none and grouping stays
+	// purely type-derived (ADR 0038).
+	boardStates linearBoardStates
 }
 
 func (r *linearReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
@@ -239,7 +250,7 @@ func (r *linearReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
 			ID:          iss.Identifier,
 			Title:       iss.Title,
 			Status:      iss.State.Name,
-			Group:       mapLinearGroup(iss.State.Type),
+			Group:       r.boardStates.group(iss.State.Name, iss.State.Type),
 			Labels:      labels,
 			Parent:      iss.ParentID,
 			HasChildren: iss.HasChildren,
@@ -263,7 +274,7 @@ func (r *linearReader) Issue(ctx context.Context, id string) (IssueSummary, erro
 			ID:          iss.Identifier,
 			Title:       iss.Title,
 			Status:      iss.State.Name,
-			Group:       mapLinearGroup(iss.State.Type),
+			Group:       r.boardStates.group(iss.State.Name, iss.State.Type),
 			Labels:      labels,
 			Parent:      iss.Parent.Identifier,
 			HasChildren: len(iss.Children) > 0,
@@ -279,6 +290,9 @@ type jiraReader struct {
 	baseURL    string
 	project    string
 	readyLabel string
+	// boardStates overlays JIRA_BOARD_STATES onto the grouping the status's own
+	// category derives; empty leaves grouping purely category-derived (ADR 0038).
+	boardStates jiraBoardStates
 }
 
 func (r *jiraReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
@@ -292,7 +306,7 @@ func (r *jiraReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
 			ID:          iss.Key,
 			Title:       iss.Summary,
 			Status:      iss.StatusName,
-			Group:       mapJiraGroup(iss.StatusCategory, iss.Resolution),
+			Group:       r.boardStates.group(iss.StatusName, iss.StatusCategory, iss.Resolution),
 			Labels:      iss.Labels,
 			Parent:      iss.ParentKey,
 			HasChildren: iss.HasChildren,
@@ -315,7 +329,7 @@ func (r *jiraReader) Issue(ctx context.Context, id string) (IssueSummary, error)
 			ID:          iss.Key,
 			Title:       iss.Summary,
 			Status:      iss.Status.Name,
-			Group:       mapJiraGroup(iss.Status.Category, iss.Resolution),
+			Group:       r.boardStates.group(iss.Status.Name, iss.Status.Category, iss.Resolution),
 			Labels:      iss.Labels,
 			Parent:      iss.Parent,
 			HasChildren: iss.HasChildren,
@@ -477,7 +491,12 @@ func (r *azureReader) onBoard(ctx context.Context, item *azureapi.WorkItem) (boo
 
 // mapLinearGroup maps a Linear workflow-state type onto a normalized status
 // group. Linear's state types are triage | backlog | unstarted | started |
-// completed | canceled.
+// completed | canceled | duplicate, and the vocabulary is Linear's to extend —
+// duplicate is not in its own docs but every team carries a Duplicate state typed
+// that way. So an unrecognized type is filed as backlog rather than unknown: the
+// Linear grouping promises a state trau has not seen still lands in a real
+// section (ADR 0039), and not-yet-classifiable work reads as work not yet begun
+// rather than as work off the board.
 func mapLinearGroup(stateType string) StatusGroup {
 	switch strings.ToLower(strings.TrimSpace(stateType)) {
 	case "triage", "backlog":
@@ -488,20 +507,22 @@ func mapLinearGroup(stateType string) StatusGroup {
 		return StatusGroupStarted
 	case "completed":
 		return StatusGroupDone
-	case "canceled":
+	case "canceled", "duplicate":
 		return StatusGroupCanceled
 	default:
-		return StatusGroupUnknown
+		return StatusGroupBacklog
 	}
 }
 
 // mapJiraGroup maps a Jira statusCategory key onto a normalized status group.
 // Jira has no backlog or canceled category, so a To-Do issue groups as unstarted
 // and a done-category issue closed with a won't-do/duplicate resolution groups as
-// canceled rather than done.
+// canceled rather than done. Its fourth key, "undefined" (the "No Category" a
+// status can be created without), groups as unstarted so such a status stays on
+// the board instead of falling under Other.
 func mapJiraGroup(category, resolution string) StatusGroup {
 	switch strings.ToLower(strings.TrimSpace(category)) {
-	case "new":
+	case "new", "undefined":
 		return StatusGroupUnstarted
 	case "indeterminate":
 		return StatusGroupStarted

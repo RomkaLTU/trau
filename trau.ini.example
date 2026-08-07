@@ -400,6 +400,24 @@ CODEX_PROFILE=
 # in a committed project config file.
 LINEAR_API_KEY=
 
+# LINEAR_BOARD_STATES maps the team's workflow states onto the groups trau's board
+# and its reconcile read use: backlog | unstarted | started | done | canceled. Key
+# off the state name — a Linear board's columns ARE its workflow states, so there
+# is no second vocabulary to spell (unlike Azure DevOps, see AZURE_BOARD_STATES).
+#
+# It is an OVERLAY, not an exhaustive mapping — the one place it differs from
+# AZURE_BOARD_STATES. A state listed here takes the group it is mapped to; a state
+# NOT listed keeps the grouping its Linear state type gives it automatically
+# (triage/backlog -> backlog, unstarted -> unstarted, started -> started,
+# completed -> done, canceled -> canceled). So a state your team adds later
+# degrades to its own type's section rather than falling to Other, and you only
+# ever write the states you actually want to move. Deleting the key restores pure
+# type-derived grouping.
+#
+# It drives grouping only; a status WRITE still resolves a state through the
+# STATUS_* pins and the team's own workflow.
+LINEAR_BOARD_STATES=         # e.g. Ready for QA=done,Icebox=backlog
+
 # Jira Cloud direct REST access (TRACKER_PROVIDER=jira). When JIRA_API_TOKEN is
 # set, trau reaches Jira directly over the REST v3 API for fast read/write ops and
 # falls back to the Jira (Rovo) MCP only when it is empty or the token is rejected.
@@ -435,6 +453,28 @@ JIRA_API_TOKEN=              # classic API token (never commit)
 # Classic tokens can't self-refresh and expire ~annually; on a 401 trau prints a
 # "regenerate at id.atlassian.com/manage-profile/security/api-tokens" hint. Run
 # `trau doctor` to validate the three keys and live-ping the site before a run.
+
+# JIRA_BOARD_STATES maps the project's workflow statuses onto the groups trau's
+# board and its reconcile read use: backlog | unstarted | started | done |
+# canceled. Key off the status name — the name Jira prints on the issue and builds
+# its board columns from.
+#
+# It is an OVERLAY, not an exhaustive mapping (the same shape LINEAR_BOARD_STATES
+# has, and the one place both differ from AZURE_BOARD_STATES). A status listed here
+# takes the group it is mapped to; a status NOT listed keeps the grouping its Jira
+# status category gives it automatically (new -> unstarted, indeterminate ->
+# started, done -> done, plus the nuance that a done-category issue resolved
+# Won't Do / Duplicate groups as canceled). So a status your project adds later
+# degrades to its own category's section rather than falling to Other, and you only
+# ever write the statuses you actually want to move. Deleting the key restores pure
+# category-derived grouping.
+#
+# A status you DO list is authoritative for that status — it also overrides the
+# won't-do/duplicate nuance, which is the point of naming one by hand.
+#
+# It drives grouping only; a status WRITE still resolves an issue's own available
+# transitions at write time through the STATUS_* pins and the project's workflow.
+JIRA_BOARD_STATES=           # e.g. Ready for QA=done,Backlog=backlog
 
 # Azure DevOps Services direct REST access (TRACKER_PROVIDER=azure). Unlike Jira
 # there is no MCP fallback: both keys are REQUIRED, and without them the provider

@@ -29,6 +29,8 @@ import {
   type TrackerProvider,
 } from '@/lib/onboarding'
 import { writeProjectTracker } from '@/lib/projects'
+import { mappingSpec, type StatusOptionsProbe } from '@/lib/statusmap'
+import { TrackerMappingSection } from './step-tracker-mapping'
 import { Callout, FieldLabel, Hint, SecretInput, TextInput } from './ui'
 
 const BINDING_LABEL: Partial<Record<TrackerProvider, string>> = {
@@ -110,6 +112,25 @@ function MissingBinding({
   )
 }
 
+// statusOptionsProbe is the payload the mapping section reads its choices with:
+// the credential fields the connection test posts, plus the binding they are read
+// under. A blank secret still falls back to whatever the named repo stores.
+function statusOptionsProbe(
+  provider: TrackerProvider,
+  fields: TrackerFields,
+  repo: string,
+): StatusOptionsProbe {
+  const azure = provider === 'azure'
+  return {
+    repo,
+    api_key: fields.linearKey.trim() || undefined,
+    base_url: (azure ? fields.azureOrgUrl : fields.jiraBaseUrl).trim() || undefined,
+    email: fields.jiraEmail.trim() || undefined,
+    api_token: (azure ? fields.azurePat : fields.jiraToken).trim() || undefined,
+    binding: fields.binding.trim(),
+  }
+}
+
 function CredsFound() {
   return (
     <span className="rounded-full border border-teal/50 bg-teal/10 px-1.5 py-0.5 font-mono text-[0.6rem] text-teal">
@@ -142,6 +163,10 @@ export function StepTracker({
   const [azurePat, setAzurePat] = useState('')
   const [binding, setBinding] = useState(inspection.prefill?.team ?? '')
   const [unreachableBinding, setUnreachableBinding] = useState('')
+  // Anything that invalidates the fetch behind the mapping — the provider, a
+  // credential, the binding — clears it too, so a mapping read under one board
+  // never rides a write to another.
+  const [mapping, setMapping] = useState<Record<string, string>>({})
 
   const fields: TrackerFields = {
     linearKey,
@@ -151,6 +176,7 @@ export function StepTracker({
     azureOrgUrl,
     azurePat,
     binding,
+    mapping,
   }
 
   const test = useMutation({
@@ -166,6 +192,7 @@ export function StepTracker({
     // it the selection is cleared and named, so the re-pick is the user's own.
     onSuccess: (res) => {
       const teams = res.ok ? (res.teams ?? []) : []
+      setMapping({})
       if (binding === '') {
         const first = teams[0]
         if (first) setBinding(first.key)
@@ -212,6 +239,7 @@ export function StepTracker({
   })
 
   const selected = trackerProviderMeta(provider)
+  const spec = provider !== null ? mappingSpec(provider) : null
   const needsBinding = provider !== null && provider !== 'internal'
   const existingLayer = provider !== null ? credentialLayer(inspection, provider) : null
   const hasExisting = existingLayer !== null
@@ -226,11 +254,19 @@ export function StepTracker({
     setProvider(next)
     setBinding(next === inspection.prefill?.provider ? (inspection.prefill?.team ?? '') : '')
     setUnreachableBinding('')
+    setMapping({})
     test.reset()
+  }
+
+  function chooseBinding(next: string) {
+    if (next === binding) return
+    setBinding(next)
+    setMapping({})
   }
 
   function editCredential(value: string, setter: (v: string) => void) {
     setter(value)
+    setMapping({})
     if (testState !== 'idle') {
       setUnreachableBinding('')
       test.reset()
@@ -387,7 +423,7 @@ export function StepTracker({
               <FieldLabel htmlFor="tracker-binding">{BINDING_LABEL[provider]}</FieldLabel>
               <Select
                 value={binding || undefined}
-                onValueChange={setBinding}
+                onValueChange={chooseBinding}
                 disabled={bindingOptions.length === 0}
               >
                 <SelectTrigger id="tracker-binding" className="w-full">
@@ -447,6 +483,16 @@ export function StepTracker({
                 <Callout tone="fail" title="Connection test failed">
                   {(test.error as Error).message}
                 </Callout>
+              )}
+
+              {spec && canContinue && (
+                <TrackerMappingSection
+                  key={`${provider}:${binding}`}
+                  provider={provider}
+                  spec={spec}
+                  probe={statusOptionsProbe(provider, fields, repo)}
+                  onChange={setMapping}
+                />
               )}
             </div>
           )}

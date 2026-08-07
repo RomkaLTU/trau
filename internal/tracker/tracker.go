@@ -72,6 +72,20 @@ type Config struct {
 	// columns onto trau's status groups. Empty leaves grouping to the categories the
 	// project reports. Unused by every other provider.
 	BoardStates string
+	// LinearStates is the raw LINEAR_BOARD_STATES spec mapping the team's workflow
+	// states onto trau's status groups. Unlike BoardStates it is an overlay: a state
+	// it does not name keeps the grouping its Linear state type derives (ADR 0038).
+	// Unused by every other provider.
+	LinearStates string
+	// JiraStates is the raw JIRA_BOARD_STATES spec mapping the project's workflow
+	// statuses onto trau's status groups. Like LinearStates it is an overlay: a
+	// status it does not name keeps the grouping its Jira status category derives
+	// (ADR 0038). Unused by every other provider.
+	JiraStates string
+	// linearEndpoint overrides the Linear GraphQL endpoint; empty targets the
+	// public API. It is the same seam Linear.endpoint is, so a test can point a
+	// direct-API read at a fake server without the field leaving this package.
+	linearEndpoint string
 	// EpicType names the Jira issue type an epic-shaped draft is filed as,
 	// overriding the lookup of the project's own hierarchy-level-1 type. Unused by
 	// the Linear, GitHub and internal providers.
@@ -384,6 +398,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			SplitLabel:      cfg.SplitLabel,
 			APIKey:          cfg.APIKey,
 			StatusOverrides: cfg.StatusOverrides,
+			boardStates:     parseLinearBoardStates(cfg.LinearStates),
 		}, nil
 	case "jira":
 		return &Jira{
@@ -397,6 +412,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			Email:           cfg.Email,
 			APIToken:        cfg.APIKey,
 			StatusOverrides: cfg.StatusOverrides,
+			boardStates:     parseJiraBoardStates(cfg.JiraStates),
 		}, nil
 	case "azure":
 		// Azure DevOps has no MCP path, so the runner is unused: the PAT is the only

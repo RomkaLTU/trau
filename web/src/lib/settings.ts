@@ -153,6 +153,7 @@ export function parseSettingsSearch(
 
 export const ROUTING_SECTION = 'Per-phase routing'
 export const APPEARANCE_SECTION = 'Appearance'
+export const TRACKER_SECTION = 'Tracker & issues'
 export const THEME_KEY = 'THEME'
 
 export const ROUTING_COLUMNS = ['MODEL', 'EFFORT', 'DISALLOWED_TOOLS'] as const

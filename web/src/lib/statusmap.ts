@@ -1,0 +1,363 @@
+import { queryOptions } from '@tanstack/react-query'
+
+import { apiFetch } from './api'
+import { type StateGroup } from './backlog'
+
+export interface StatusColumn {
+  name: string
+  suggestedGroup: string
+}
+
+export interface StatusPinOption {
+  name: string
+  category: string
+}
+
+export interface StatusOptions {
+  provider: string
+  grouping: StatusColumn[]
+  pinOptions: StatusPinOption[]
+  error?: string
+  hint?: string
+}
+
+// A provider with no status-mapping editor answers 404, which is an answer and
+// not a failure: null means "render the generic rows", while a thrown error is a
+// hub the settings page could not reach at all.
+async function fetchStatusOptions(repo: string): Promise<StatusOptions | null> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/tracker/status-options`,
+  )
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(`status options request failed: ${res.status}`)
+  return res.json()
+}
+
+// StatusOptionsProbe is what the onboarding wizard has instead of a registered
+// repo: the credentials its form holds and the binding it picked. A repo is still
+// worth sending when there is one — a blank secret then falls back to what that
+// repo already stores, the write-only semantics the connection test follows.
+export interface StatusOptionsProbe {
+  repo?: string
+  api_key?: string
+  base_url?: string
+  email?: string
+  api_token?: string
+  binding: string
+}
+
+// probeStatusOptions reads the same choices as the repo-scoped fetch for a repo
+// that does not exist yet. A provider with no mapping editor answers 404, which
+// is an answer rather than a failure.
+export async function probeStatusOptions(
+  provider: string,
+  body: StatusOptionsProbe,
+): Promise<StatusOptions | null> {
+  const res = await apiFetch(
+    `/api/v1/trackers/${encodeURIComponent(provider)}/status-options`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new Error(detail?.error ?? `status options request failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export const statusOptionsQueryOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ['status-options', repo],
+    queryFn: () => fetchStatusOptions(repo),
+    enabled: repo !== '',
+    staleTime: 60_000,
+  })
+
+export const BOARD_STATES_KEY = 'AZURE_BOARD_STATES'
+export const LINEAR_STATES_KEY = 'LINEAR_BOARD_STATES'
+export const JIRA_STATES_KEY = 'JIRA_BOARD_STATES'
+
+export const PIN_KEYS = [
+  'STATUS_TODO',
+  'STATUS_IN_PROGRESS',
+  'STATUS_IN_REVIEW',
+  'STATUS_DONE',
+] as const
+
+export type PinKey = (typeof PIN_KEYS)[number]
+
+// The loop's own stage names, so a pin row reads as the lifecycle step it pins
+// rather than as the key it writes.
+export const PIN_LABELS: Record<PinKey, string> = {
+  STATUS_TODO: 'To Do',
+  STATUS_IN_PROGRESS: 'In Progress',
+  STATUS_IN_REVIEW: 'In Review',
+  STATUS_DONE: 'Done',
+}
+
+// MappingSpec is everything that differs between the providers the one editor
+// serves: which key it writes, whether that key is exhaustive or an overlay, and
+// the words each provider's own board is read in.
+export interface MappingSpec {
+  key: string
+  // overlay is true for a key that only records the rows a repo *changed*, with
+  // every other row keeping the section the provider's own metadata derives.
+  // False means the written value is the whole grouping and an omitted row falls
+  // to Other.
+  overlay: boolean
+  noun: string
+  // nounPlural is spelled out rather than derived: "status" pluralizes to
+  // "statuses", not "statuss".
+  nounPlural: string
+  title: string
+  description: string
+  placeholder: string
+  addLabel: string
+  pinNote: string
+  // emptyNote is what the write preview shows for an empty key: no grouping of
+  // its own on an exhaustive key, no overrides at all on an overlay.
+  emptyNote: string
+  // conditionalSections are the sections a provider derives for a row only
+  // *conditionally* — some of the row's work still groups elsewhere. Mapping a
+  // row to a section on this list is therefore a real edit even though it equals
+  // the suggestion, and dropping such a pair as redundant would change what its
+  // work groups as. Jira derives done from the status category while a won't-do
+  // or duplicate resolution sends that same issue to canceled; naming the status
+  // by hand pins every issue in it. Linear's state types carry no such nuance,
+  // and an exhaustive key writes every row anyway.
+  conditionalSections: readonly StateGroup[]
+}
+
+const AZURE_SPEC: MappingSpec = {
+  key: BOARD_STATES_KEY,
+  overlay: false,
+  noun: 'column',
+  nounPlural: 'columns',
+  title: 'board column grouping',
+  description:
+    "Each Kanban column the team's boards carry, and the section trau files its work under. Leave every column unmapped to keep grouping by the state categories the project reports.",
+  placeholder: 'column the board did not report',
+  addLabel: 'Add column',
+  pinNote:
+    'The workflow status each lifecycle stage writes. A pin names a work-item state, never a board column — Azure DevOps refuses a board-column write. Leave one empty to resolve it from the workflow itself.',
+  emptyNote: '(empty — grouping stays category-derived)',
+  conditionalSections: [],
+}
+
+const LINEAR_SPEC: MappingSpec = {
+  key: LINEAR_STATES_KEY,
+  overlay: true,
+  noun: 'state',
+  nounPlural: 'states',
+  title: 'workflow state grouping',
+  description:
+    "Each workflow state the team declares, and the section trau files its work under. Every row starts on the section its Linear state type gives it; saving records only the ones you change, so a state added later keeps its own type's section rather than falling to Other.",
+  placeholder: 'state the team no longer carries',
+  addLabel: 'Add state',
+  pinNote:
+    'The workflow status each lifecycle stage writes. Leave one empty to resolve it from the team’s own workflow.',
+  emptyNote: '(empty — every state keeps its own type’s section)',
+  conditionalSections: [],
+}
+
+const JIRA_SPEC: MappingSpec = {
+  key: JIRA_STATES_KEY,
+  overlay: true,
+  noun: 'status',
+  nounPlural: 'statuses',
+  title: 'workflow status grouping',
+  description:
+    "Every workflow status the project's issue types can reach, and the section trau files its work under. Each row starts on the section its Jira status category gives it; saving records only the ones you change, so a status added later keeps its category's section rather than falling to Other. Mapping a status by hand is final for it — including the done-category status a won't-do or duplicate resolution would otherwise group as canceled.",
+  placeholder: 'status the project did not report',
+  addLabel: 'Add status',
+  pinNote:
+    'The workflow status each lifecycle stage writes. A pin only names the destination — the loop still resolves an issue’s own available transitions at write time. Leave one empty to resolve it from the workflow itself.',
+  emptyNote: '(empty — every status keeps its own category’s section)',
+  conditionalSections: ['done'],
+}
+
+// mappingSpec picks the editor a provider gets, or null for one with no mapping
+// key at all — those keep the settings page's generic rows.
+export function mappingSpec(provider: string): MappingSpec | null {
+  if (provider === 'azure') return AZURE_SPEC
+  if (provider === 'linear') return LINEAR_SPEC
+  if (provider === 'jira') return JIRA_SPEC
+  return null
+}
+
+export const MAPPABLE_GROUPS = [
+  'backlog',
+  'unstarted',
+  'started',
+  'done',
+  'canceled',
+] as const
+
+export type MappableGroup = (typeof MAPPABLE_GROUPS)[number]
+
+// UNMAPPED is the row state that writes nothing. A set mapping is exhaustive, so
+// leaving a column out is a real choice with a visible consequence — its work
+// groups as Other — and the select says so rather than hiding the row.
+export const UNMAPPED = 'unknown'
+
+export interface BoardStatePair {
+  name: string
+  group: StateGroup
+}
+
+function isMappable(group: string): group is MappableGroup {
+  return (MAPPABLE_GROUPS as readonly string[]).includes(group)
+}
+
+// toGroup narrows a raw string — a select's value, a suggestion the hub sent —
+// to the closed set a row may carry; anything else is a row that maps nowhere.
+export function toGroup(value: string): StateGroup {
+  return isMappable(value) ? value : UNMAPPED
+}
+
+// parseBoardStates reads the AZURE_BOARD_STATES spec the same way the hub does:
+// comma-separated "<column>=<group>" pairs split on the first =, with a pair
+// naming a group trau does not have dropped rather than failing the whole value.
+export function parseBoardStates(value: string): BoardStatePair[] {
+  const out: BoardStatePair[] = []
+  for (const pair of value.split(',')) {
+    if (pair.trim() === '') continue
+    const at = pair.indexOf('=')
+    if (at < 0) continue
+    const name = pair.slice(0, at).trim()
+    const group = pair.slice(at + 1).trim().toLowerCase()
+    if (name === '' || !isMappable(group)) continue
+    out.push({ name, group })
+  }
+  return out
+}
+
+export function serializeBoardStates(rows: readonly BoardStatePair[]): string {
+  return rows
+    .filter((row) => isMappable(row.group))
+    .map((row) => `${row.name.trim()}=${row.group}`)
+    .join(',')
+}
+
+// conditionallyDerived reports whether the section this row is suggested holds
+// for only part of its work, so mapping the row to that same section is the
+// operator's way of pinning the rest of it there too.
+export function conditionallyDerived(
+  row: GroupingRow,
+  spec: MappingSpec,
+): boolean {
+  return spec.overlay && spec.conditionalSections.includes(row.suggested)
+}
+
+// writesRow reports whether Save records this row. An overlay key stays minimal:
+// a row still sitting on the section its own state type derives is not written,
+// so the key records only the repo's overrides and a state added later is
+// governed by its type rather than by a stale exhaustive list. A row whose
+// suggestion is only conditional is the exception — there the mapping is what
+// makes the section unconditional, so an equal pair is kept once it is mapped.
+function writesRow(row: GroupingRow, spec: MappingSpec): boolean {
+  if (!spec.overlay) return true
+  if (row.group !== row.suggested) return true
+  return row.mapped && conditionallyDerived(row, spec)
+}
+
+// serializeGrouping renders what Save writes.
+export function serializeGrouping(
+  rows: readonly GroupingRow[],
+  spec: MappingSpec,
+): string {
+  return serializeBoardStates(rows.filter((row) => writesRow(row, spec)))
+}
+
+// groupingEdited reports whether a draft still reads as the rows it started
+// from. A prefilled row is not an edit — the selects arrive holding the board's
+// own suggestions — so this is what separates "the operator chose this" from
+// "nobody has touched it".
+export function groupingEdited(
+  rows: readonly GroupingRow[],
+  stored: readonly GroupingRow[],
+): boolean {
+  return (
+    rows.length !== stored.length ||
+    rows.some(
+      (row, i) =>
+        row.name !== stored[i].name ||
+        row.group !== stored[i].group ||
+        row.mapped !== stored[i].mapped,
+    )
+  )
+}
+
+// boardNameError rejects a name the grammar cannot express: , separates pairs
+// and = separates a name from its group, so neither can appear in a name.
+export function boardNameError(name: string, noun = 'column'): string | null {
+  const trimmed = name.trim()
+  if (trimmed === '') return `Enter a ${noun} name.`
+  if (trimmed.includes(',') || trimmed.includes('=')) {
+    return `A ${noun} name cannot contain , or = — the mapping separates pairs on , and names from groups on =.`
+  }
+  return null
+}
+
+export interface GroupingRow extends BoardStatePair {
+  suggested: StateGroup
+  // onBoard is false for a row that exists only because the repo's mapping names
+  // it — a column since renamed, or every row when the board could not be read.
+  onBoard: boolean
+  // mapped is true for a row the key names by hand. It is not the same question
+  // as `group !== suggested`: a row mapped to the section it was already
+  // suggested is still mapped, and on a provider whose suggestion is conditional
+  // that is the only way to say so.
+  mapped: boolean
+}
+
+// deriveGroupingRows builds the editor's rows from the board's columns and the
+// mapping the repo has today. An exhaustive mapping (Azure DevOps) prefills from
+// the suggestions only while nothing is written; once it is, it is authoritative,
+// so a column it omits shows as unmapped rather than as its suggestion. An
+// overlay (Linear) prefills every unlisted row from its suggestion whatever else
+// is written, because that is exactly what an unlisted state still groups as. A
+// name the mapping carries but the board does not is kept either way, so saving
+// never silently drops it.
+export function deriveGroupingRows(
+  columns: StatusColumn[],
+  current: string,
+  spec: MappingSpec,
+): GroupingRow[] {
+  const mapped = parseBoardStates(current)
+  const byName = new Map(mapped.map((p) => [p.name.toLowerCase(), p.group]))
+  const rows: GroupingRow[] = []
+  const seen = new Set<string>()
+
+  for (const col of columns) {
+    const key = col.name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const suggested = toGroup(col.suggestedGroup)
+    const unlisted = spec.overlay || mapped.length === 0 ? suggested : UNMAPPED
+    rows.push({
+      name: col.name,
+      suggested,
+      group: byName.get(key) ?? unlisted,
+      onBoard: true,
+      mapped: byName.has(key),
+    })
+  }
+  for (const pair of mapped) {
+    const key = pair.name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    rows.push({
+      name: pair.name,
+      group: pair.group,
+      suggested: UNMAPPED,
+      onBoard: false,
+      mapped: true,
+    })
+  }
+  return rows
+}

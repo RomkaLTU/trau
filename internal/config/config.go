@@ -73,11 +73,25 @@ type Config struct {
 	// authoritative and exhaustive grouping for an Azure DevOps board; empty leaves
 	// grouping to the state categories the project itself reports (ADR 0036).
 	AzureBoardStates string
-	ReadyLabel       string
-	QuarantineLabel  string
-	QueuedLabel      string
-	SplitLabel       string
-	Project          string
+	// LinearBoardStates maps the team's workflow states onto trau's status groups,
+	// as comma-separated "<workflow state name>=<group>" pairs. Unlike
+	// AzureBoardStates it is an OVERLAY, not an exhaustive mapping: a state it names
+	// takes the mapped group, and a state it does not keeps the grouping its Linear
+	// state type derives, so a state added later degrades to its type rather than to
+	// unknown (ADR 0038).
+	LinearBoardStates string
+	// JiraBoardStates maps the project's workflow statuses onto trau's status
+	// groups, as comma-separated "<status name>=<group>" pairs. Like
+	// LinearBoardStates it is an OVERLAY: a status it names takes the mapped group
+	// — authoritatively, so an explicit mapping also overrides the won't-do /
+	// duplicate resolution nuance — and a status it does not keeps the grouping its
+	// Jira statusCategory derives (ADR 0038).
+	JiraBoardStates string
+	ReadyLabel      string
+	QuarantineLabel string
+	QueuedLabel     string
+	SplitLabel      string
+	Project         string
 	// StatusTodo, StatusInProgress, StatusInReview and StatusDone pin a lifecycle
 	// stage to an exact tracker status name. Empty leaves the stage to resolve
 	// against the workflow the tracker reports.
@@ -812,10 +826,12 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("LINEAR_TEAM", &c.LinearTeam)
 	str("ISSUE_PREFIX", &c.IssuePrefix)
 	str("LINEAR_API_KEY", &c.LinearAPIKey)
+	str("LINEAR_BOARD_STATES", &c.LinearBoardStates)
 	str("JIRA_BASE_URL", &c.JiraBaseURL)
 	str("JIRA_EMAIL", &c.JiraEmail)
 	str("JIRA_API_TOKEN", &c.JiraAPIToken)
 	str("JIRA_EPIC_TYPE", &c.JiraEpicType)
+	str("JIRA_BOARD_STATES", &c.JiraBoardStates)
 	str("AZURE_ORG_URL", &c.AzureOrgURL)
 	str("AZURE_PAT", &c.AzurePAT)
 	str("AZURE_AREA_PATH", &c.AzureAreaPath)
@@ -1846,10 +1862,12 @@ func KnownKeys() []KeyMeta {
 		{Key: "LINEAR_TEAM", Group: sectionTracker, WebEditable: true, Description: "Linear team / Jira project / Azure DevOps project / GitHub repo"},
 		{Key: "ISSUE_PREFIX", Group: sectionTracker, WebEditable: true, Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG); ignored for azure, whose work items are addressed by number"},
 		{Key: "LINEAR_API_KEY", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Linear personal API key"},
+		{Key: "LINEAR_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated \"<workflow state name>=<group>\" pairs mapping the team's Linear workflow states onto backlog | unstarted | started | done | canceled (e.g. Triage=backlog,Ready for QA=started); an OVERLAY, not an exhaustive mapping — a state it does not name keeps the grouping its Linear state type gives it, so a state added later never groups as unknown; empty groups purely by state type"},
 		{Key: "JIRA_BASE_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
 		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
 		{Key: "JIRA_API_TOKEN", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
 		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
+		{Key: "JIRA_BOARD_STATES", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Comma-separated \"<status name>=<group>\" pairs mapping the project's Jira workflow statuses onto backlog | unstarted | started | done | canceled (e.g. Backlog=backlog,Ready for QA=started); an OVERLAY, not an exhaustive mapping — a status it does not name keeps the grouping its Jira status category gives it, including the won't-do/duplicate resolution reading as canceled; empty groups purely by category"},
 		{Key: "AZURE_ORG_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps organization URL for the direct REST adapter (e.g. https://dev.azure.com/acme)"},
 		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
 		{Key: "AZURE_AREA_PATH", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Area Path the hub's Azure DevOps sync is narrowed to, including everything under it (e.g. Acme\\Platform); empty syncs the whole team project"},
@@ -2119,21 +2137,30 @@ var secretKeys = map[string]bool{
 // IsSecretKey reports whether key holds a credential (API key or token).
 func IsSecretKey(key string) bool { return secretKeys[key] }
 
-// trackerConfigKeys names which tracker a repo talks to and how it authenticates
-// there, in the order onboarding resolves them. They travel as a set: a project
-// configures them once and every member repo inherits the same answers.
+// trackerConfigKeys names which tracker a repo talks to, how it authenticates
+// there, and how that tracker's own workflow is read and written, in the order
+// onboarding resolves them. They travel as a set: a project configures them once
+// and every member repo inherits the same answers. The STATUS_* pins are seeded
+// like the rest because they describe the tracker's workflow rather than one
+// repo's taste, and projectSeededKeys still lets a repo-explicit value win.
 var trackerConfigKeys = []string{
 	"TRACKER_PROVIDER",
 	"LINEAR_TEAM",
 	"LINEAR_API_KEY",
+	"LINEAR_BOARD_STATES",
 	"JIRA_BASE_URL",
 	"JIRA_EMAIL",
 	"JIRA_API_TOKEN",
+	"JIRA_BOARD_STATES",
 	"AZURE_ORG_URL",
 	"AZURE_PAT",
 	"AZURE_AREA_PATH",
 	"AZURE_TEAMS",
 	"AZURE_BOARD_STATES",
+	"STATUS_TODO",
+	"STATUS_IN_PROGRESS",
+	"STATUS_IN_REVIEW",
+	"STATUS_DONE",
 }
 
 // TrackerConfigKeys returns the keys that describe a repo's tracker.
@@ -2403,6 +2430,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.IssuePrefix
 	case "LINEAR_API_KEY":
 		return cfg.LinearAPIKey
+	case "LINEAR_BOARD_STATES":
+		return cfg.LinearBoardStates
 	case "JIRA_BASE_URL":
 		return cfg.JiraBaseURL
 	case "JIRA_EMAIL":
@@ -2411,6 +2440,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.JiraAPIToken
 	case "JIRA_EPIC_TYPE":
 		return cfg.JiraEpicType
+	case "JIRA_BOARD_STATES":
+		return cfg.JiraBoardStates
 	case "AZURE_ORG_URL":
 		return cfg.AzureOrgURL
 	case "AZURE_PAT":

@@ -167,8 +167,10 @@ func TestJiraListTeamsRESTOnlySucceeds(t *testing.T) {
 	}
 }
 
-// mapJiraStatus is the load-bearing mapping the ACs call out: statusCategory →
-// open/done/unknown, with a done-category resolution name flipping to canceled.
+// The load-bearing mapping the ACs call out: statusCategory → open/done/unknown,
+// with a done-category resolution name flipping to canceled. Reconcile reads it
+// through the same group the board files an issue under, so the two cannot
+// disagree.
 func TestMapJiraStatus(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -188,8 +190,8 @@ func TestMapJiraStatus(t *testing.T) {
 		{"unrecognized category is unknown", "mystery", "", StatusUnknown},
 	}
 	for _, tc := range cases {
-		if got := mapJiraStatus(tc.category, tc.resolution); got != tc.want {
-			t.Errorf("%s: mapJiraStatus(%q, %q) = %q, want %q", tc.name, tc.category, tc.resolution, got, tc.want)
+		if got := issueStatusOf(mapJiraGroup(tc.category, tc.resolution)); got != tc.want {
+			t.Errorf("%s: status of (%q, %q) = %q, want %q", tc.name, tc.category, tc.resolution, got, tc.want)
 		}
 	}
 }

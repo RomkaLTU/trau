@@ -167,7 +167,7 @@ type Issue struct {
 }
 
 // Status is an issue's workflow status. Category is the stable statusCategory.key
-// (new | indeterminate | done); Name is the display label.
+// (undefined | new | indeterminate | done); Name is the display label.
 type Status struct {
 	Name     string
 	Category string

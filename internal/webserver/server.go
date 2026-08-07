@@ -70,6 +70,7 @@ type Server struct {
 	newWriter        func(config.Config) (tracker.Writer, error)
 	newReader        func(config.Config) (tracker.Reader, error)
 	newProbe         func(provider string, cfg config.Config) (trackerProbe, error)
+	statusOptions    func(ctx context.Context, provider string, cfg config.Config) (tracker.StatusOptions, error)
 	newHubAgent      func(cfg config.Config, repo registry.Repo) (agent.Runner, error)
 	installSkill     func(ctx context.Context, repoRoot, pkg string) error
 	removeSkill      func(ctx context.Context, repoRoot, name string) error
@@ -137,6 +138,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		newWriter:        defaultWriter,
 		newReader:        defaultReader,
 		newProbe:         defaultProbe,
+		statusOptions:    readStatusOptions,
 		newHubAgent:      newHubRunner,
 		installSkill:     defaultInstallSkill,
 		removeSkill:      defaultRemoveSkill,
@@ -313,6 +315,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/prompts", s.handlePrompts)
 	mux.HandleFunc(APIPrefix+"/prompts/{name}", s.handlePromptItem)
 	mux.HandleFunc(APIPrefix+"/trackers/{provider}/test-connection", s.handleTrackerTestConnection)
+	mux.HandleFunc(APIPrefix+"/trackers/{provider}/status-options", s.handleTrackerStatusOptionsProbe)
 	mux.HandleFunc(APIPrefix+"/fs/browse", s.handleFSBrowse)
 	mux.HandleFunc(APIPrefix+"/fs/discover", s.handleFSDiscover)
 	mux.HandleFunc(APIPrefix+"/fs/init", s.handleFSInit)
@@ -332,6 +335,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/assignees", s.handleAssignees)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/assignable-users", s.handleAssignableUsers)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/azure/create-options", s.handleAzureCreateOptions)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/tracker/status-options", s.handleTrackerStatusOptions)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/epics/{epic}", s.handleEpicPreview)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/search", s.handleIssueSearch)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal", s.handleCreateInternalIssue)

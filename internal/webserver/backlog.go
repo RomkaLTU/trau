@@ -485,7 +485,9 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 // more than which state a write targets: the same pin names the column the board
 // groups as unstarted, so a hub read that dropped it would group the board
 // differently from the loop that writes to it. AZURE_BOARD_STATES travels for the
-// same reason — it is the whole grouping when a repo sets one (ADR 0036).
+// same reason — it is the whole grouping when a repo sets one (ADR 0036) — as do
+// LINEAR_BOARD_STATES and JIRA_BOARD_STATES, which overlay the states a Linear or
+// Jira repo remaps (ADR 0038).
 func readerConfig(cfg config.Config, provider string) tracker.Config {
 	tc := tracker.Config{
 		Team:            cfg.TrackerKey(),
@@ -497,10 +499,13 @@ func readerConfig(cfg config.Config, provider string) tracker.Config {
 		StatusOverrides: map[tracker.Stage]string{tracker.StageTodo: cfg.StatusTodo},
 	}
 	switch provider {
+	case "linear":
+		tc.LinearStates = cfg.LinearBoardStates
 	case "jira":
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
+		tc.JiraStates = cfg.JiraBoardStates
 	case "azure":
 		tc.APIKey = cfg.AzurePAT
 		tc.BaseURL = cfg.AzureOrgURL
