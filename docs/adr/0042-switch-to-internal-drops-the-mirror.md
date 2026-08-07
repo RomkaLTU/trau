@@ -82,8 +82,16 @@ force-resync.
 - **Only the hub write paths are hooked.** A provider edit made by hand in
   `~/.trau.ini` or a repo's `.trau.ini`, or by any path other than these two
   endpoints, still lands as a bare key write and leaves the mirror behind. The
-  recovery is the existing one — force-resync after switching back, or a manual
-  drop — and closing that gap at the config layer is tracked separately.
+  recovery is **force-resync on the repo as it now stands** (COD-1562): with the
+  provider explicitly `internal` no reader resolves, so `POST /repos/{repo}/resync`
+  runs this same guarded migration — busy guard, seq advance, drop — and answers
+  with what it cleared instead of a pull's counts. A repo carrying no mirror is a
+  clean no-op. Only the explicitly internal provider takes that path: a repo whose
+  credentials are merely missing still gets the 422 naming the keys to set, with
+  its mirror intact for the sync that follows.
+- **The background sync path deliberately stays out of it.** A tick that finds an
+  internal provider still resolves no reader and drops nothing; retiring a mirror
+  is a user-invoked recovery, never something a loop decides on its own.
 - The busy refusal is a real refusal, not a warning: a repo with a queued tracker
   ticket cannot switch until that entry is settled or removed. That is the
   conservative direction — the alternative is retiring the identifier a running

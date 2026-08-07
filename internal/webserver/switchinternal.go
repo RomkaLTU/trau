@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -20,6 +21,15 @@ type TrackerSwitchBlocker struct {
 	Status string `json:"status"`
 }
 
+// trackerSwitchBusy is the refusal the busy guard raises: live external queue
+// work under an identifier the drop would retire. It travels as an error so every
+// caller of the guarded drop answers with the one structured body.
+type trackerSwitchBusy struct {
+	Blockers []TrackerSwitchBlocker
+}
+
+func (e *trackerSwitchBusy) Error() string { return blockedSwitchMessage(e.Blockers) }
+
 // switchesToInternal reports whether a settings write points a repo at the
 // internal tracker.
 func switchesToInternal(key, value string) bool {
@@ -28,27 +38,38 @@ func switchesToInternal(key, value string) bool {
 
 // guardSwitchToInternal runs the migration a switch to the internal tracker owes
 // the roots it covers, and reports whether the caller may go on to write the key
-// (ADR 0042). A repo still mirroring an external tracker has that mirror dropped
-// — internal issues, the cached binding and the tracker credentials all stay —
-// after its identifier sequence is lifted clear of every id the mirror and the
-// queue history spoke for.
-//
-// Live external queue work refuses the whole write before anything is dropped, so
-// a half-migrated project is never left behind. A refusal or a failure is written
-// to w. Nothing external is ever notified, which is what makes the switch
-// reversible.
+// (ADR 0042). A refusal or a failure is written to w.
 func (s *Server) guardSwitchToInternal(w http.ResponseWriter, roots []string) bool {
+	if _, err := s.dropInternalMirrors(roots); err != nil {
+		writeInternalDropErr(w, err)
+		return false
+	}
+	return true
+}
+
+// dropInternalMirrors retires the mirrors the roots it covers hold on an external
+// tracker's behalf and returns how many issues it dropped (ADR 0042). A repo still
+// mirroring has that mirror dropped — internal issues, the cached binding and the
+// tracker credentials all stay — after its identifier sequence is lifted clear of
+// every id the mirror and the queue history spoke for.
+//
+// Live external queue work refuses the whole migration before anything is
+// dropped, as a *trackerSwitchBusy, so a half-migrated project is never left
+// behind. Nothing external is ever notified, which is what makes the switch
+// reversible.
+func (s *Server) dropInternalMirrors(roots []string) (int, error) {
 	store := s.stores.Issues()
 	var mirrored []registry.Repo
+	cleared := 0
 	for _, root := range roots {
-		synced, err := store.HasSynced(root)
+		synced, err := store.CountSynced(root)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read synced issues: " + err.Error()})
-			return false
+			return 0, fmt.Errorf("read synced issues: %w", err)
 		}
-		if !synced {
+		if synced == 0 {
 			continue
 		}
+		cleared += synced
 		repo, ok := s.findRepoByRoot(root)
 		if !ok {
 			repo = workspaceRepo(root)
@@ -56,38 +77,42 @@ func (s *Server) guardSwitchToInternal(w http.ResponseWriter, roots []string) bo
 		mirrored = append(mirrored, repo)
 	}
 	if len(mirrored) == 0 {
-		return true
+		return 0, nil
 	}
 
 	blockers, err := s.trackerSwitchBlockers(roots)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
-		return false
+		return 0, fmt.Errorf("read queue: %w", err)
 	}
 	if len(blockers) > 0 {
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":   blockedSwitchMessage(blockers),
-			"reason":  "queue_busy",
-			"blocked": blockers,
-		})
-		return false
+		return 0, &trackerSwitchBusy{Blockers: blockers}
 	}
 
 	for _, repo := range mirrored {
 		if _, err := store.RaiseInternalSeq(repo.Root, s.internalPrefix(repo)); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "advance the internal issue sequence for " + repo.Root + ": " + err.Error(),
-			})
-			return false
+			return 0, fmt.Errorf("advance the internal issue sequence for %s: %w", repo.Root, err)
 		}
 		if err := store.DropSynced(repo.Root); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{
-				"error": "drop the synced mirror of " + repo.Root + ": " + err.Error(),
-			})
-			return false
+			return 0, fmt.Errorf("drop the synced mirror of %s: %w", repo.Root, err)
 		}
 	}
-	return true
+	return cleared, nil
+}
+
+// writeInternalDropErr maps a refused or failed mirror drop onto its response: the
+// busy guard answers 409 with the blocking ids named, so a client can tell "settle
+// this ticket first" from "the hub could not do it".
+func writeInternalDropErr(w http.ResponseWriter, err error) {
+	var busy *trackerSwitchBusy
+	if errors.As(err, &busy) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   busy.Error(),
+			"reason":  "queue_busy",
+			"blocked": busy.Blockers,
+		})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 }
 
 // trackerSwitchBlockers collects the live external queue entry each root still
