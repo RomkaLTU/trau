@@ -193,9 +193,9 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 	assertGoldens(t, cases)
 }
 
-// These pin where the TEST_EFFORT fragment splices into each prompt. The
-// default high level renders nothing and is pinned by the goldens above, which
-// leave TestEffort empty.
+// These pin where the TEST_EFFORT fragment splices into each prompt. The high
+// level renders nothing and is pinned by the goldens above, which leave
+// TestEffort empty.
 func TestRenderTestEffortGoldens(t *testing.T) {
 	const fragment = " TEST-EFFORT."
 	codeStyle := Render("code_style", nil)

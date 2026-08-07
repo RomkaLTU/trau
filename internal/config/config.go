@@ -243,8 +243,8 @@ type Config struct {
 	CodeStyleNote bool
 	// TestEffort constrains how much effort the build, repair and bugfix agents
 	// spend writing tests (config TEST_EFFORT): "off" writes none at all, "low"
-	// only the core happy path, "medium" the core behavior plus the important
-	// edge and error cases, and "high" (the default) injects nothing, leaving the
+	// (the default) only the core happy path, "medium" the core behavior plus the
+	// important edge and error cases, and "high" injects nothing, leaving the
 	// agent to test as it sees fit. Browser end-to-end verification is untouched —
 	// that stays governed by BrowserVerify and AppURL.
 	TestEffort string
@@ -530,7 +530,7 @@ func Defaults() Config {
 		LintFix:                true,
 		Cleanup:                true,
 		CodeStyleNote:          true,
-		TestEffort:             "high",
+		TestEffort:             "low",
 		VerifyEffort:           "medium",
 		StripMechanicalMCP:     true,
 		ExploreSubagents:       false,
@@ -1954,7 +1954,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "LINT_FIX_CMD", Group: sectionPipeline, Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
 		{Key: "CLEANUP", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
 		{Key: "CODE_STYLE_NOTE", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "1", Description: "Append the code_style block (write it like a senior engineer, no narrating comments, skip the AI tells) to the build, repair, bugfix and push-repair prompts; 0 drops it from all four, leaving the cleanup step to enforce the same rules over the diff (1 = yes, 0 = no)", Bool: true},
-		{Key: "TEST_EFFORT", Group: sectionPipeline, WebEditable: true, Default: "high", Description: "How much effort the build, repair and bugfix agents spend writing tests: high (default — the agent tests as it sees fit) | medium (core behavior plus the important edge and error cases, no exhaustive permutations) | low (only the core happy path of the changed behavior) | off (write no new or extended tests at all; existing tests must still pass). Browser end-to-end verification is unaffected — it stays governed by BROWSER_VERIFY and APP_URL", Options: []string{"off", "low", "medium", "high"}},
+		{Key: "TEST_EFFORT", Group: sectionPipeline, WebEditable: true, Default: "low", Description: "How much effort the build, repair and bugfix agents spend writing tests: high (the agent tests as it sees fit) | medium (core behavior plus the important edge and error cases, no exhaustive permutations) | low (default — only the core happy path of the changed behavior) | off (write no new or extended tests at all; existing tests must still pass). Browser end-to-end verification is unaffected — it stays governed by BROWSER_VERIFY and APP_URL", Options: []string{"off", "low", "medium", "high"}},
 		{Key: "STRIP_MECHANICAL_MCP", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "EXPLORE_SUBAGENTS", Group: sectionAgent, WebEditable: true, Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "VERIFY_EFFORT", Group: sectionVerify, WebEditable: true, Default: "medium", Description: "How strictly verify grades a slice — it narrows both what the verifier investigates and what can fail the verdict: high (today's full adversarial QA: the rubric plus an open-ended hunt for anything broken) | medium (default — the rubric contract plus regressions in what the slice touched, no hunting beyond the diff) | low (the rubric contract alone: acceptance criteria, required tests, fail conditions, non-goals). Anything noticed beyond the level's bar is recorded in the verdict summary as a non-blocking note. To skip verification entirely, use the per-run verify skip. Unrelated to CLAUDE_VERIFY_EFFORT / CODEX_VERIFY_EFFORT, which set the provider's reasoning effort for the verify phase", Options: []string{"low", "medium", "high"}},
