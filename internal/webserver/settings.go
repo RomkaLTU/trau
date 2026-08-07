@@ -19,6 +19,10 @@ import (
 // specific repo's loop.
 var configWriteLayers = []string{"project", "user"}
 
+// globalConfigWriteLayers is the one layer a global settings edit may target:
+// with no repo in scope there is no project file to write.
+var globalConfigWriteLayers = []string{"user"}
+
 // ConfigKeyView is one resolved config key as the settings surface shows it: the
 // effective value, the layer it came from, and the metadata the UI needs to
 // render and safely edit it. Secret keys carry no value — only whether one is
@@ -50,7 +54,8 @@ type ConfigKeyView struct {
 // ConfigResponse is the /api/v1/repos/{repo}/config resource: every known config
 // key with its effective value and originating layer, the layers an edit may
 // write to, and the providers a run may be launched with so the provider-override
-// select is server-driven instead of hardcoded in the web.
+// select is server-driven instead of hardcoded in the web. /api/v1/config answers
+// with the same shape for the global scope, where Repo is empty.
 type ConfigResponse struct {
 	Repo      string          `json:"repo"`
 	Layers    []string        `json:"layers"`
@@ -84,6 +89,87 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, PUT")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+// handleGlobalConfig serves the settings surface when no repo is in scope: the
+// defaults every project inherits, resolved from the built-ins and ~/.trau.ini
+// alone.
+func (s *Server) handleGlobalConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.getGlobalConfig(w)
+	case http.MethodPut:
+		s.putGlobalConfig(w, r)
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) getGlobalConfig(w http.ResponseWriter) {
+	views, err := globalConfigViews()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load config: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ConfigResponse{Layers: globalConfigWriteLayers, Providers: agent.DefaultRegistry().Names(), Keys: views})
+}
+
+// putGlobalConfig writes a global default into ~/.trau.ini. It shares putConfig's
+// gating and validation, minus the two facts about a repo rather than a key: the
+// per-repo availability probe and the project tracker's claim on a seeded key.
+func (s *Server) putGlobalConfig(w http.ResponseWriter, r *http.Request) {
+	var req ConfigWriteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	key := strings.TrimSpace(req.Key)
+	meta, known := knownKey(key)
+	if !known {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unknown config key %q", key)})
+		return
+	}
+	if !meta.WebEditable {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": fmt.Sprintf("config key %q is read-only over the settings surface", key),
+		})
+		return
+	}
+	if req.Layer != "user" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "layer must be user"})
+		return
+	}
+
+	userPath := userConfigPath()
+	if req.Unset {
+		if err := config.DeleteConfigLayer("user", "", "", userPath, key); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unset config: " + err.Error()})
+			return
+		}
+	} else {
+		if err := validateValue(meta, req.Value); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := config.WriteConfigLayer("user", "", "", userPath, key, req.Value); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write config: " + err.Error()})
+			return
+		}
+	}
+
+	views, err := globalConfigViews()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reload config: " + err.Error()})
+		return
+	}
+	for _, v := range views {
+		if v.Key == key {
+			writeJSON(w, http.StatusOK, v)
+			return
+		}
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "config key vanished after write"})
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, repo registry.Repo) {
@@ -186,7 +272,13 @@ func (s *Server) resolveConfig(repo registry.Repo) ([]ConfigKeyView, error) {
 // per-repo availability probe, which shells out to git, so read-only surfaces
 // can resolve many repos at once.
 func (s *Server) configViews(repo registry.Repo) ([]ConfigKeyView, error) {
-	projectPath, userPath := s.repoConfigPaths(repo)
+	return layerViews(s.repoConfigPaths(repo))
+}
+
+// layerViews resolves one project/user layer pair into browsable views with
+// secret values redacted. Either path may be empty, which drops that layer from
+// the resolution.
+func layerViews(projectPath, userPath string) ([]ConfigKeyView, error) {
 	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
 	if err != nil {
 		return nil, err
@@ -198,6 +290,35 @@ func (s *Server) configViews(repo registry.Repo) ([]ConfigKeyView, error) {
 	views := make([]ConfigKeyView, 0, len(items))
 	for _, it := range items {
 		views = append(views, configKeyView(it))
+	}
+	return views, nil
+}
+
+// globalConfigViews resolves the defaults every project inherits: the built-ins
+// overlaid with ~/.trau.ini and nothing else. The hub's own environment can still
+// colour a value, but it is a fact about this process rather than a global
+// default, so it never claims a layer of its own — a shadowed key reports the
+// layer that actually holds it.
+func globalConfigViews() ([]ConfigKeyView, error) {
+	userPath := userConfigPath()
+	views, err := layerViews("", userPath)
+	if err != nil {
+		return nil, err
+	}
+	userFile, err := config.ParseEnvFile(userPath)
+	if err != nil {
+		return nil, err
+	}
+	for i := range views {
+		switch views[i].Layer {
+		case string(config.LayerUser), string(config.LayerDefault):
+			continue
+		}
+		if _, ok := userFile[views[i].Key]; ok {
+			views[i].Layer = string(config.LayerUser)
+		} else {
+			views[i].Layer = string(config.LayerDefault)
+		}
 	}
 	return views, nil
 }
@@ -238,22 +359,24 @@ func configKeyView(it config.ConfigItem) ConfigKeyView {
 }
 
 func (s *Server) repoConfigPaths(repo registry.Repo) (projectPath, userPath string) {
-	projectPath = config.ProjectConfigPath(repo.Root)
-	if home, err := os.UserHomeDir(); err == nil {
-		userPath = config.ProjectConfigPath(home)
+	return config.ProjectConfigPath(repo.Root), userConfigPath()
+}
+
+// userConfigPath is the machine-wide ~/.trau.ini, or empty when there is no home
+// directory to resolve it against.
+func userConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
 	}
-	return projectPath, userPath
+	return config.ProjectConfigPath(home)
 }
 
 // repoConfig loads a repo's own layered config from its root alone, for the hub
 // paths that hold a root rather than a registry.Repo. Like resolveConfig it
 // ignores the hub's cwd-local file, which has no bearing on another repo's loop.
 func repoConfig(root string) (config.Config, error) {
-	userPath := ""
-	if home, err := os.UserHomeDir(); err == nil {
-		userPath = config.ProjectConfigPath(home)
-	}
-	return config.LoadLayered(config.ProjectConfigPath(root), userPath, "", "")
+	return config.LoadLayered(config.ProjectConfigPath(root), userConfigPath(), "", "")
 }
 
 func knownKey(key string) (config.KeyMeta, bool) {
