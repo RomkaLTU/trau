@@ -105,6 +105,12 @@ func (s *Server) putProjectTracker(w http.ResponseWriter, r *http.Request, proj 
 		}
 		keys[key] = value
 	}
+	// Every member repo follows the project onto the internal tracker, so a single
+	// busy member refuses the write for all of them rather than leaving the project
+	// half-switched.
+	if switchesToInternal("TRACKER_PROVIDER", req.Keys["TRACKER_PROVIDER"]) && !s.guardSwitchToInternal(w, proj.Repos) {
+		return
+	}
 	if err := s.stores.Projects().SetTracker(proj.ID, keys); err != nil {
 		writeProjectError(w, err, "failed to save the project tracker")
 		return
