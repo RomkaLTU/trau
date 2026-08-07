@@ -201,6 +201,13 @@ const configKeys = [
     group: 'Git & merge',
     editable: true,
   },
+  {
+    key: 'LOOP_MAX_ATTEMPTS',
+    value: '3',
+    layer: 'default',
+    group: 'Loop & queue',
+    editable: true,
+  },
 ]
 
 const ledgerRuns = [
@@ -219,6 +226,14 @@ const ledgerRuns = [
     phase_rank: 6,
     terminal: true,
     updated_at: '2026-07-01T09:00:00Z',
+  },
+  {
+    ticket: 'COD-1351',
+    title: 'Loop card polish',
+    phase: 'pr_open',
+    phase_rank: 5,
+    terminal: false,
+    updated_at: '2026-07-02T09:00:00Z',
   },
 ]
 
@@ -598,6 +613,9 @@ it('queues a ticket from its actions submenu, keyboard only', async () => {
   typeQuery('palette')
   await settleSearch()
 
+  // Issues sits below Runs, so the highlight starts on the matching run.
+  expect(paletteHighlight()).toBe('run:COD-1342')
+  pressKey('ArrowDown')
   pressKey('Tab')
 
   expect(breadcrumb()).toContain('COD-1345')
@@ -645,6 +663,7 @@ it('steps back from the submenu to the results without closing the palette', asy
   typeQuery('palette')
   await settleSearch()
 
+  pressKey('ArrowDown')
   pressKey('Tab')
   expect(paletteRow('issue-action:open')).not.toBeNull()
 
@@ -665,4 +684,114 @@ it('steps back from the submenu to the results without closing the palette', asy
   // proves the step back; the browser erasing a character from it does not.
   expect(back.defaultPrevented).toBe(true)
   expect(paletteInput().value).toBe('palette')
+})
+
+function groupHeadings(): string[] {
+  return Array.from(document.body.querySelectorAll('[cmdk-group-heading]')).map(
+    (el) => el.textContent ?? '',
+  )
+}
+
+// A separator only earns its place between two groups, so the list may never end on one.
+function endsOnSeparator(): boolean {
+  const sections = document.body.querySelectorAll(
+    '[cmdk-group],[cmdk-separator]',
+  )
+  const last = sections[sections.length - 1]
+  return last?.hasAttribute('cmdk-separator') ?? false
+}
+
+it('keeps the unbounded Issues group below every bounded group', async () => {
+  active.repos = repos
+  renderPalette()
+  typeQuery('loop')
+  await settleSearch()
+
+  expect(groupHeadings()).toEqual([
+    'Actions',
+    'Projects',
+    'Navigation',
+    'Settings',
+    'Runs',
+    'Issues',
+  ])
+  expect(endsOnSeparator()).toBe(false)
+})
+
+it('keeps the same group order under All projects', async () => {
+  active.isAll = true
+  active.repos = repos
+  renderPalette()
+  typeQuery('loop')
+  await settleSearch()
+
+  expect(groupHeadings()).toEqual([
+    'Actions',
+    'Projects',
+    'Navigation',
+    'Settings',
+    'Runs',
+    'Issues',
+  ])
+  expect(endsOnSeparator()).toBe(false)
+})
+
+it('leaves the empty-query layout alone', async () => {
+  active.repos = repos
+  renderPalette()
+  await settleSearch()
+
+  expect(groupHeadings()).toEqual([
+    'Suggested',
+    'Actions',
+    'Projects',
+    'Navigation',
+  ])
+  expect(endsOnSeparator()).toBe(false)
+})
+
+it('highlights the first row when issues are not the only hits', async () => {
+  const opens = renderPalette()
+  typeQuery('settings')
+  await settleSearch()
+
+  expect(groupHeadings()).toEqual(['Navigation', 'Issues'])
+  expect(paletteHighlight()).toBe('Settings')
+
+  pressKey('Enter')
+
+  expect(navigations).toEqual([{ to: '/settings' }])
+  expect(opens).toEqual([false])
+})
+
+it('highlights the top issue hit when only issues match', async () => {
+  const opens = renderPalette()
+  typeQuery('submenu')
+  await settleSearch()
+
+  expect(groupHeadings()).toEqual(['Issues'])
+  expect(paletteHighlight()).toBe('issue:COD-1345')
+
+  pressKey('Enter')
+
+  expect(navigations).toEqual([
+    { to: '/runs/$repo/$ticket', params: { repo: 'loop', ticket: 'COD-1345' } },
+  ])
+  expect(opens).toEqual([false])
+})
+
+it('holds the highlight while late issue rows append below', async () => {
+  active.repos = repos
+  renderPalette()
+  typeQuery('loop')
+  await act(async () => {})
+
+  pressKey('ArrowDown')
+  const moved = paletteHighlight()
+  expect(moved).not.toBe('action:start-loop')
+
+  await settleSearch()
+
+  expect(paletteRow('issue:COD-1345')).not.toBeNull()
+  expect(paletteHighlight()).toBe(moved)
 })
