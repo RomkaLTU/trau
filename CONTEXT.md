@@ -125,6 +125,10 @@ _Avoid_: stalled/stuck (that's only one of the gates), blocked (that's the item'
 The Loop screen's running view — a single card showing every ticket the running Queue covers, epics expanded into their sub-issues. Finished tickets appear in the order they actually completed, the running ticket shows its live Step and Activity, and remaining tickets are an unordered set — the future order is decided at pick time, never promised.
 _Avoid_: task list (they're tickets, not tasks), plan/schedule (implies a promised order), queue view (the Queue is the list; the timeline is its running progress)
 
+**Babysitter**:
+A copy-paste prompt, offered on the Loop screen while a Repo's drain is armed, that the user pastes into their own terminal agent to supervise that one drain while they are away. It reads the hub over the MCP tools and repairs trivial operational faults with its own shell, may take reversible hub actions only, files suspected trau defects as quarantine-labelled tickets it never enqueues, and prints a highlights report when the drain finishes. Per-drain and human-started — nothing hub-side runs it. Distinct from the **Supervisor** (the hub-hosted tier that would watch drains itself) and from `trau hub supervise` (launchd keeping the Hub process alive).
+_Avoid_: supervisor (that's the hub-hosted tier), watcher, monitor, sitter
+
 **Run ledger**:
 The Runs screen's flat list of every tracked run in scope — Needs attention first, then active, stopped, and merged, newest first within each group. Scoped to the Active repo, or aggregated across all Registered repos under "All projects". A run's row shows its Step progress, never a phase-by-phase stepper.
 _Avoid_: board (the retired phase-column view), run list (bare), history
