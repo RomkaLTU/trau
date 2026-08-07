@@ -107,4 +107,8 @@ later. A free-text add row covers a column the API missed, and a name carrying
   the project reports. It carries one extra rule Linear has no analogue for — a
   listed status also displaces the won't-do/duplicate *resolution* nuance, since
   naming a status by hand is a statement about every issue in it, while the
-  suggestion the editor prefills reads the category alone.
+  suggestion the editor prefills reads the category alone. That makes a pair
+  equal to its own suggestion meaningful rather than redundant, so the editor
+  models the section as *conditionally derived* — a done-category row carries a
+  **derived/mapped** badge the operator can flip, and the minimal-write rule the
+  Linear arm introduced keeps such a pair instead of filtering it out.

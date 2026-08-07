@@ -517,10 +517,9 @@ func mapLinearGroup(stateType string) StatusGroup {
 // mapJiraGroup maps a Jira statusCategory key onto a normalized status group.
 // Jira has no backlog or canceled category, so a To-Do issue groups as unstarted
 // and a done-category issue closed with a won't-do/duplicate resolution groups as
-// canceled rather than done.
-// Jira's fourth key, "undefined" (the "No Category" a status can be created
-// without), groups as unstarted rather than unknown, so a status carrying it
-// stays on the board instead of falling under Other.
+// canceled rather than done. Its fourth key, "undefined" (the "No Category" a
+// status can be created without), groups as unstarted so such a status stays on
+// the board instead of falling under Other.
 func mapJiraGroup(category, resolution string) StatusGroup {
 	switch strings.ToLower(strings.TrimSpace(category)) {
 	case "new", "undefined":

@@ -109,6 +109,7 @@ describe('deriveGroupingRows', () => {
       group: 'backlog',
       suggested: UNMAPPED,
       onBoard: false,
+      mapped: true,
     })
   })
 
@@ -185,6 +186,43 @@ describe('deriveGroupingRows on an overlay key', () => {
         jira,
       ),
     ).toBe('')
+  })
+
+  // Jira derives done from the status category alone, while the same issue
+  // resolved won't-do or duplicate groups as canceled until the status is named
+  // by hand. That pair therefore says something its equality with the suggestion
+  // cannot, so neither deriving nor serializing may treat it as redundant.
+  it('keeps a Jira pair that pins a conditionally derived section', () => {
+    const statuses: StatusColumn[] = [
+      { name: 'Backlog', suggestedGroup: 'unstarted' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ]
+    const rows = deriveGroupingRows(statuses, 'Closed=done', jira)
+    expect(rows.map((r) => [r.name, r.group, r.mapped])).toEqual([
+      ['Backlog', 'unstarted', false],
+      ['Closed', 'done', true],
+    ])
+    expect(serializeGrouping(rows, jira)).toBe('Closed=done')
+
+    const elsewhere = rows.map((r) =>
+      r.name === 'Backlog' ? { ...r, group: 'backlog' as const } : r,
+    )
+    expect(serializeGrouping(elsewhere, jira)).toBe('Backlog=backlog,Closed=done')
+  })
+
+  it('reaches that pair from a Jira row that starts out derived', () => {
+    const statuses: StatusColumn[] = [
+      { name: 'Backlog', suggestedGroup: 'unstarted' },
+      { name: 'Closed', suggestedGroup: 'done' },
+    ]
+    const rows = deriveGroupingRows(statuses, '', jira)
+    expect(rows.some((r) => r.mapped)).toBe(false)
+    expect(serializeGrouping(rows, jira)).toBe('')
+
+    const pinned = rows.map((r) =>
+      r.name === 'Closed' ? { ...r, mapped: true } : r,
+    )
+    expect(serializeGrouping(pinned, jira)).toBe('Closed=done')
   })
 
   it('still writes every row of an exhaustive key', () => {

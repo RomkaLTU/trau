@@ -19,24 +19,12 @@ func parseJiraBoardStates(spec string) jiraBoardStates {
 	return jiraBoardStates{parseStatusMapping("JIRA_BOARD_STATES", "status name", spec)}
 }
 
-// override reports the section this repo pins the named status to. ok is false
-// when the mapping does not name it, which is the ordinary case: the caller then
-// keeps whatever the status's own category derives.
-func (m jiraBoardStates) override(status string) (StatusGroup, bool) {
-	group, mapped := m.statusMapping[normalizeStatus(status)]
-	if !mapped {
-		return StatusGroupUnknown, false
-	}
-	return group, true
-}
-
 // group resolves the section a Jira issue files under: the override this repo
 // pins for its status, and the status's own category when it pins none.
 //
 // An explicit mapping is authoritative, so it also displaces the resolution
 // nuance mapJiraGroup applies — a team that maps its "Done" status to done means
-// done even for the ticket closed as a duplicate. That is the point of naming a
-// status by hand.
+// done even for the ticket closed as a duplicate.
 func (m jiraBoardStates) group(status, category, resolution string) StatusGroup {
 	if group, ok := m.override(status); ok {
 		return group

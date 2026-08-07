@@ -456,20 +456,8 @@ func (j *Jira) issueStatusAPI(ctx context.Context, id string) (IssueStatus, erro
 	if err != nil {
 		return StatusUnknown, err
 	}
-	if group, ok := j.boardStates.override(issue.Status.Name); ok {
-		return issueStatusOf(group), nil
-	}
-	return mapJiraStatus(issue.Status.Category, issue.Resolution), nil
-}
-
-// mapJiraStatus maps a Jira statusCategory key onto the normalized status,
-// through the group that category files under, so a reconcile pass and the board
-// cannot read one status two ways. Jira has no "canceled" category, so a
-// done-category issue closed with a won't-do or duplicate resolution reports as
-// canceled; a category trau cannot read at all is unknown, so reconcile leaves
-// the checkpoint intact.
-func mapJiraStatus(category, resolution string) IssueStatus {
-	return issueStatusOf(mapJiraGroup(category, resolution))
+	group := j.boardStates.group(issue.Status.Name, issue.Status.Category, issue.Resolution)
+	return issueStatusOf(group), nil
 }
 
 // isCanceledResolution reports whether a Jira resolution name denotes a
