@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronsUpDown, Lock, RotateCcw, TriangleAlert, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -19,17 +19,23 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { SegmentedControl } from '@/components/trau/segmented-control'
+import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { cn } from '@/lib/utils'
 import {
+  activeTracker,
   canResetLayer,
   comboboxFreeEntry,
+  confirmsInternalSwitch,
   editorVariant,
+  internalSwitchWarning,
   isHexColor,
   shadowNote,
   valueWarning,
 } from '@/lib/settings'
 import {
+  ConfigWriteError,
   configScopeKey,
+  configScopeQueryOptions,
   writeConfigIn,
   type ConfigKey,
   type ConfigScope,
@@ -133,11 +139,44 @@ export function LayerHint({
   )
 }
 
+// A queue_busy refusal gets the blocking ids a line each; anything else is a
+// plain failure line.
 export function WriteError({ error }: { error: unknown }) {
+  const blocked =
+    error instanceof ConfigWriteError && error.reason === 'queue_busy'
+      ? (error.blocked ?? [])
+      : []
+
+  if (blocked.length === 0) {
+    return (
+      <p className="font-mono text-xs text-fail" role="alert">
+        {String((error as Error).message)}
+      </p>
+    )
+  }
+
   return (
-    <p className="font-mono text-xs text-fail" role="alert">
-      {String((error as Error).message)}
-    </p>
+    <div
+      role="alert"
+      data-slot="config-write-blocked"
+      className="flex flex-col gap-1.5 rounded-md border border-fail/50 bg-fail/12 px-2.5 py-2"
+    >
+      <p className="font-mono text-xs text-fail">
+        The queue still holds tracker work — settle or remove{' '}
+        {blocked.length === 1 ? 'it' : 'them'} first.
+      </p>
+      <ul className="flex flex-col gap-0.5">
+        {blocked.map((b) => (
+          <li
+            key={`${b.repo}:${b.id}`}
+            className="flex items-center gap-2 font-mono text-[0.7rem]"
+          >
+            <span className="text-fail">{b.id}</span>
+            <span className="text-muted-foreground">{b.status}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
   )
 }
 
@@ -165,6 +204,10 @@ export function InlineEditor({
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState(item.secret ? '' : item.value)
   const [target, setTarget] = useState(() => initialTarget(item, layers))
+  const [confirming, setConfirming] = useState(false)
+  const confirmed = useRef(false)
+  const syncedIssues =
+    useQuery(configScopeQueryOptions(repo)).data?.synced_issues ?? 0
 
   const mutation = useMutation({
     mutationFn: (body: ConfigWrite) => writeConfigIn(repo, body),
@@ -175,12 +218,31 @@ export function InlineEditor({
   })
 
   const valid = draftIsValid(item, draft)
+  const write = () => {
+    mutation.mutate({ key: item.key, value: draft, layer: target })
+  }
   const save = () => {
     if (!valid) return
-    mutation.mutate({ key: item.key, value: draft, layer: target })
+    if (confirmsInternalSwitch(item, draft, syncedIssues)) {
+      setConfirming(true)
+      return
+    }
+    write()
   }
   const reset = () => {
     mutation.mutate({ key: item.key, value: '', layer: item.layer, unset: true })
+  }
+  // Radix closes the dialog after the confirm handler runs, so the close alone
+  // cannot tell a confirmed switch from an abandoned one — only an abandoned one
+  // reverts the select.
+  const closeConfirm = (open: boolean) => {
+    if (open) return
+    setConfirming(false)
+    if (confirmed.current) {
+      confirmed.current = false
+      return
+    }
+    setDraft(item.value)
   }
 
   const shadow = shadowNote(item.layer, target)
@@ -258,6 +320,20 @@ export function InlineEditor({
       <LayerHint target={target} hubRestart={hubRestart} />
 
       {mutation.error && <WriteError error={mutation.error} />}
+
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={closeConfirm}
+        windowTitle="switch tracker"
+        title="Switch to the internal tracker?"
+        description={internalSwitchWarning(syncedIssues, activeTracker([item]))}
+        confirmLabel="Switch"
+        onConfirm={() => {
+          confirmed.current = true
+          write()
+        }}
+        destructive
+      />
     </div>
   )
 }

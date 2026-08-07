@@ -26,6 +26,19 @@ func (s *Issues) HasSynced(repo string) (bool, error) {
 	return true, nil
 }
 
+// CountSynced counts the issues the repo holds on an external tracker's behalf —
+// exactly the rows a switch to the internal tracker drops.
+func (s *Issues) CountSynced(repo string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM issues WHERE repo = ? AND source <> ?`, repo, SourceInternal,
+	).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // BusyExternalItem names the first live queue entry the repo still holds for a
 // ticket the external tracker owns, or nil when nothing blocks. A legacy entry
 // stamped with no source counts as external: it predates the internal tracker,

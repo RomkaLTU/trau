@@ -26,6 +26,48 @@ export interface ConfigResponse {
   layers: string[]
   providers: string[]
   keys: ConfigKey[]
+  synced_issues?: number
+}
+
+// TrackerSwitchBlocker is one queue entry holding up a switch to the internal
+// tracker, as the hub reports it on a 409.
+export interface TrackerSwitchBlocker {
+  repo: string
+  id: string
+  status: string
+}
+
+// ConfigWriteError carries the hub's structured refusal alongside its message so
+// the editor can name the tickets in the way.
+export class ConfigWriteError extends Error {
+  reason?: string
+  blocked?: TrackerSwitchBlocker[]
+
+  constructor(
+    message: string,
+    reason?: string,
+    blocked?: TrackerSwitchBlocker[],
+  ) {
+    super(message)
+    this.name = 'ConfigWriteError'
+    this.reason = reason
+    this.blocked = blocked
+  }
+}
+
+interface ConfigWriteFailure {
+  error?: string
+  reason?: string
+  blocked?: TrackerSwitchBlocker[]
+}
+
+async function writeFailure(res: Response): Promise<ConfigWriteError> {
+  const detail = (await res.json().catch(() => null)) as ConfigWriteFailure | null
+  return new ConfigWriteError(
+    detail?.error ?? `config write failed: ${res.status}`,
+    detail?.reason,
+    detail?.blocked,
+  )
 }
 
 // ConfigScope is the repo a settings surface edits, or null for the global
@@ -57,10 +99,7 @@ export async function writeConfig(
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    const detail = (await res.json().catch(() => null)) as {
-      error?: string
-    } | null
-    throw new Error(detail?.error ?? `config write failed: ${res.status}`)
+    throw await writeFailure(res)
   }
   return res.json()
 }
@@ -89,10 +128,7 @@ export async function writeGlobalConfig(
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    const detail = (await res.json().catch(() => null)) as {
-      error?: string
-    } | null
-    throw new Error(detail?.error ?? `config write failed: ${res.status}`)
+    throw await writeFailure(res)
   }
   return res.json()
 }
