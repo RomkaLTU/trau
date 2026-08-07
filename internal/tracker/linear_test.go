@@ -103,6 +103,7 @@ func TestMapLinearState(t *testing.T) {
 	}{
 		{"completed", StatusDone},
 		{"canceled", StatusCanceled},
+		{"duplicate", StatusCanceled},
 		{"backlog", StatusOpen},
 		{"unstarted", StatusOpen},
 		{"started", StatusStarted},

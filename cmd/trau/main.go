@@ -760,6 +760,8 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		},
 	}
 	switch provider {
+	case "linear":
+		tc.LinearStates = cfg.LinearBoardStates
 	case "jira":
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL

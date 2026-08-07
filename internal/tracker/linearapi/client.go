@@ -705,6 +705,21 @@ func (c *Client) WorkflowStates(ctx context.Context, identifier string) ([]State
 	return c.workflowStates(ctx, issue.Team.ID)
 }
 
+// TeamWorkflowStates returns the workflow states of the team with the given key
+// — the same list WorkflowStates reads, reached from the team a repo configures
+// rather than from an issue it happens to hold, so a status-mapping editor can
+// list them before any ticket is picked.
+func (c *Client) TeamWorkflowStates(ctx context.Context, key string) ([]State, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	team, err := c.TeamByKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return c.workflowStates(ctx, team.ID)
+}
+
 // workflowStates returns the workflow states for a team.
 func (c *Client) workflowStates(ctx context.Context, teamID string) ([]State, error) {
 	var dst workflowStatesQueryResponse

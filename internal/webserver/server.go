@@ -70,6 +70,7 @@ type Server struct {
 	newWriter        func(config.Config) (tracker.Writer, error)
 	newReader        func(config.Config) (tracker.Reader, error)
 	newProbe         func(provider string, cfg config.Config) (trackerProbe, error)
+	statusOptions    func(ctx context.Context, provider string, cfg config.Config) (tracker.StatusOptions, error)
 	newHubAgent      func(cfg config.Config, repo registry.Repo) (agent.Runner, error)
 	installSkill     func(ctx context.Context, repoRoot, pkg string) error
 	removeSkill      func(ctx context.Context, repoRoot, name string) error
@@ -137,6 +138,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		newWriter:        defaultWriter,
 		newReader:        defaultReader,
 		newProbe:         defaultProbe,
+		statusOptions:    readStatusOptions,
 		newHubAgent:      newHubRunner,
 		installSkill:     defaultInstallSkill,
 		removeSkill:      defaultRemoveSkill,

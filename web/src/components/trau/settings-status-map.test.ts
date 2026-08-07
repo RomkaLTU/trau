@@ -66,6 +66,10 @@ function button(text: string): HTMLButtonElement {
   )!
 }
 
+function select(label: string): HTMLElement {
+  return container.querySelector(`[aria-label="${label}"]`)!
+}
+
 function layerButton(group: string, layer: string): HTMLButtonElement {
   const control = container.querySelector(`[aria-label="${group}"]`)!
   return Array.from(control.querySelectorAll('button')).find(
@@ -84,7 +88,7 @@ function type(el: HTMLInputElement, value: string) {
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
-async function render(): Promise<string> {
+async function render(which: ConfigKey[] = keys): Promise<string> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -95,7 +99,7 @@ async function render(): Promise<string> {
         { client },
         createElement(TrackerAdvanced, {
           repo: 'acme',
-          keys,
+          keys: which,
           layers: ['project', 'user'],
           hubRestart: false,
           onSaved: () => {},
@@ -122,6 +126,22 @@ it('renders every generic row unchanged on a provider with no mapping editor', a
   expect(genericRows()).toEqual(keys.map((k) => k.key))
   expect(text).not.toContain('board column grouping')
 })
+
+// linearKeys is the same set a Linear repo carries: the overlay key in place of
+// the Azure one, already holding a single override.
+const linearKeys: ConfigKey[] = [
+  { key: 'READY_LABEL', value: 'ready', layer: 'default', editable: true },
+  {
+    key: 'LINEAR_BOARD_STATES',
+    value: 'Ready for QA=done',
+    layer: 'repo',
+    editable: true,
+  },
+  { key: 'STATUS_TODO', value: '', layer: 'default', editable: true },
+  { key: 'STATUS_IN_PROGRESS', value: '', layer: 'default', editable: true },
+  { key: 'STATUS_IN_REVIEW', value: '', layer: 'default', editable: true },
+  { key: 'STATUS_DONE', value: '', layer: 'default', editable: true },
+]
 
 it('renders the editor above the generic rows, minus the five keys it owns', async () => {
   stubFetch(200, {
@@ -166,7 +186,7 @@ it('keeps an uncommitted grouping edit when the shared write target moves', asyn
 
   await render()
   await act(async () => {
-    type(input('New board column name'), 'Offline Column')
+    type(input('New column name'), 'Offline Column')
   })
   await act(async () => {
     button('Add column').click()
@@ -177,4 +197,51 @@ it('keeps an uncommitted grouping edit when the shared write target moves', asyn
     layerButton('AZURE_BOARD_STATES write target', 'user').click()
   })
   expect(container.textContent).toContain('Offline Column')
+})
+
+it('renders the overlay editor for a Linear repo, prefilled from the state types', async () => {
+  stubFetch(200, {
+    provider: 'linear',
+    grouping: [
+      { name: 'Triage', suggestedGroup: 'backlog' },
+      { name: 'Ready for QA', suggestedGroup: 'started' },
+    ],
+    pinOptions: [{ name: 'Ready for QA', category: 'started' }],
+  })
+
+  const text = await render(linearKeys)
+  expect(text).toContain('workflow state grouping')
+  expect(text).toContain('LINEAR_BOARD_STATES')
+  expect(genericRows()).toEqual(['READY_LABEL'])
+  // Triage is unlisted, so it sits on the section its own state type gives it
+  // rather than on Other, and the preview reads the one pair the key carries.
+  expect(select('Triage group').textContent).toContain('Backlog')
+  expect(select('Ready for QA group').textContent).toContain('Done')
+  expect(select('Triage group').textContent).not.toContain('Other')
+  expect(text).toContain('Ready for QA=done')
+  expect(text).not.toContain('board column grouping')
+})
+
+it('keeps an uncommitted overlay edit when the shared write target moves', async () => {
+  stubFetch(200, {
+    provider: 'linear',
+    grouping: [],
+    pinOptions: [],
+    error: 'linear: unauthorized',
+    hint: 'Regenerate the Linear API key.',
+  })
+
+  await render(linearKeys)
+  await act(async () => {
+    type(input('New state name'), 'Archived')
+  })
+  await act(async () => {
+    button('Add state').click()
+  })
+  expect(container.textContent).toContain('Archived')
+
+  await act(async () => {
+    layerButton('LINEAR_BOARD_STATES write target', 'user').click()
+  })
+  expect(container.textContent).toContain('Archived')
 })

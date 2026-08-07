@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -48,9 +49,9 @@ type StatusOptionsResponse struct {
 }
 
 // handleTrackerStatusOptions serves the choices a repo's status mapping is made
-// of. Only Azure DevOps has both halves today — a board whose columns are the
-// grouping key and a workflow whose states the pins name — so every other
-// provider answers 404 and the settings page keeps its generic rows.
+// of. Azure DevOps and Linear each have both halves — the names a grouping keys
+// on and the states a pin may write — so every other provider answers 404 and the
+// settings page keeps its generic rows.
 func (s *Server) handleTrackerStatusOptions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -68,7 +69,7 @@ func (s *Server) handleTrackerStatusOptions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	provider := cfg.EffectiveTrackerProvider()
-	if provider != "azure" {
+	if provider != "azure" && provider != "linear" {
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error": "this repo's tracker has no status-mapping options",
 		})
@@ -76,14 +77,14 @@ func (s *Server) handleTrackerStatusOptions(w http.ResponseWriter, r *http.Reque
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), statusOptionsTimeout)
 	defer cancel()
-	writeJSON(w, http.StatusOK, azureStatusOptions(ctx, provider, cfg))
+	writeJSON(w, http.StatusOK, s.statusOptionsFor(ctx, provider, cfg))
 }
 
-// azureStatusOptions reads the board columns and workflow states of an Azure
-// DevOps repo, shaping a failure into the response rather than an error status:
-// the editor still has the repo's own mapping to fall back on, and an operator
-// with a lapsed PAT needs the hint more than the status code.
-func azureStatusOptions(ctx context.Context, provider string, cfg config.Config) StatusOptionsResponse {
+// statusOptionsFor reads a repo's mapping choices from whichever provider it talks
+// to, shaping a failure into the response rather than an error status: the editor
+// still has the repo's own mapping to fall back on, and an operator with a lapsed
+// credential needs the hint more than the status code.
+func (s *Server) statusOptionsFor(ctx context.Context, provider string, cfg config.Config) StatusOptionsResponse {
 	out := StatusOptionsResponse{
 		Provider:   provider,
 		Grouping:   []StatusColumn{},
@@ -94,7 +95,7 @@ func azureStatusOptions(ctx context.Context, provider string, cfg config.Config)
 		out.Hint = enterCredentialsHint(provider)
 		return out
 	}
-	opts, err := tracker.AzureStatusOptions(ctx, readerConfig(cfg, provider))
+	opts, err := s.statusOptions(ctx, provider, cfg)
 	if err != nil {
 		out.Error = err.Error()
 		out.Hint = connHint(provider, cfg, err)
@@ -110,4 +111,20 @@ func azureStatusOptions(ctx context.Context, provider string, cfg config.Config)
 		out.PinOptions = append(out.PinOptions, StatusPinOption{Name: pin.Name, Category: pin.Category})
 	}
 	return out
+}
+
+// readStatusOptions is the default seam behind Server.statusOptions: it dispatches
+// to the provider's own reader. A provider with no mapping editor names itself in
+// the error rather than being routed to somebody else's reader — the handler
+// already gates the set, and this is what keeps that gate the only place the set
+// is decided.
+func readStatusOptions(ctx context.Context, provider string, cfg config.Config) (tracker.StatusOptions, error) {
+	switch provider {
+	case "linear":
+		return tracker.LinearStatusOptions(ctx, readerConfig(cfg, provider))
+	case "azure":
+		return tracker.AzureStatusOptions(ctx, readerConfig(cfg, provider))
+	default:
+		return tracker.StatusOptions{}, fmt.Errorf("tracker %q has no status-mapping options", provider)
+	}
 }

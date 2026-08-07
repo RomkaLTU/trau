@@ -4,11 +4,18 @@ import {
   UNMAPPED,
   boardNameError,
   deriveGroupingRows,
+  mappingSpec,
   parseBoardStates,
   serializeBoardStates,
+  serializeGrouping,
   type BoardStatePair,
   type StatusColumn,
 } from '@/lib/statusmap'
+
+// The spec is what tells the two helpers which semantics they are under, so the
+// tests name the real provider specs rather than a hand-built stand-in.
+const azure = mappingSpec('azure')!
+const linear = mappingSpec('linear')!
 
 const columns: StatusColumn[] = [
   { name: 'New', suggestedGroup: 'backlog' },
@@ -72,7 +79,7 @@ describe('boardNameError', () => {
 
 describe('deriveGroupingRows', () => {
   it('prefills from the suggestions when the repo has written nothing', () => {
-    const rows = deriveGroupingRows(columns, '')
+    const rows = deriveGroupingRows(columns, '', azure)
     expect(rows.map((r) => r.group)).toEqual([
       'backlog',
       'unstarted',
@@ -83,7 +90,7 @@ describe('deriveGroupingRows', () => {
   })
 
   it('treats a written mapping as exhaustive, so an omitted column reads unmapped', () => {
-    const rows = deriveGroupingRows(columns, 'New=backlog,done=canceled')
+    const rows = deriveGroupingRows(columns, 'New=backlog,done=canceled', azure)
     expect(rows.map((r) => [r.name, r.group])).toEqual([
       ['New', 'backlog'],
       ['Ready to Develop', UNMAPPED],
@@ -94,7 +101,7 @@ describe('deriveGroupingRows', () => {
   })
 
   it('keeps a mapped name the board no longer carries so saving never drops it', () => {
-    const rows = deriveGroupingRows(columns, 'Triage=backlog')
+    const rows = deriveGroupingRows(columns, 'Triage=backlog', azure)
     const extra = rows.find((r) => r.name === 'Triage')
     expect(extra).toEqual({
       name: 'Triage',
@@ -105,8 +112,71 @@ describe('deriveGroupingRows', () => {
   })
 
   it('falls back to the config value alone when the board could not be read', () => {
-    const rows = deriveGroupingRows([], 'New=backlog,Done=done')
+    const rows = deriveGroupingRows([], 'New=backlog,Done=done', azure)
     expect(rows.map((r) => r.name)).toEqual(['New', 'Done'])
     expect(rows.every((r) => !r.onBoard)).toBe(true)
+  })
+})
+
+// The Linear key overlays rather than replaces: a written pair moves that state
+// alone and every other row keeps the section its own state type derives, so the
+// editor never shows Unknown and saving never writes a row it did not change.
+describe('deriveGroupingRows on an overlay key', () => {
+  const states: StatusColumn[] = [
+    { name: 'Triage', suggestedGroup: 'backlog' },
+    { name: 'Todo', suggestedGroup: 'unstarted' },
+    { name: 'Ready for QA', suggestedGroup: 'started' },
+    { name: 'Done', suggestedGroup: 'done' },
+  ]
+
+  it('keeps every unlisted state on its derived section, overriding only what is written', () => {
+    const rows = deriveGroupingRows(states, 'Ready for QA=done', linear)
+    expect(rows.map((r) => [r.name, r.group])).toEqual([
+      ['Triage', 'backlog'],
+      ['Todo', 'unstarted'],
+      ['Ready for QA', 'done'],
+      ['Done', 'done'],
+    ])
+    expect(rows.some((r) => r.group === UNMAPPED)).toBe(false)
+  })
+
+  it('serializes only the rows that differ from their derived section', () => {
+    const rows = deriveGroupingRows(states, 'Ready for QA=done', linear)
+    expect(serializeGrouping(rows, linear)).toBe('Ready for QA=done')
+
+    const edited = rows.map((r) =>
+      r.name === 'Triage' ? { ...r, group: 'unstarted' as const } : r,
+    )
+    expect(serializeGrouping(edited, linear)).toBe(
+      'Triage=unstarted,Ready for QA=done',
+    )
+  })
+
+  it('writes nothing once every row is put back on its derived section', () => {
+    const rows = deriveGroupingRows(states, 'Ready for QA=done', linear)
+    const reset = rows.map((r) => ({ ...r, group: r.suggested }))
+    expect(serializeGrouping(reset, linear)).toBe('')
+  })
+
+  it('still writes every row of an exhaustive key', () => {
+    const rows = deriveGroupingRows(states, '', azure)
+    expect(serializeGrouping(rows, azure)).toBe(
+      'Triage=backlog,Todo=unstarted,Ready for QA=started,Done=done',
+    )
+  })
+})
+
+describe('mappingSpec', () => {
+  it('gives each provider with a mapping key its own key and semantics', () => {
+    expect(mappingSpec('azure')).toMatchObject({
+      key: 'AZURE_BOARD_STATES',
+      overlay: false,
+    })
+    expect(mappingSpec('linear')).toMatchObject({
+      key: 'LINEAR_BOARD_STATES',
+      overlay: true,
+    })
+    expect(mappingSpec('jira')).toBeNull()
+    expect(mappingSpec('internal')).toBeNull()
   })
 })

@@ -106,7 +106,24 @@ func (r *linearReader) ResolveBinding(ctx context.Context) (ProjectBinding, erro
 	return b, nil
 }
 
+// linearPulls coalesces the sync work of repos mirroring the same Linear team and
+// project, the way azurePulls does for a shared Azure DevOps board: the first in
+// flight runs the query and the rest of that tick read its answer. The status
+// mapping is part of the key because it decides which group every row reads back
+// as, so two repos share a pull only when they map the team identically.
+var linearPulls singleflight.Group
+
 func (r *linearReader) SyncPull(ctx context.Context, binding ProjectBinding, since string) ([]SyncedIssue, error) {
+	pulled, err, _ := linearPulls.Do(r.scopeKey("pull", binding, since), func() (any, error) {
+		return r.syncPull(ctx, binding, since)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return pulled.([]SyncedIssue), nil
+}
+
+func (r *linearReader) syncPull(ctx context.Context, binding ProjectBinding, since string) ([]SyncedIssue, error) {
 	issues, err := r.client.ProjectIssues(ctx, binding.TeamID, binding.ProjectID, since)
 	if err != nil {
 		return nil, err
@@ -114,7 +131,7 @@ func (r *linearReader) SyncPull(ctx context.Context, binding ProjectBinding, sin
 	out := make([]SyncedIssue, 0, len(issues))
 	scanner := AttachmentScanner{}
 	for i := range issues {
-		out = append(out, linearSynced(&issues[i], scanner))
+		out = append(out, linearSynced(&issues[i], scanner, r.boardStates))
 	}
 	return out, nil
 }
@@ -123,18 +140,26 @@ func (r *linearReader) ProjectIdentifiers(ctx context.Context, binding ProjectBi
 	return r.client.ProjectIssueIDs(ctx, binding.TeamID, binding.ProjectID)
 }
 
+// scopeKey names the read a repo's Linear binding produces, so two repos asking
+// the same question of the same team recognise each other's work.
+func (r *linearReader) scopeKey(stage string, binding ProjectBinding, since string) string {
+	return strings.Join([]string{
+		stage, binding.TeamID, binding.ProjectID, since, r.boardStates.key(),
+	}, "\x00")
+}
+
 func (r *linearReader) Identity(ctx context.Context) (id, name string, err error) {
 	return r.client.Viewer(ctx)
 }
 
-func linearSynced(iss *linearapi.SyncIssue, scanner AttachmentScanner) SyncedIssue {
+func linearSynced(iss *linearapi.SyncIssue, scanner AttachmentScanner, states linearBoardStates) SyncedIssue {
 	out := SyncedIssue{
 		ID:           iss.Identifier,
 		ExternalID:   iss.ID,
 		Title:        iss.Title,
 		Description:  iss.Description,
 		Status:       iss.State.Name,
-		Group:        mapLinearGroup(iss.State.Type),
+		Group:        states.group(iss.State.Name, iss.State.Type),
 		Priority:     iss.Priority,
 		Labels:       labelNames(iss.Labels),
 		Parent:       iss.Parent,
