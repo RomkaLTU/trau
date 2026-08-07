@@ -21,7 +21,6 @@ import {
   SquareTerminal,
   TriangleAlert,
   Wrench,
-  X,
 } from "lucide-react";
 import { parseAsString, useQueryState } from "nuqs";
 
@@ -51,6 +50,11 @@ import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import type { PaneTab } from "@/components/trau/run-view";
 import { SegmentedControl } from "@/components/trau/segmented-control";
+import {
+  QueueRowAction,
+  RemoveFromQueueButton,
+  StopRunButton,
+} from "@/components/trau/queue-row-actions";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { SyncStateLine } from "@/components/trau/sync-state";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -115,9 +119,9 @@ import {
   type QueueResponse,
 } from "@/lib/queue";
 import {
-  removeFromQueueLabel,
   removeFromQueueTitle,
   removeFromQueueWarning,
+  REMOVE_FROM_QUEUE_LABEL,
 } from "@/lib/queue-remove";
 import {
   pauseKind,
@@ -158,7 +162,7 @@ function ActionCaption({ children }: { children: string }) {
 
 // RemoveFromQueueDialog confirms taking one item out of the queue and spells out
 // that the ticket survives, so the gesture reads nothing like the ticket Delete
-// a user reaches for when this one refuses. A running item is stopped first.
+// a user reaches for when this one refuses.
 function RemoveFromQueueDialog({
   item,
   onOpenChange,
@@ -177,45 +181,10 @@ function RemoveFromQueueDialog({
       windowTitle="remove from queue"
       title={removeFromQueueTitle(item)}
       description={removeFromQueueWarning(item)}
-      confirmLabel={removeFromQueueLabel(item)}
+      confirmLabel={REMOVE_FROM_QUEUE_LABEL}
       destructive
       onConfirm={() => onConfirm(item)}
     />
-  );
-}
-
-// RemoveFromQueueButton is the queue's own X: it ejects the row's work
-// altogether — the saved progress goes and the ticket returns to Ready. It stays
-// enabled on a running item — the confirm behind it stops the run first — and
-// reads as waiting while that stop is in flight.
-function RemoveFromQueueButton({
-  item,
-  disabled,
-  onRemove,
-}: {
-  item: QueueItem;
-  disabled: boolean;
-  onRemove: (id: string) => void;
-}) {
-  const removing = item.removing ?? false;
-
-  return (
-    <button
-      type="button"
-      onClick={() => onRemove(item.id)}
-      disabled={disabled || removing}
-      title={
-        removing ? "Removing…" : "Remove from queue (the ticket goes back to Ready)"
-      }
-      aria-label={`Remove ${item.id} from queue`}
-      className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-fail disabled:pointer-events-none disabled:opacity-30"
-    >
-      {removing ? (
-        <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" />
-      ) : (
-        <X className="size-3.5" aria-hidden="true" />
-      )}
-    </button>
   );
 }
 
@@ -473,6 +442,8 @@ function QueueBuilderRow({
   onMove,
   onRun,
   onRemove,
+  stopping,
+  onStop,
   onPeek,
 }: {
   item: QueueItem;
@@ -487,6 +458,8 @@ function QueueBuilderRow({
   onMove: (dir: -1 | 1) => void;
   onRun: () => void;
   onRemove: (id: string) => void;
+  stopping: boolean;
+  onStop: () => void;
   onPeek: (id: string) => void;
 }) {
   const isEpic = item.kind === "epic";
@@ -597,10 +570,12 @@ function QueueBuilderRow({
           >
             <ArrowDown className="size-3.5" aria-hidden="true" />
           </button>
-          <RemoveFromQueueButton
+          <QueueRowAction
             item={item}
-            disabled={busy}
+            busy={busy}
+            stopping={stopping}
             onRemove={onRemove}
+            onStop={onStop}
           />
         </div>
       </div>
@@ -1074,8 +1049,15 @@ function LaunchQueueCard({
   });
 
   const remove = useMutation({
-    mutationFn: (item: QueueItem) =>
-      dequeue(repo, item.id, { stop: item.status === "running" }),
+    mutationFn: (item: QueueItem) => dequeue(repo, item.id),
+    onSuccess: setQueue,
+  });
+
+  // The builder still gets a running row for as long as the queue holds one with
+  // the drain disarmed — a standalone per-row Run, or the gap between a child
+  // exiting and the tick that parks it — so it carries the same Stop.
+  const stop = useMutation({
+    mutationFn: () => stopQueue(repo),
     onSuccess: setQueue,
   });
   const askRemove = (id: string) => {
@@ -1578,6 +1560,8 @@ function LaunchQueueCard({
                       onMove={(dir) => move.mutate({ id: item.id, dir })}
                       onRun={() => runOne.mutate(item.id)}
                       onRemove={askRemove}
+                      stopping={stop.isPending || (queue.data?.stopping ?? false)}
+                      onStop={() => stop.mutate()}
                       onPeek={onPeek}
                     />
                   ))}
@@ -1964,8 +1948,8 @@ function RunningRow({
   item,
   instance,
   now,
-  busy,
-  onRemove,
+  stopping,
+  onStop,
   onPeek,
 }: {
   repo: string;
@@ -1973,8 +1957,8 @@ function RunningRow({
   item?: QueueItem;
   instance?: Instance;
   now: number;
-  busy: boolean;
-  onRemove: (id: string) => void;
+  stopping: boolean;
+  onStop: () => void;
   onPeek: (id: string) => void;
 }) {
   const live = instance?.ticket === ticket.id ? instance : undefined;
@@ -1997,10 +1981,10 @@ function RunningRow({
         <BacklogPRBadge status={ticket.prStatus} />
         {item ? (
           <span className="ml-auto flex">
-            <RemoveFromQueueButton
-              item={item}
-              disabled={busy}
-              onRemove={onRemove}
+            <StopRunButton
+              id={ticket.id}
+              stopping={stopping}
+              onStop={onStop}
             />
           </span>
         ) : null}
@@ -2388,8 +2372,7 @@ function RunningQueueView({
   const runNextTarget = runNextId ? itemsById.get(runNextId) : undefined;
 
   const remove = useMutation({
-    mutationFn: (item: QueueItem) =>
-      dequeue(repo, item.id, { stop: item.status === "running" }),
+    mutationFn: (item: QueueItem) => dequeue(repo, item.id),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
   const askRemove = (id: string) => {
@@ -2458,8 +2441,8 @@ function RunningQueueView({
                 item={runningItem}
                 instance={instance}
                 now={now}
-                busy={remove.isPending}
-                onRemove={askRemove}
+                stopping={stopping}
+                onStop={onStop}
                 onPeek={onPeek}
               />
             ) : timeline.finalize ? (

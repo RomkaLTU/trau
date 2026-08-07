@@ -56,8 +56,6 @@ type Server struct {
 	grillApplying    map[int64]bool
 	stopMu           sync.Mutex
 	stopping         map[string]bool
-	removeMu         sync.Mutex
-	removing         map[queueItemKey]bool
 	overlapMu        sync.Mutex
 	overlapWarned    map[overlapKey]bool
 	sup              Supervisor
@@ -128,7 +126,6 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		grillStopping:    map[int64]bool{},
 		grillApplying:    map[int64]bool{},
 		stopping:         map[string]bool{},
-		removing:         map[queueItemKey]bool{},
 		overlapWarned:    map[overlapKey]bool{},
 		sup:              newOSSupervisor(),
 		term:             osascriptLauncher{},
