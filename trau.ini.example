@@ -265,9 +265,9 @@ LINT_FIX_CMD=                # deterministic fixer command run in the target rep
 CLEANUP=1                    # 1 = just before verify, a cheap agent strips AI-slop from the slice's diff —
                              # unnecessary comments, dead code, over-defensive scaffolding — so the code reads
                              # hand-written. Behavior-preserving; fails open. 0 disables it.
-TEST_EFFORT=high             # how many tests the build/repair/bugfix agents write: high (default, the agent
-                             # tests as it sees fit) | medium (core behavior plus important edge and error
-                             # cases) | low (only the core happy path) | off (none at all — verify then runs
+TEST_EFFORT=low              # how many tests the build/repair/bugfix agents write: high (the agent tests as
+                             # it sees fit) | medium (core behavior plus important edge and error cases) |
+                             # low (default, only the core happy path) | off (none at all — verify then runs
                              # the existing tests covering the changed code as a regression check).
                              # Browser end-to-end verification is unaffected: see BROWSER_VERIFY / APP_URL.
 VERIFY_EFFORT=medium         # how strictly verify grades a slice. It narrows BOTH what the verifier

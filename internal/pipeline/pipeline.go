@@ -698,8 +698,8 @@ type Pipeline struct {
 	// every diff a cohort produces was written under the same instructions.
 	CodeStyleNote bool
 	// TestEffort constrains how many tests the build, repair and bugfix agents
-	// write (config TEST_EFFORT): "off", "low", "medium", or "high" — the default,
-	// which adds nothing to the prompts.
+	// write (config TEST_EFFORT): "off", "low" — the default — "medium", or
+	// "high", which adds nothing to the prompts.
 	TestEffort string
 	// VerifyEffort sets how strictly verify grades a slice (config VERIFY_EFFORT):
 	// "low", "medium" — the default — or "high", which adds nothing to the prompt
@@ -4503,9 +4503,8 @@ func (p *Pipeline) codeStyleNote() string {
 }
 
 // testEffortNote is the build/repair/bugfix fragment constraining how much
-// effort the agent spends writing tests (config TEST_EFFORT). "high" — the
-// default — and any unrecognized level render nothing, leaving those prompts
-// byte-identical to a repo that never set the key.
+// effort the agent spends writing tests (config TEST_EFFORT). "high" and any
+// unrecognized level render nothing, leaving the agent to test as it sees fit.
 func testEffortNote(level string) string {
 	switch level {
 	case "off":

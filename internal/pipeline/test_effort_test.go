@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
@@ -36,20 +37,43 @@ func TestTestEffortNoteMapsEveryLevel(t *testing.T) {
 func TestTestEffortConstrainsEveryCodingPrompt(t *testing.T) {
 	const id = "COD-1211"
 	for _, level := range []string{"off", "low", "medium", "high"} {
-		p := &Pipeline{TestEffort: level}
-		note := testEffortNote(p.TestEffort)
-		phases := []namedPrompt{
-			{"build", buildInstruction(p.prompts, id, "feature/x", "", "", note, "", "")},
-			{"repair", repairInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", note, "", "")},
-			{"bugfix", bugfixInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", note, "", "")},
-		}
-		for _, ph := range phases {
+		for _, ph := range codingPrompts(id, testEffortNote(level)) {
 			for other, marker := range levelMarkers {
 				want := other == level
 				if got := strings.Contains(ph.got, marker); got != want {
 					t.Errorf("TEST_EFFORT=%s: %s prompt contains the %s fragment = %v, want %v", level, ph.name, other, got, want)
 				}
 			}
+		}
+	}
+}
+
+func codingPrompts(id, note string) []namedPrompt {
+	p := &Pipeline{}
+	return []namedPrompt{
+		{"build", buildInstruction(p.prompts, id, "feature/x", "", "", note, "", "")},
+		{"repair", repairInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", note, "", "")},
+		{"bugfix", bugfixInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", note, "", "")},
+	}
+}
+
+// A repo that never sets TEST_EFFORT gets the happy-path-only fragment.
+func TestDefaultTestEffortInjectsTheLowFragment(t *testing.T) {
+	const id = "COD-1211"
+
+	for _, ph := range codingPrompts(id, testEffortNote(config.Defaults().TestEffort)) {
+		mustContain(t, ph.name+" prompt at the default level", ph.got, levelMarkers["low"])
+	}
+}
+
+func TestHighTestEffortPromptsCarryNoFragment(t *testing.T) {
+	const id = "COD-1211"
+
+	bare := codingPrompts(id, "")
+	high := codingPrompts(id, testEffortNote("high"))
+	for i, ph := range high {
+		if ph.got != bare[i].got {
+			t.Errorf("TEST_EFFORT=high: %s prompt = %q, want it byte-identical to the fragment-free prompt %q", ph.name, ph.got, bare[i].got)
 		}
 	}
 }
