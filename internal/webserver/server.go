@@ -315,6 +315,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/prompts", s.handlePrompts)
 	mux.HandleFunc(APIPrefix+"/prompts/{name}", s.handlePromptItem)
 	mux.HandleFunc(APIPrefix+"/trackers/{provider}/test-connection", s.handleTrackerTestConnection)
+	mux.HandleFunc(APIPrefix+"/trackers/{provider}/status-options", s.handleTrackerStatusOptionsProbe)
 	mux.HandleFunc(APIPrefix+"/fs/browse", s.handleFSBrowse)
 	mux.HandleFunc(APIPrefix+"/fs/discover", s.handleFSDiscover)
 	mux.HandleFunc(APIPrefix+"/fs/init", s.handleFSInit)

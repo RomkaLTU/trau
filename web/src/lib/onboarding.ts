@@ -279,6 +279,10 @@ export interface TrackerFields {
   azureOrgUrl: string
   azurePat: string
   binding: string
+  // Only what the optional status-mapping section was actually set to: the
+  // provider's *_BOARD_STATES key and any STATUS_* pin. An untouched section
+  // leaves it empty, and none of those keys is written at all.
+  mapping?: Record<string, string>
 }
 
 // The keys the project's tracker is configured with. A blank secret or Jira
@@ -303,6 +307,9 @@ export function trackerConfigValues(
   }
   if (fields.binding.trim() !== '') {
     keys.LINEAR_TEAM = fields.binding.trim()
+  }
+  for (const [key, value] of Object.entries(fields.mapping ?? {})) {
+    if (value.trim() !== '') keys[key] = value
   }
   return keys
 }

@@ -112,3 +112,20 @@ later. A free-text add row covers a column the API missed, and a name carrying
   models the section as *conditionally derived* — a done-category row carries a
   **derived/mapped** badge the operator can flip, and the minimal-write rule the
   Linear arm introduced keeps such a pair instead of filtering it out.
+- The onboarding slice (COD-1538) needed the same two lists for a repo that does
+  not exist yet: during `/projects/new` the credentials live only in the wizard's
+  form and there is no stored config for a repo-scoped GET to read. It answers
+  with a sibling **`POST /api/v1/trackers/{provider}/status-options`** that takes
+  the connection test's credential payload plus the chosen binding and shares the
+  repo-scoped handler's provider arms verbatim — the same 200-with-`error` shape,
+  the same 404 gate, the same registration exposure check the test-connection
+  probe carries because it too receives raw secrets. The editor moved behind
+  props so neither half of it knows which endpoint answered; it is the shape,
+  not the source, that the ADR fixes.
+- The wizard's section is optional and collapsed, fetching only on first expand,
+  and it writes nothing unless a row was actually changed or a pin actually
+  named. The four `STATUS_*` pins joined `trackerConfigKeys` so they can ride the
+  project-tracker write atomically with the rest of the set: they describe the
+  tracker's workflow rather than one repo's taste, and `projectSeededKeys`
+  already lets a repo-explicit value win over the seed, so a repo that pins its
+  own is unaffected.
