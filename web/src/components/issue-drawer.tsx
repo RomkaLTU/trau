@@ -8,8 +8,10 @@ import {
   ExternalLink,
   Flame,
   ListPlus,
+  MoreHorizontal,
   Pencil,
   Play,
+  Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -30,6 +32,13 @@ import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueAttachments } from "@/components/issue-attachments";
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sheet,
   SheetContent,
@@ -428,36 +437,16 @@ function IssueDrawerBody({
                 }
               />
             ))}
-          {internal && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setEditing(true)}
-            >
-              <Pencil />
-              Edit
-            </Button>
-          )}
-          {issue.url && (
-            <Button variant="outline" size="sm" asChild>
-              <a href={issue.url} target="_blank" rel="noreferrer">
-                <ExternalLink />
-                Open in {trackerName(issue.provider)}
-              </a>
-            </Button>
-          )}
-          {!issue.archived && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => archive.mutate({ id, archived: true })}
-              disabled={archive.isPending}
-            >
-              <Archive />
-              Archive
-            </Button>
-          )}
-          <DeleteIssueDialog repo={repo} id={id} onDeleted={onClose} />
+          <IssueActionsMenu
+            repo={repo}
+            id={id}
+            issue={issue}
+            internal={internal}
+            onEdit={() => setEditing(true)}
+            onArchive={() => archive.mutate({ id, archived: true })}
+            archiving={archive.isPending}
+            onDeleted={onClose}
+          />
           {addToQueue.error && (
             <p className="w-full text-xs text-destructive">
               {String((addToQueue.error as Error).message)}
@@ -479,6 +468,89 @@ function IssueDrawerBody({
       )}
 
       {runSteps.dialog}
+    </>
+  );
+}
+
+// IssueActionsMenu is the footer's overflow: the actions worth reaching for but not
+// worth a seat on a row that only fits a few. The delete confirm is held here beside
+// the menu rather than under the item that opens it — selecting an item closes the
+// menu, and a dialog the menu owned would go with it.
+function IssueActionsMenu({
+  repo,
+  id,
+  issue,
+  internal,
+  onEdit,
+  onArchive,
+  archiving,
+  onDeleted,
+}: {
+  repo: string;
+  id: string;
+  issue: Issue;
+  internal: boolean;
+  onEdit: () => void;
+  onArchive: () => void;
+  archiving: boolean;
+  onDeleted: () => void;
+}) {
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const hasLead = internal || !!issue.url;
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            aria-label="More actions"
+            title="More actions"
+          >
+            <MoreHorizontal />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {internal && (
+            <DropdownMenuItem onSelect={onEdit}>
+              <Pencil />
+              Edit
+            </DropdownMenuItem>
+          )}
+          {issue.url && (
+            <DropdownMenuItem asChild>
+              <a href={issue.url} target="_blank" rel="noreferrer">
+                <ExternalLink />
+                Open in {trackerName(issue.provider)}
+              </a>
+            </DropdownMenuItem>
+          )}
+          {hasLead && <DropdownMenuSeparator />}
+          {!issue.archived && (
+            <DropdownMenuItem disabled={archiving} onSelect={onArchive}>
+              <Archive />
+              Archive
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() => setDeleteOpen(true)}
+          >
+            <Trash2 />
+            Delete
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <DeleteIssueDialog
+        repo={repo}
+        id={id}
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        onDeleted={onDeleted}
+      />
     </>
   );
 }
