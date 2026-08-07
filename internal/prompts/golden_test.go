@@ -30,6 +30,9 @@ const (
 	goldenGrillQuestion    = "Which OAuth flow the desktop client should use."
 	goldenGrillFailure     = "gave_up at phase verify — verify failed three times on the same assertion"
 	goldenGrillDossier     = "/tmp/trau-attachments-COD-123/dossier.md"
+
+	goldenVerifyEffortLow    = " Verification effort for this run is LOW, which supersedes the adversarial framing and the code-smell audit above: the rubric is the entire job. Grade every acceptance criterion, run the required tests, exercise the ui_paths, and fail the verdict only if an acceptance criterion fails, a required test fails, a fail_condition holds, or a non_goal was implemented. Do not investigate beyond the rubric — no regression sweep of the rest of the repo, no edge-case exploration, no code-smell audit. If you incidentally notice a problem outside the rubric, record it in the verdict summary as an explicitly non-blocking note; it must not fail the verdict."
+	goldenVerifyEffortMedium = " Verification effort for this run is MEDIUM, which supersedes the adversarial framing and the code-smell audit above: verify the rubric contract — grade every acceptance criterion, run the required tests, exercise the ui_paths — and check the slice's own footprint for regressions, meaning the existing tests covering the changed files must still pass and behavior the diff directly exercises must not break. Do not hunt beyond the diff — no edge-case exploration of adjacent features, no code-smell audit. Fail the verdict only for a rubric-contract violation (a failed acceptance criterion, a failing required test, a fail_condition holding, an implemented non_goal) or a regression in what the slice touched; record anything else you notice in the verdict summary as an explicitly non-blocking note."
 )
 
 func goldenRepairData(codeStyle, handoff, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) RepairData {
@@ -225,6 +228,53 @@ func TestRenderTestEffortGoldens(t *testing.T) {
 			TicketContext:  goldenTicketCtx,
 		}},
 	})
+}
+
+// The VERIFY_EFFORT fragments carry the verbatim wording pipeline's
+// verifyEffortNote renders, so the goldens pin both the splice point and what the
+// verifier is actually told at each level. The high level renders nothing and is
+// pinned by verify_brief/verify_derive above, which leave VerifyEffort empty.
+func TestRenderVerifyEffortGoldens(t *testing.T) {
+	verifyEffort := func(fragment string) VerifyData {
+		return VerifyData{
+			ID:             goldenID,
+			Handoff:        goldenHandoffPath,
+			Verdict:        goldenVerdictPath,
+			Note:           "NOTE.",
+			ChecksFragment: " CHECKS-FRAGMENT.",
+			RubricNote:     " RUBRIC-NOTE.",
+			LessonsNote:    " LESSONS-NOTE.",
+			VerifyEffort:   fragment,
+			TicketContext:  goldenTicketCtx,
+		}
+	}
+
+	assertGoldens(t, []goldenCase{
+		{"verify_effort_low", "verify", verifyEffort(goldenVerifyEffortLow)},
+		{"verify_effort_medium", "verify", verifyEffort(goldenVerifyEffortMedium)},
+	})
+}
+
+// The high level must leave the prompt byte-identical to a repo that never set
+// VERIFY_EFFORT, so an empty fragment renders exactly the pinned verify golden.
+func TestVerifyEffortHighRendersThePinnedVerifyGolden(t *testing.T) {
+	want, err := os.ReadFile(filepath.Join("testdata", "verify_brief.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := VerifyData{
+		ID:             goldenID,
+		Handoff:        goldenHandoffPath,
+		Verdict:        goldenVerdictPath,
+		Note:           "NOTE.",
+		ChecksFragment: " CHECKS-FRAGMENT.",
+		RubricNote:     " RUBRIC-NOTE.",
+		LessonsNote:    " LESSONS-NOTE.",
+		TicketContext:  goldenTicketCtx,
+	}
+	if got := Render("verify", data); got != string(want) {
+		t.Errorf("verify at VERIFY_EFFORT=high diverged from the pre-change golden\n got: %q\nwant: %q", got, want)
+	}
 }
 
 // The round is the default reach and the single question the exception, so no grill

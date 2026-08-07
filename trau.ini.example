@@ -270,6 +270,25 @@ TEST_EFFORT=high             # how many tests the build/repair/bugfix agents wri
                              # cases) | low (only the core happy path) | off (none at all — verify then runs
                              # the existing tests covering the changed code as a regression check).
                              # Browser end-to-end verification is unaffected: see BROWSER_VERIFY / APP_URL.
+VERIFY_EFFORT=medium         # how strictly verify grades a slice. It narrows BOTH what the verifier
+                             # investigates and what can fail the verdict, so a lower level is cheaper and
+                             # faster, not just more lenient:
+                             #   high   — full adversarial QA: the rubric plus an open-ended hunt for
+                             #            anything broken anywhere near the slice.
+                             #   medium — (default) the rubric contract plus regressions in what the slice
+                             #            touched: existing tests covering the changed files must still pass
+                             #            and behavior the diff exercises must not break. No hunting past
+                             #            the diff.
+                             #   low    — the rubric contract alone: acceptance criteria, required tests,
+                             #            fail conditions, non-goals. No regression sweep, no edge-case
+                             #            exploration, no code-smell audit.
+                             # Anything noticed beyond the level's bar is written into the verdict summary
+                             # as an explicitly non-blocking note. There is no "off": to skip verification
+                             # for a single run, use the per-run `verify` step skip instead.
+                             # NOT the same knob as CLAUDE_VERIFY_EFFORT / CODEX_VERIFY_EFFORT above —
+                             # those set the PROVIDER's reasoning effort for the verify phase; this sets
+                             # how strict the verification itself is. The mechanical test gate (required
+                             # tests exist, the slice's own changed tests still pass) runs at every level.
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
 VERIFY_PROOFS=on             # on = when browser verify drives the app, record a trace and save key
                              # screenshots, then harvest them to the hub (viewable over the API). off disables it.

@@ -248,6 +248,14 @@ type Config struct {
 	// agent to test as it sees fit. Browser end-to-end verification is untouched —
 	// that stays governed by BrowserVerify and AppURL.
 	TestEffort string
+	// VerifyEffort sets how strictly the verify agent grades a slice (config
+	// VERIFY_EFFORT): "low" grades the rubric contract and nothing else, "medium"
+	// (the default) adds regressions in what the slice touched, and "high" keeps
+	// the full adversarial hunt by injecting nothing. It narrows both what verify
+	// investigates and what may fail the verdict; skipping verify outright is the
+	// per-run "verify" skip, not a level. Unrelated to CLAUDE_VERIFY_EFFORT /
+	// CODEX_VERIFY_EFFORT, which set the provider's reasoning effort.
+	VerifyEffort string
 	// StripMechanicalMCP launches the mechanical phases (cleanup, commit, repair,
 	// bugfix, push-repair) with the target repo's MCP servers stripped, where the
 	// provider CLI supports it (Claude's --strict-mcp-config) — those phases never
@@ -523,6 +531,7 @@ func Defaults() Config {
 		Cleanup:                true,
 		CodeStyleNote:          true,
 		TestEffort:             "high",
+		VerifyEffort:           "medium",
 		StripMechanicalMCP:     true,
 		ExploreSubagents:       false,
 		BrowserVerify:          "auto",
@@ -1009,6 +1018,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["CODE_STYLE_NOTE"] = src.name
 	}
 	str("TEST_EFFORT", &c.TestEffort)
+	str("VERIFY_EFFORT", &c.VerifyEffort)
 	if v, src := get("STRIP_MECHANICAL_MCP"); v != "" {
 		c.StripMechanicalMCP = v == "1"
 		sources["STRIP_MECHANICAL_MCP"] = src.name
@@ -1942,6 +1952,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "TEST_EFFORT", Group: sectionPipeline, WebEditable: true, Default: "high", Description: "How much effort the build, repair and bugfix agents spend writing tests: high (default — the agent tests as it sees fit) | medium (core behavior plus the important edge and error cases, no exhaustive permutations) | low (only the core happy path of the changed behavior) | off (write no new or extended tests at all; existing tests must still pass). Browser end-to-end verification is unaffected — it stays governed by BROWSER_VERIFY and APP_URL", Options: []string{"off", "low", "medium", "high"}},
 		{Key: "STRIP_MECHANICAL_MCP", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "EXPLORE_SUBAGENTS", Group: sectionAgent, WebEditable: true, Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
+		{Key: "VERIFY_EFFORT", Group: sectionVerify, WebEditable: true, Default: "medium", Description: "How strictly verify grades a slice — it narrows both what the verifier investigates and what can fail the verdict: high (today's full adversarial QA: the rubric plus an open-ended hunt for anything broken) | medium (default — the rubric contract plus regressions in what the slice touched, no hunting beyond the diff) | low (the rubric contract alone: acceptance criteria, required tests, fail conditions, non-goals). Anything noticed beyond the level's bar is recorded in the verdict summary as a non-blocking note. To skip verification entirely, use the per-run verify skip. Unrelated to CLAUDE_VERIFY_EFFORT / CODEX_VERIFY_EFFORT, which set the provider's reasoning effort for the verify phase", Options: []string{"low", "medium", "high"}},
 		{Key: "BROWSER_VERIFY", Group: sectionVerify, WebEditable: true, Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "VERIFY_PROOFS", Group: sectionVerify, WebEditable: true, Default: "on", Description: "When browser verify drives the app, record a trace and save key screenshots, then harvest them to the hub: on | off", Options: []string{"on", "off"}},
 		{Key: "PROOF_RETENTION_DAYS", Group: sectionVerify, Kind: "int", WebEditable: true, Default: "14", Description: "Days the hub keeps a run's raw local trace and its trau-proofs branch images before the daily sweep prunes them; 0 = keep forever. Hub-stored screenshots and rendered videos are small and always kept"},
@@ -2608,6 +2619,8 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "TEST_EFFORT":
 		return cfg.TestEffort
+	case "VERIFY_EFFORT":
+		return cfg.VerifyEffort
 	case "STRIP_MECHANICAL_MCP":
 		if cfg.StripMechanicalMCP {
 			return "1"

@@ -62,11 +62,11 @@ func TestVerifyTestEffortOnlyRewordsTheOffLevel(t *testing.T) {
 		if note := verifyTestEffortNote(level); note != "" {
 			t.Errorf("verifyTestEffortNote(%q) = %q, want empty", level, note)
 		}
-		got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "", verifyTestEffortNote(level), "", false)
+		got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "", verifyTestEffortNote(level), "", "", false)
 		mustContain(t, "verify prompt at "+level, got, defaultWording)
 	}
 
-	off := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "", verifyTestEffortNote("off"), "", false)
+	off := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "", verifyTestEffortNote("off"), "", "", false)
 	mustNotContain(t, "verify prompt at off", off, defaultWording)
 	mustContain(t, "verify prompt at off", off,
 		"run the existing tests that cover the changed code",
@@ -80,7 +80,7 @@ func TestTestEffortLeavesBrowserVerifyAlone(t *testing.T) {
 	browser := browserNote("always", "http://localhost:3000")
 
 	for _, level := range []string{"off", "low", "medium", "high"} {
-		got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), browser, "", "", "", "", "", verifyTestEffortNote(level), "", false)
+		got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), browser, "", "", "", "", "", verifyTestEffortNote(level), "", "", false)
 		mustContain(t, "verify prompt at "+level, got, browser)
 	}
 }

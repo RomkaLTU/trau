@@ -199,6 +199,43 @@ func TestConfigWriteGrillProvider(t *testing.T) {
 	}
 }
 
+// VERIFY_EFFORT is enumerated in the catalog, so the generic enum path both
+// accepts a level and rejects "off" — the value that deliberately does not exist,
+// since skipping verification is the per-run verify skip — with the standard
+// "must be one of" message.
+func TestConfigWriteVerifyEffort(t *testing.T) {
+	home := t.TempDir()
+	root := seedConfigRepo(t, home, "acme")
+	t.Setenv("VERIFY_EFFORT", "")
+
+	ts := instancesServer(t, home)
+	res := putConfig(t, ts, "acme", ConfigWriteRequest{Key: "VERIFY_EFFORT", Value: "low", Layer: "project"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200", res.StatusCode)
+	}
+	cfg, err := config.LoadLayered(config.ProjectConfigPath(root), "", "", "")
+	if err != nil {
+		t.Fatalf("reload as a loop would: %v", err)
+	}
+	if cfg.VerifyEffort != "low" {
+		t.Errorf("loop-loaded VerifyEffort = %q, want low", cfg.VerifyEffort)
+	}
+
+	bad := putConfig(t, ts, "acme", ConfigWriteRequest{Key: "VERIFY_EFFORT", Value: "off", Layer: "project"})
+	defer func() { _ = bad.Body.Close() }()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PUT off status = %d, want 400", bad.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(bad.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if want := "VERIFY_EFFORT must be one of: low, medium, high"; body["error"] != want {
+		t.Errorf("error = %q, want %q", body["error"], want)
+	}
+}
+
 // TestConfigWriteUserLayer covers writing the user layer: the value lands in the
 // isolated ~/.trau.ini, not the repo's project file.
 func TestConfigWriteUserLayer(t *testing.T) {
@@ -248,6 +285,7 @@ func TestConfigWriteRejections(t *testing.T) {
 		{"non-option effort", ConfigWriteRequest{Key: "CLAUDE_BUILD_EFFORT", Value: "extreme", Layer: "project"}, http.StatusBadRequest},
 		{"bad grill provider", ConfigWriteRequest{Key: "GRILL_PROVIDER", Value: "ollama", Layer: "project"}, http.StatusBadRequest},
 		{"bad test effort", ConfigWriteRequest{Key: "TEST_EFFORT", Value: "none", Layer: "project"}, http.StatusBadRequest},
+		{"bad verify effort", ConfigWriteRequest{Key: "VERIFY_EFFORT", Value: "off", Layer: "project"}, http.StatusBadRequest},
 		{"empty secret", ConfigWriteRequest{Key: "LINEAR_API_KEY", Value: "", Layer: "user"}, http.StatusBadRequest},
 	}
 	for _, tc := range cases {

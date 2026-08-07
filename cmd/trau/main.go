@@ -1610,6 +1610,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Cleanup:              cfg.Cleanup,
 		CodeStyleNote:        cfg.CodeStyleNote,
 		TestEffort:           cfg.TestEffort,
+		VerifyEffort:         cfg.VerifyEffort,
 		SkillsExpected:       skillsExpected(repoRoot),
 		RequiredSkills:       cfg.RequiredSkills,
 		RequiredSkillsVerify: cfg.RequiredSkillsVerify,

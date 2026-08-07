@@ -59,10 +59,10 @@ func TestVerifySkillsPromptComposition(t *testing.T) {
 // rendered skills note lands in the prompt, an empty one leaves it untouched.
 func TestVerifyPromptCarriesSkillsNote(t *testing.T) {
 	note := verifySkillsPrompt(prompts.Renderer{}, []string{"tdd"}, []string{"tdd", "browser-harness"}, nil)
-	got := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", note, "", "", false)
+	got := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", note, "", "", "", false)
 	mustContain(t, "verifyTail(skills)", got, "Load these required skills with the Skill tool before verifying: tdd, browser-harness")
 
-	empty := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", "", "", "", false)
+	empty := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", "", "", "", "", false)
 	mustNotContain(t, "verifyTail(no-skills)", empty, "before verifying")
 }
 

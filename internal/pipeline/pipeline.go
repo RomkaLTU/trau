@@ -701,6 +701,11 @@ type Pipeline struct {
 	// write (config TEST_EFFORT): "off", "low", "medium", or "high" — the default,
 	// which adds nothing to the prompts.
 	TestEffort string
+	// VerifyEffort sets how strictly verify grades a slice (config VERIFY_EFFORT):
+	// "low", "medium" — the default — or "high", which adds nothing to the prompt
+	// and keeps the full adversarial hunt. Verify panel members inherit it through
+	// the same prompt path.
+	VerifyEffort string
 	// Skips names the pipeline work this run bypasses (the internal --skip flag):
 	// lintfix, cleanup, verify, ci, merge. It is per-run rather than
 	// configuration — no ini key sets it — and is recorded on each ticket's own
@@ -4525,6 +4530,21 @@ func verifyTestEffortNote(level string) string {
 	return "This slice was built with test writing switched off, so it has no new or changed test files: run the existing tests that cover the changed code using the project's test runner (in a multi-workspace repo, the affected workspace's own runner) — not the whole suite — as a regression check, and do NOT treat the absence of new or changed tests as a failure."
 }
 
+// verifyEffortNote narrows both what verify investigates and what may fail the
+// verdict (config VERIFY_EFFORT). "high" — the full adversarial hunt — and any
+// unrecognized level render nothing, leaving the verify prompt byte-identical to
+// a repo that never set the key.
+func verifyEffortNote(level string) string {
+	switch level {
+	case "low":
+		return " Verification effort for this run is LOW, which supersedes the adversarial framing and the code-smell audit above: the rubric is the entire job. Grade every acceptance criterion, run the required tests, exercise the ui_paths, and fail the verdict only if an acceptance criterion fails, a required test fails, a fail_condition holds, or a non_goal was implemented. Do not investigate beyond the rubric — no regression sweep of the rest of the repo, no edge-case exploration, no code-smell audit. If you incidentally notice a problem outside the rubric, record it in the verdict summary as an explicitly non-blocking note; it must not fail the verdict."
+	case "medium":
+		return " Verification effort for this run is MEDIUM, which supersedes the adversarial framing and the code-smell audit above: verify the rubric contract — grade every acceptance criterion, run the required tests, exercise the ui_paths — and check the slice's own footprint for regressions, meaning the existing tests covering the changed files must still pass and behavior the diff directly exercises must not break. Do not hunt beyond the diff — no edge-case exploration of adjacent features, no code-smell audit. Fail the verdict only for a rubric-contract violation (a failed acceptance criterion, a failing required test, a fail_condition holding, an implemented non_goal) or a regression in what the slice touched; record anything else you notice in the verdict summary as an explicitly non-blocking note."
+	default:
+		return ""
+	}
+}
+
 func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, testEffort, codeStyle, ticketCtx string) string {
 	return r.Render("build", prompts.BuildData{
 		ID:            id,
@@ -4935,7 +4955,7 @@ func qaRosterNote(id string, accounts []hubclient.QAAccount, notes string) strin
 // handoff agent) it derives the checkable behaviors itself from the injected ticket
 // content and the slice's diff. The verdict shape and pass/fail gating are identical
 // either way.
-func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, testEffort, ticketCtx string, proofsContract bool) string {
+func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, testEffort, verifyEffort, ticketCtx string, proofsContract bool) string {
 	return r.Render("verify", prompts.VerifyData{
 		ID:             id,
 		Handoff:        handoff,
@@ -4947,6 +4967,7 @@ func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFr
 		LessonsNote:    lessonsNote,
 		SkillsNote:     skillsNote,
 		TestEffort:     testEffort,
+		VerifyEffort:   verifyEffort,
 		TicketContext:  ticketCtx,
 		ProofsContract: proofsContract,
 		ProofsDir:      proofs.Dir(id),
@@ -5207,7 +5228,7 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, verifyTestEffortNote(p.TestEffort), ticketCtx, proofsOn))
+	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, verifyTestEffortNote(p.TestEffort), verifyEffortNote(p.VerifyEffort), ticketCtx, proofsOn))
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -5253,7 +5274,7 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNot
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, verifyTestEffortNote(p.TestEffort), ticketCtx, proofsOn))
+		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, verifyTestEffortNote(p.TestEffort), verifyEffortNote(p.VerifyEffort), ticketCtx, proofsOn))
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

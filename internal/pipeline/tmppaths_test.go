@@ -44,6 +44,6 @@ func TestAgentInterfacePathsAreTempRooted(t *testing.T) {
 // loop harvests from, so a temp directory that is not /tmp cannot split them.
 func TestVerifyPromptNamesTheHarvestedProofsDir(t *testing.T) {
 	const id = "COD-1268"
-	tail := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "skills", "", "", true)
+	tail := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "skills", "", "", "", true)
 	mustContain(t, "verifyTail", tail, proofs.Dir(id)+"/manifest.json")
 }
