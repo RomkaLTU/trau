@@ -13,6 +13,7 @@ import {
   CreatedBannerProvider,
 } from '@/components/trau/created-banner'
 import { InstallBanner } from '@/components/trau/install-banner'
+import { ReloadOnUpdate } from '@/components/trau/reload-on-update'
 import { UpdateNotifier } from '@/components/trau/update-notifier'
 import { AwayRecap } from '@/components/away-recap'
 import { NotificationToaster } from '@/components/notification-toaster'
@@ -54,6 +55,7 @@ function RootLayout() {
           {/* Outside the shell: its main column is a z-[1] stacking context that
               would paint every toast under an open sheet or dialog. */}
           <UpdateNotifier />
+          <ReloadOnUpdate />
           <Toaster />
         </CreatedBannerProvider>
       </ActiveRepoProvider>

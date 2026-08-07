@@ -5,8 +5,15 @@ import { apiFetch } from './api'
 export interface Health {
   status: string
   version: string
+  webBuild?: string
   uptime_seconds: number
   token_required: boolean
+}
+
+// A hub older than the stamp handshake answers no webBuild at all: unknown, not
+// a mismatch.
+export function servedBuild(health: Health | undefined): string {
+  return health?.webBuild ?? ''
 }
 
 async function fetchHealth(): Promise<Health> {

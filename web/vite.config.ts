@@ -43,6 +43,18 @@ function serviceWorker(): Plugin {
   }
 }
 
+// The hub embeds dist rather than the source, so the stamp baked into the
+// bundle has to be emitted beside it for the hub to be able to answer it.
+function buildStamp(): Plugin {
+  return {
+    name: 'trau-web-build-stamp',
+    apply: 'build',
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'web-build', source: build })
+    },
+  }
+}
+
 export default defineConfig({
   define: {
     __WEB_VERSION__: JSON.stringify(pkg.version),
@@ -53,6 +65,7 @@ export default defineConfig({
     react(),
     tailwindcss(),
     serviceWorker(),
+    buildStamp(),
   ],
   resolve: {
     alias: {
