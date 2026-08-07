@@ -2137,9 +2137,12 @@ var secretKeys = map[string]bool{
 // IsSecretKey reports whether key holds a credential (API key or token).
 func IsSecretKey(key string) bool { return secretKeys[key] }
 
-// trackerConfigKeys names which tracker a repo talks to and how it authenticates
-// there, in the order onboarding resolves them. They travel as a set: a project
-// configures them once and every member repo inherits the same answers.
+// trackerConfigKeys names which tracker a repo talks to, how it authenticates
+// there, and how that tracker's own workflow is read and written, in the order
+// onboarding resolves them. They travel as a set: a project configures them once
+// and every member repo inherits the same answers. The STATUS_* pins are seeded
+// like the rest because they describe the tracker's workflow rather than one
+// repo's taste, and projectSeededKeys still lets a repo-explicit value win.
 var trackerConfigKeys = []string{
 	"TRACKER_PROVIDER",
 	"LINEAR_TEAM",
@@ -2154,6 +2157,10 @@ var trackerConfigKeys = []string{
 	"AZURE_AREA_PATH",
 	"AZURE_TEAMS",
 	"AZURE_BOARD_STATES",
+	"STATUS_TODO",
+	"STATUS_IN_PROGRESS",
+	"STATUS_IN_REVIEW",
+	"STATUS_DONE",
 }
 
 // TrackerConfigKeys returns the keys that describe a repo's tracker.

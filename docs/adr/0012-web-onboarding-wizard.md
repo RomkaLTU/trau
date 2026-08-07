@@ -61,10 +61,10 @@ configured repo safe.
 ### 3. Registration stays fail-closed
 
 The wizard changes nothing about the exposure boundary from ADR 0003. Inspect,
-register, gitignore, and test-connection all pass through the same
-`SERVE_ALLOW_REGISTER` gate; on an exposed bind without it the hub answers 403,
-which the path step renders as a designed remediation callout rather than a raw
-error string.
+register, gitignore, test-connection and the tracker step's status-options probe
+all pass through the same `SERVE_ALLOW_REGISTER` gate; on an exposed bind without
+it the hub answers 403, which the path step renders as a designed remediation
+callout rather than a raw error string.
 
 ## Consequences
 
@@ -78,3 +78,11 @@ error string.
   - Seed sync is synchronous (one request); the wizard shows a pending state
     rather than streamed progress. If seeding a large tracker ever feels slow,
     streaming or health-polling is a follow-up, not a blocker.
+  - The tracker step gained an optional, collapsed **status mapping** section for
+    azure/linear/jira (COD-1538), shown only once the connection test passes and
+    a binding is chosen. It reads its choices from
+    `POST /api/v1/trackers/{provider}/status-options` — the repo-scoped GET reads
+    stored config, which onboarding has none of — and its keys ride the existing
+    project-tracker write. Skipping it costs nothing: an untouched section writes
+    no `*_BOARD_STATES` and no `STATUS_*` pin, and the wizard behaves exactly as
+    it did before. ADR 0038 records the shared endpoint and the props-fed editor.

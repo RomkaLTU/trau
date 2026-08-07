@@ -4,11 +4,13 @@ import {
   UNMAPPED,
   boardNameError,
   deriveGroupingRows,
+  groupingEdited,
   mappingSpec,
   parseBoardStates,
   serializeBoardStates,
   serializeGrouping,
   type BoardStatePair,
+  type GroupingRow,
   type StatusColumn,
 } from '@/lib/statusmap'
 
@@ -254,5 +256,52 @@ describe('mappingSpec', () => {
     expect(mappingSpec('jira')!.nounPlural).toBe('statuses')
     expect(mappingSpec('linear')!.nounPlural).toBe('states')
     expect(mappingSpec('azure')!.nounPlural).toBe('columns')
+  })
+})
+
+describe('groupingEdited', () => {
+  // The wizard prefills every row from the board's own suggestions, so this is
+  // what keeps an untouched section from writing a mapping nobody chose.
+  it('reads a freshly prefilled draft as untouched', () => {
+    const rows = deriveGroupingRows(columns, '', linear)
+    expect(groupingEdited(rows, deriveGroupingRows(columns, '', linear))).toBe(false)
+    expect(serializeGrouping(rows, linear)).toBe('')
+  })
+
+  it('sees a regrouped row', () => {
+    const stored = deriveGroupingRows(columns, '', linear)
+    const rows = stored.map((row) =>
+      row.name === 'Ready to test' ? { ...row, group: 'done' as const } : row,
+    )
+    expect(groupingEdited(rows, stored)).toBe(true)
+    expect(serializeGrouping(rows, linear)).toBe('Ready to test=done')
+  })
+
+  // A Jira status pinned to the section its category already suggests changes no
+  // select, so only the mapped flag says the choice was made at all.
+  it('sees a row mapped by hand onto its own suggestion', () => {
+    const stored = deriveGroupingRows(
+      [{ name: 'Closed', suggestedGroup: 'done' }],
+      '',
+      jira,
+    )
+    const rows = stored.map((row) => ({ ...row, mapped: true }))
+    expect(groupingEdited(rows, stored)).toBe(true)
+    expect(serializeGrouping(rows, jira)).toBe('Closed=done')
+  })
+
+  it('sees an added row', () => {
+    const stored = deriveGroupingRows(columns, '', azure)
+    const rows: GroupingRow[] = [
+      ...stored,
+      {
+        name: 'Parked',
+        group: 'backlog',
+        suggested: UNMAPPED,
+        onBoard: false,
+        mapped: true,
+      },
+    ]
+    expect(groupingEdited(rows, stored)).toBe(true)
   })
 })

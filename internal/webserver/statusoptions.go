@@ -2,7 +2,10 @@ package webserver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -82,6 +85,65 @@ func (s *Server) handleTrackerStatusOptions(w http.ResponseWriter, r *http.Reque
 	ctx, cancel := context.WithTimeout(r.Context(), statusOptionsTimeout)
 	defer cancel()
 	writeJSON(w, http.StatusOK, s.statusOptionsFor(ctx, provider, cfg))
+}
+
+// StatusOptionsProbeRequest is the body of POST /api/v1/trackers/{provider}/status-options:
+// the same in-form credentials the connection test takes, plus the binding the
+// choices are read under — a Linear team, a Jira project, an Azure DevOps project
+// under the organization the base URL names. The onboarding wizard has no
+// registered repo whose stored config could answer either half, so both travel in
+// the request; an optional Repo still fills any credential left blank, exactly as
+// the connection test does.
+type StatusOptionsProbeRequest struct {
+	TestConnectionRequest
+	Binding string `json:"binding,omitempty"`
+}
+
+// handleTrackerStatusOptionsProbe serves the same choices as the repo-scoped read
+// for credentials that are not stored anywhere yet. It receives raw secrets over
+// the wire, so it follows the registration exposure gate the connection test does
+// and never logs or echoes a secret value.
+func (s *Server) handleTrackerStatusOptionsProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.denyRegistrationIfExposed(w, "reading tracker status options") {
+		return
+	}
+	provider := strings.ToLower(strings.TrimSpace(r.PathValue("provider")))
+	if !mappingProviders[provider] {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("tracker %q has no status-mapping options", provider),
+		})
+		return
+	}
+	var req StatusOptionsProbeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	binding := strings.TrimSpace(req.Binding)
+	if binding == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "a " + bindingNoun(provider) + " is required to read status options",
+		})
+		return
+	}
+	cfg := s.connConfig(provider, req.TestConnectionRequest)
+	cfg.LinearTeam = binding
+	ctx, cancel := context.WithTimeout(r.Context(), statusOptionsTimeout)
+	defer cancel()
+	writeJSON(w, http.StatusOK, s.statusOptionsFor(ctx, provider, cfg))
+}
+
+// bindingNoun names the single container a probe binds to.
+func bindingNoun(provider string) string {
+	if provider == "jira" || provider == "azure" {
+		return "project"
+	}
+	return "team"
 }
 
 // statusOptionsFor reads a repo's mapping choices from whichever provider it talks

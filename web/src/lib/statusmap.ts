@@ -33,6 +33,42 @@ async function fetchStatusOptions(repo: string): Promise<StatusOptions | null> {
   return res.json()
 }
 
+// StatusOptionsProbe is what the onboarding wizard has instead of a registered
+// repo: the credentials its form holds and the binding it picked. A repo is still
+// worth sending when there is one — a blank secret then falls back to what that
+// repo already stores, the write-only semantics the connection test follows.
+export interface StatusOptionsProbe {
+  repo?: string
+  api_key?: string
+  base_url?: string
+  email?: string
+  api_token?: string
+  binding: string
+}
+
+// probeStatusOptions reads the same choices as the repo-scoped fetch for a repo
+// that does not exist yet. A provider with no mapping editor answers 404, which
+// is an answer rather than a failure.
+export async function probeStatusOptions(
+  provider: string,
+  body: StatusOptionsProbe,
+): Promise<StatusOptions | null> {
+  const res = await apiFetch(
+    `/api/v1/trackers/${encodeURIComponent(provider)}/status-options`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  )
+  if (res.status === 404) return null
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as { error?: string } | null
+    throw new Error(detail?.error ?? `status options request failed: ${res.status}`)
+  }
+  return res.json()
+}
+
 export const statusOptionsQueryOptions = (repo: string) =>
   queryOptions({
     queryKey: ['status-options', repo],
@@ -235,6 +271,25 @@ export function serializeGrouping(
   spec: MappingSpec,
 ): string {
   return serializeBoardStates(rows.filter((row) => writesRow(row, spec)))
+}
+
+// groupingEdited reports whether a draft still reads as the rows it started
+// from. A prefilled row is not an edit — the selects arrive holding the board's
+// own suggestions — so this is what separates "the operator chose this" from
+// "nobody has touched it".
+export function groupingEdited(
+  rows: readonly GroupingRow[],
+  stored: readonly GroupingRow[],
+): boolean {
+  return (
+    rows.length !== stored.length ||
+    rows.some(
+      (row, i) =>
+        row.name !== stored[i].name ||
+        row.group !== stored[i].group ||
+        row.mapped !== stored[i].mapped,
+    )
+  )
 }
 
 // boardNameError rejects a name the grammar cannot express: , separates pairs
