@@ -23,7 +23,11 @@ func startRepoHub(t *testing.T, names ...string) (*Server, []string, *httptest.S
 	base := t.TempDir()
 	roots := make([]string, 0, len(names))
 	for _, name := range names {
-		roots = append(roots, filepath.Join(base, name))
+		root := filepath.Join(base, name)
+		// Bound to a Linear team, so the COD-<n> tickets these cases queue read as
+		// this repo's own external ids rather than a stale tracker's.
+		writeRepoINI(t, root, "LINEAR_TEAM=COD\n")
+		roots = append(roots, root)
 	}
 	s := New("1.2.3", "127.0.0.1", "", roots, false, testStores(t))
 	s.home = t.TempDir()

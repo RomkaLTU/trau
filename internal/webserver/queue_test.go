@@ -29,11 +29,21 @@ func queueServer(t *testing.T, name string) (*fakeSupervisor, string, *httptest.
 }
 
 // queueHub is queueServer with the hub itself returned, for tests that must seed
-// queue rows the REST surface has no route to write — a settled one, say.
+// queue rows the REST surface has no route to write — a settled one, say. The repo is
+// bound to a Linear team so it reads as an external-tracker repo whose reader is merely
+// unavailable, not one tracking internally — those queue only their own ids.
 func queueHub(t *testing.T, name string) (*Server, *fakeSupervisor, string, *httptest.Server) {
+	t.Helper()
+	return queueHubINI(t, name, "LINEAR_TEAM=COD\n")
+}
+
+// queueHubINI is queueHub with the repo's project config spelled out, for cases that
+// turn on which tracker the repo is bound to.
+func queueHubINI(t *testing.T, name, ini string) (*Server, *fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), name)
+	writeRepoINI(t, root, ini)
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	s.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
@@ -652,6 +662,7 @@ func TestQueueShutdownRouteIsGone(t *testing.T) {
 func TestDequeueRunningRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), "acme")
+	writeRepoINI(t, root, "LINEAR_TEAM=COD\n")
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	s.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
@@ -683,6 +694,7 @@ func TestQueuePersistsAcrossServers(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	root := filepath.Join(t.TempDir(), "acme")
+	writeRepoINI(t, root, "LINEAR_TEAM=COD\n")
 	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
 	first.home = home
 	first.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }

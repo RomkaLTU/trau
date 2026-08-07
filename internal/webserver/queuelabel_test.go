@@ -18,11 +18,13 @@ import (
 // queuedLabelServer builds a hub with one registered repo carrying ini as its
 // project config, a recording tracker Writer, and the deterministic drain probes
 // drainServer uses, so label writes are asserted without touching a real tracker.
+// The repo is bound to a Linear team ahead of ini, so its COD-<n> tickets read as
+// this repo's own external ids; an ini naming TRACKER_PROVIDER still wins.
 func queuedLabelServer(t *testing.T, ini string) (*Server, *fakeWriter, *fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), "acme")
-	writeRepoINI(t, root, ini)
+	writeRepoINI(t, root, "LINEAR_TEAM=COD\n"+ini)
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	writer := newFakeWriter()

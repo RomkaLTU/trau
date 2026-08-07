@@ -15,6 +15,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/queue"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -434,7 +435,9 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 // tracker's source binding — the same provider name the sync records on the stored
 // issue. It is best-effort: a repo without direct tracker credentials cannot be
 // checked, so it passes and the id is queued unvalidated; a definite not-found or
-// out-of-scope answer is refused with a clear status and ok=false.
+// out-of-scope answer is refused with a clear status and ok=false. The one no-reader
+// case that is not best-effort is a repo tracking internally, which
+// unresolvableTarget judges from the identifier alone.
 func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, name, id string) (title, source string, ok bool) {
 	repo, found := s.findRepo(name)
 	if !found {
@@ -442,6 +445,10 @@ func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, nam
 	}
 	source, reader, err := s.readerFor(repo)
 	if err != nil {
+		if reason := s.unresolvableTarget(repo, source, id); reason != "" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": reason})
+			return "", "", false
+		}
 		return "", source, true
 	}
 	item, err := reader.Issue(r.Context(), id)
@@ -459,6 +466,48 @@ func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, nam
 		return "", "", false
 	}
 	return item.Title, source, true
+}
+
+// unresolvableTarget names why id cannot be queued in this repo, or "" when it can.
+// It judges only the no-reader internal-provider case: the run resolves its ticket
+// through tracker.Internal, whose lookup is scoped to source='internal', so an id
+// that is neither a stored internal issue nor carries the repo's internal prefix is
+// left over from a tracker this repo no longer talks to. Every other no-reader repo
+// stays best-effort — there is nothing to check the id against.
+func (s *Server) unresolvableTarget(repo registry.Repo, provider, id string) string {
+	if provider != "internal" {
+		return ""
+	}
+	prefix := s.internalPrefix(repo)
+	if config.ValidatePrefix(id, prefix) == nil {
+		return ""
+	}
+	if _, internal, err := s.stores.Issues().Internal(repo.Root, id); err != nil || internal {
+		return ""
+	}
+	return fmt.Sprintf(
+		"%s belongs to a tracker this repo is no longer connected to — it tracks its issues internally now, so only its own %s-<n> issues can be queued",
+		id, prefix,
+	)
+}
+
+// refuseUnresolvableTarget writes the refusal and answers true when id names a ticket
+// no reader this repo has can resolve, for callers that hold only the repo name.
+func (s *Server) refuseUnresolvableTarget(w http.ResponseWriter, name, id string) bool {
+	repo, found := s.findRepo(name)
+	if !found {
+		return false
+	}
+	provider, _, err := s.readerFor(repo)
+	if err == nil {
+		return false
+	}
+	reason := s.unresolvableTarget(repo, provider, id)
+	if reason == "" {
+		return false
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{"error": reason})
+	return true
 }
 
 // viewQueue lists a repo's queue scoped to the Active repo, in registration
