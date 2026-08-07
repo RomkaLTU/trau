@@ -27,9 +27,10 @@ var readCalls = map[string]map[string]bool{
 // entry with no exemption is the smell the review should catch.
 var allowedReaders = map[string]string{
 	// §1 Configuration — read on every run; not run data.
-	"internal/config/config.go":    "config files",
-	"internal/config/ci_detect.go": "repo CI-workflow detection",
-	"internal/theme/local.go":      "saved themes under a trau home",
+	"internal/config/config.go":              "config files",
+	"internal/config/ci_detect.go":           "repo CI-workflow detection",
+	"internal/config/ci_detect_bitbucket.go": "repo CI-workflow detection",
+	"internal/theme/local.go":                "saved themes under a trau home",
 
 	// §2 Repo-owned content — owned by the target repo; trau only reads it.
 	"internal/agent/skills.go":          "repo skills / skills-lock.json / package.json",
