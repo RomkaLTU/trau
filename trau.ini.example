@@ -400,6 +400,24 @@ CODEX_PROFILE=
 # in a committed project config file.
 LINEAR_API_KEY=
 
+# LINEAR_BOARD_STATES maps the team's workflow states onto the groups trau's board
+# and its reconcile read use: backlog | unstarted | started | done | canceled. Key
+# off the state name — a Linear board's columns ARE its workflow states, so there
+# is no second vocabulary to spell (unlike Azure DevOps, see AZURE_BOARD_STATES).
+#
+# It is an OVERLAY, not an exhaustive mapping — the one place it differs from
+# AZURE_BOARD_STATES. A state listed here takes the group it is mapped to; a state
+# NOT listed keeps the grouping its Linear state type gives it automatically
+# (triage/backlog -> backlog, unstarted -> unstarted, started -> started,
+# completed -> done, canceled -> canceled). So a state your team adds later
+# degrades to its own type's section rather than falling to Other, and you only
+# ever write the states you actually want to move. Deleting the key restores pure
+# type-derived grouping.
+#
+# It drives grouping only; a status WRITE still resolves a state through the
+# STATUS_* pins and the team's own workflow.
+LINEAR_BOARD_STATES=         # e.g. Ready for QA=done,Icebox=backlog
+
 # Jira Cloud direct REST access (TRACKER_PROVIDER=jira). When JIRA_API_TOKEN is
 # set, trau reaches Jira directly over the REST v3 API for fast read/write ops and
 # falls back to the Jira (Rovo) MCP only when it is empty or the token is rejected.

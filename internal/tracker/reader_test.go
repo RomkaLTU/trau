@@ -26,7 +26,8 @@ func TestMapLinearGroup(t *testing.T) {
 		"started":   StatusGroupStarted,
 		"completed": StatusGroupDone,
 		"canceled":  StatusGroupCanceled,
-		"weird":     StatusGroupUnknown,
+		"duplicate": StatusGroupCanceled,
+		"weird":     StatusGroupBacklog,
 	}
 	for typ, want := range cases {
 		if got := mapLinearGroup(typ); got != want {

@@ -97,3 +97,8 @@ later. A free-text add row covers a column the API missed, and a name carrying
 - The `grouping`/`pinOptions` shape is now a compatibility surface: the Linear and
   Jira slices fill the same fields, and the onboarding step reuses the same
   endpoint rather than growing a parallel one.
+- The Linear arm (COD-1536) filled it first, and it did **not** inherit the
+  exhaustive rule: `LINEAR_BOARD_STATES` overlays the grouping a workflow state's
+  own Linear type derives, so the editor prefills every row with its effective
+  section and saves only the rows that differ. ADR 0039 records why the two keys
+  share a grammar but not that rule.

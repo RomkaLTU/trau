@@ -42,6 +42,7 @@ export const statusOptionsQueryOptions = (repo: string) =>
   })
 
 export const BOARD_STATES_KEY = 'AZURE_BOARD_STATES'
+export const LINEAR_STATES_KEY = 'LINEAR_BOARD_STATES'
 
 export const PIN_KEYS = [
   'STATUS_TODO',
@@ -61,7 +62,57 @@ export const PIN_LABELS: Record<PinKey, string> = {
   STATUS_DONE: 'Done',
 }
 
-export const STATUS_MAP_KEYS: string[] = [BOARD_STATES_KEY, ...PIN_KEYS]
+// MappingSpec is everything that differs between the providers the one editor
+// serves: which key it writes, whether that key is exhaustive or an overlay, and
+// the words each provider's own board is read in.
+export interface MappingSpec {
+  key: string
+  // overlay is true for a key that only records the rows a repo *changed*, with
+  // every other row keeping the section the provider's own metadata derives.
+  // False means the written value is the whole grouping and an omitted row falls
+  // to Other.
+  overlay: boolean
+  noun: string
+  title: string
+  description: string
+  placeholder: string
+  addLabel: string
+  pinNote: string
+}
+
+const AZURE_SPEC: MappingSpec = {
+  key: BOARD_STATES_KEY,
+  overlay: false,
+  noun: 'column',
+  title: 'board column grouping',
+  description:
+    "Each Kanban column the team's boards carry, and the section trau files its work under. Leave every column unmapped to keep grouping by the state categories the project reports.",
+  placeholder: 'column the board did not report',
+  addLabel: 'Add column',
+  pinNote:
+    'The workflow status each lifecycle stage writes. A pin names a work-item state, never a board column — Azure DevOps refuses a board-column write. Leave one empty to resolve it from the workflow itself.',
+}
+
+const LINEAR_SPEC: MappingSpec = {
+  key: LINEAR_STATES_KEY,
+  overlay: true,
+  noun: 'state',
+  title: 'workflow state grouping',
+  description:
+    "Each workflow state the team declares, and the section trau files its work under. Every row starts on the section its Linear state type gives it; saving records only the ones you change, so a state added later keeps its own type's section rather than falling to Other.",
+  placeholder: 'state the team no longer carries',
+  addLabel: 'Add state',
+  pinNote:
+    'The workflow status each lifecycle stage writes. Leave one empty to resolve it from the team’s own workflow.',
+}
+
+// mappingSpec picks the editor a provider gets, or null for one with no mapping
+// key at all — those keep the settings page's generic rows.
+export function mappingSpec(provider: string): MappingSpec | null {
+  if (provider === 'azure') return AZURE_SPEC
+  if (provider === 'linear') return LINEAR_SPEC
+  return null
+}
 
 export const MAPPABLE_GROUPS = [
   'backlog',
@@ -117,13 +168,26 @@ export function serializeBoardStates(rows: readonly BoardStatePair[]): string {
     .join(',')
 }
 
-// boardNameError rejects a column name the grammar cannot express: , separates
-// pairs and = separates a name from its group, so neither can appear in a name.
-export function boardNameError(name: string): string | null {
+// serializeGrouping renders what Save writes. An overlay key stays minimal: a row
+// still sitting on the section its own state type derives is not written at all,
+// so the key records only the repo's overrides and a state Linear adds later is
+// governed by its type rather than by a stale exhaustive list.
+export function serializeGrouping(
+  rows: readonly GroupingRow[],
+  spec: MappingSpec,
+): string {
+  return serializeBoardStates(
+    spec.overlay ? rows.filter((row) => row.group !== row.suggested) : rows,
+  )
+}
+
+// boardNameError rejects a name the grammar cannot express: , separates pairs
+// and = separates a name from its group, so neither can appear in a name.
+export function boardNameError(name: string, noun = 'column'): string | null {
   const trimmed = name.trim()
-  if (trimmed === '') return 'Enter a column name.'
+  if (trimmed === '') return `Enter a ${noun} name.`
   if (trimmed.includes(',') || trimmed.includes('=')) {
-    return 'A column name cannot contain , or = — the mapping separates pairs on , and names from groups on =.'
+    return `A ${noun} name cannot contain , or = — the mapping separates pairs on , and names from groups on =.`
   }
   return null
 }
@@ -136,14 +200,17 @@ export interface GroupingRow extends BoardStatePair {
 }
 
 // deriveGroupingRows builds the editor's rows from the board's columns and the
-// mapping the repo has today. With no mapping written the selects prefill from
-// the suggestions and nothing has been written yet; with one written it is
-// authoritative, so a column it omits shows as unmapped rather than as its
-// suggestion. A name the mapping carries but the board does not is kept, so
-// saving never silently drops it.
+// mapping the repo has today. An exhaustive mapping (Azure DevOps) prefills from
+// the suggestions only while nothing is written; once it is, it is authoritative,
+// so a column it omits shows as unmapped rather than as its suggestion. An
+// overlay (Linear) prefills every unlisted row from its suggestion whatever else
+// is written, because that is exactly what an unlisted state still groups as. A
+// name the mapping carries but the board does not is kept either way, so saving
+// never silently drops it.
 export function deriveGroupingRows(
   columns: StatusColumn[],
   current: string,
+  spec: MappingSpec,
 ): GroupingRow[] {
   const mapped = parseBoardStates(current)
   const byName = new Map(mapped.map((p) => [p.name.toLowerCase(), p.group]))
@@ -155,10 +222,11 @@ export function deriveGroupingRows(
     if (seen.has(key)) continue
     seen.add(key)
     const suggested = toGroup(col.suggestedGroup)
+    const unlisted = spec.overlay || mapped.length === 0 ? suggested : UNMAPPED
     rows.push({
       name: col.name,
       suggested,
-      group: mapped.length === 0 ? suggested : (byName.get(key) ?? UNMAPPED),
+      group: byName.get(key) ?? unlisted,
       onBoard: true,
     })
   }

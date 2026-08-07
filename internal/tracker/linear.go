@@ -27,6 +27,10 @@ type Linear struct {
 	Project         string
 	APIKey          string
 	StatusOverrides map[Stage]string
+	// boardStates overlays LINEAR_BOARD_STATES onto the grouping a workflow state's
+	// own type derives, so a --status reconcile agrees with the board a repo's
+	// mapping produces (ADR 0038).
+	boardStates linearBoardStates
 	// endpoint overrides the Linear GraphQL endpoint; empty targets the public
 	// API. It exists so tests can point the direct-API path at a fake server.
 	endpoint string
@@ -657,22 +661,20 @@ func (l *Linear) issueStatusAPI(ctx context.Context, id string) (IssueStatus, er
 	if err != nil {
 		return StatusUnknown, err
 	}
+	// A mapped state reports what the board shows, so reconcile and the board never
+	// disagree about the same ticket (ADR 0038).
+	if group, ok := l.boardStates.override(issue.State.Name); ok {
+		return issueStatusOf(group), nil
+	}
 	return mapLinearState(issue.State.Type), nil
 }
 
-// mapLinearState maps a Linear workflow-state type onto the normalized status.
-// Linear's state types are backlog | unstarted | started | completed | canceled.
+// mapLinearState maps a Linear workflow-state type onto the normalized status,
+// through the very group that type files under, so a reconcile pass and the board
+// can never read one state two ways — including the types the board's own mapping
+// learned late, like the duplicate a team closes a redundant ticket into.
 func mapLinearState(stateType string) IssueStatus {
-	switch stateType {
-	case "completed":
-		return StatusDone
-	case "canceled":
-		return StatusCanceled
-	case "started":
-		return StatusStarted
-	default:
-		return StatusOpen
-	}
+	return issueStatusOf(mapLinearGroup(stateType))
 }
 
 func (l *Linear) issueStatusPrompt(id string) string {

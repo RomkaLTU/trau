@@ -1,12 +1,18 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
 
 // azureBoardFixture answers the four routes a status-options read makes for a
@@ -137,7 +143,7 @@ func TestStatusOptionsIs404ForOtherProviders(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	runsDir := seedRepo(t, home, "acme")
-	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)), "TRACKER_PROVIDER=linear\nLINEAR_TEAM=COD\n")
+	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)), "TRACKER_PROVIDER=jira\nLINEAR_TEAM=COD\n")
 	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
 	ts := httptest.NewServer(s.Handler())
@@ -193,5 +199,108 @@ func TestStatusOptionsNamesMissingCredentials(t *testing.T) {
 	}
 	if !strings.Contains(out.Error, "organization URL") || !strings.Contains(out.Error, "personal access token") {
 		t.Errorf("error = %q, want both missing credentials named", out.Error)
+	}
+}
+
+// linearStatusOptionsServer wires a hub whose "acme" repo is a Linear repo, with
+// the provider read stubbed: LinearStatusOptions itself is covered against a fake
+// GraphQL server in the tracker package, and what this asserts is the arm — that a
+// Linear repo reaches it at all and that its answer reaches the editor's shape.
+func linearStatusOptionsServer(t *testing.T, ini string, opts tracker.StatusOptions, readErr error) *httptest.Server {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)), ini)
+
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	s.statusOptions = func(_ context.Context, provider string, cfg config.Config) (tracker.StatusOptions, error) {
+		if provider != "linear" {
+			t.Errorf("status options read as provider %q, want linear", provider)
+		}
+		if cfg.LinearTeam != "COD" {
+			t.Errorf("read with team %q, want the repo's own COD", cfg.LinearTeam)
+		}
+		return opts, readErr
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// A Linear repo lists its team's workflow states as both the groupable rows and
+// the pin choices — one vocabulary, unlike Azure DevOps, because a Linear board's
+// columns are its workflow states.
+func TestStatusOptionsServesTheLinearWorkflow(t *testing.T) {
+	ts := linearStatusOptionsServer(t,
+		"TRACKER_PROVIDER=linear\nLINEAR_TEAM=COD\nLINEAR_API_KEY=lin_key\n",
+		tracker.StatusOptions{
+			Columns: []tracker.BoardColumnSuggestion{
+				{Name: "Icebox", SuggestedGroup: "backlog"},
+				{Name: "Ready for QA", SuggestedGroup: "started"},
+			},
+			Pins: []tracker.WorkflowOption{
+				{Name: "Icebox", Category: "backlog"},
+				{Name: "Ready for QA", Category: "started"},
+			},
+		}, nil)
+
+	res, out := getStatusOptions(t, ts, "acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if out.Provider != "linear" {
+		t.Errorf("provider = %q, want linear", out.Provider)
+	}
+	want := []StatusColumn{
+		{Name: "Icebox", SuggestedGroup: "backlog"},
+		{Name: "Ready for QA", SuggestedGroup: "started"},
+	}
+	if len(out.Grouping) != len(want) {
+		t.Fatalf("grouping = %+v, want %+v", out.Grouping, want)
+	}
+	for i, col := range want {
+		if out.Grouping[i] != col {
+			t.Errorf("grouping[%d] = %+v, want %+v", i, out.Grouping[i], col)
+		}
+	}
+	if len(out.PinOptions) != 2 || out.PinOptions[1] != (StatusPinOption{Name: "Ready for QA", Category: "started"}) {
+		t.Errorf("pinOptions = %+v, want the same states with their types as categories", out.PinOptions)
+	}
+}
+
+// A Linear repo with no API key never reaches the network: the gap is named the
+// way the connection test names it, and the editor still gets its empty lists.
+func TestStatusOptionsNamesTheMissingLinearKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	writeRepoINI(t, filepath.Dir(filepath.Dir(runsDir)), "TRACKER_PROVIDER=linear\nLINEAR_TEAM=COD\n")
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	res, out := getStatusOptions(t, ts, "acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if !strings.Contains(out.Error, "Linear API key") {
+		t.Errorf("error = %q, want the missing Linear API key named", out.Error)
+	}
+	if !strings.Contains(out.Hint, "Linear API key") {
+		t.Errorf("hint = %q, want the Linear remediation", out.Hint)
+	}
+}
+
+// The default seam routes a Linear repo to the Linear reader rather than the
+// Azure one: with no key the read stops at Linear's own not-enabled sentinel,
+// which the Azure path could never produce.
+func TestReadStatusOptionsRoutesLinearToLinear(t *testing.T) {
+	_, err := readStatusOptions(context.Background(), "linear",
+		config.Config{LinearTeam: "COD", TrackerProvider: "linear"})
+	if !errors.Is(err, linearapi.ErrNotEnabled) {
+		t.Errorf("err = %v, want linearapi.ErrNotEnabled from the Linear reader", err)
 	}
 }

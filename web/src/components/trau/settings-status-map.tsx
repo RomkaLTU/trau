@@ -43,24 +43,25 @@ import { cn } from '@/lib/utils'
 import { sectionLabel, type StateGroup } from '@/lib/backlog'
 import { writeConfig, type ConfigKey } from '@/lib/config'
 import {
-  BOARD_STATES_KEY,
   MAPPABLE_GROUPS,
   PIN_KEYS,
   PIN_LABELS,
-  STATUS_MAP_KEYS,
   UNMAPPED,
   boardNameError,
   deriveGroupingRows,
-  serializeBoardStates,
+  mappingSpec,
+  serializeGrouping,
   statusOptionsQueryOptions,
   toGroup,
   type GroupingRow,
+  type MappingSpec,
   type StatusColumn,
   type StatusOptions,
   type StatusPinOption,
 } from '@/lib/statusmap'
 
 const GROUP_CHOICES: StateGroup[] = [...MAPPABLE_GROUPS, UNMAPPED]
+const OVERLAY_GROUP_CHOICES: StateGroup[] = [...MAPPABLE_GROUPS]
 
 const SYNC_NOTE =
   'Saved. The board regroups on the next sync pull for this repo.'
@@ -68,6 +69,8 @@ const SYNC_NOTE =
 const PIN_NOTE = 'Saved. Pins apply to the next write this repo makes.'
 
 const EMPTY_MAPPING = '(empty — grouping stays category-derived)'
+
+const EMPTY_OVERLAY = '(empty — every state keeps its own type\u2019s section)'
 
 // The board reads as no columns at all when it could not be read; a shared
 // constant keeps that a stable value rather than a fresh array each render.
@@ -155,9 +158,10 @@ export function TrackerAdvanced({
   renderRow: (item: ConfigKey) => ReactNode
 }) {
   const { data } = useQuery(statusOptionsQueryOptions(repo))
-  const boardItem = keys.find((item) => item.key === BOARD_STATES_KEY)
+  const spec = data ? mappingSpec(data.provider) : null
+  const boardItem = keys.find((item) => item.key === spec?.key)
 
-  if (!data || !boardItem?.editable) {
+  if (!data || !spec || !boardItem?.editable) {
     return <>{keys.map(renderRow)}</>
   }
   return (
@@ -166,6 +170,7 @@ export function TrackerAdvanced({
         <StatusMapEditor
           repo={repo}
           keys={keys}
+          spec={spec}
           options={data}
           layers={layers}
           hubRestart={hubRestart}
@@ -173,15 +178,23 @@ export function TrackerAdvanced({
         />
       </div>
       {keys
-        .filter((item) => !STATUS_MAP_KEYS.includes(item.key))
+        .filter((item) => !ownedKeys(spec).includes(item.key))
         .map(renderRow)}
     </>
   )
 }
 
+// ownedKeys are the rows the editor took over for this provider. The other
+// provider's mapping key is not one of them: it stays an ordinary generic row,
+// like any key this repo's tracker does not use.
+function ownedKeys(spec: MappingSpec): string[] {
+  return [spec.key, ...PIN_KEYS]
+}
+
 function StatusMapEditor({
   repo,
   keys,
+  spec,
   options,
   layers,
   hubRestart,
@@ -189,14 +202,15 @@ function StatusMapEditor({
 }: {
   repo: string
   keys: ConfigKey[]
+  spec: MappingSpec
   options: StatusOptions
   layers: string[]
   hubRestart: boolean
   onSaved: (key: string, target: string, unset: boolean) => void
 }) {
   const boardItem = useMemo(
-    () => keys.find((item) => item.key === BOARD_STATES_KEY)!,
-    [keys],
+    () => keys.find((item) => item.key === spec.key)!,
+    [keys, spec.key],
   )
   const pinItems = useMemo(
     () =>
@@ -220,11 +234,17 @@ function StatusMapEditor({
       {options.error && <FetchFailure options={options} />}
       <GroupingBlock
         ctx={ctx}
+        spec={spec}
         item={boardItem}
         columns={options.error ? NO_COLUMNS : options.grouping}
         boardRead={!options.error}
       />
-      <PinsBlock ctx={ctx} items={pinItems} pinOptions={options.pinOptions} />
+      <PinsBlock
+        ctx={ctx}
+        spec={spec}
+        items={pinItems}
+        pinOptions={options.pinOptions}
+      />
     </div>
   )
 }
@@ -281,18 +301,20 @@ function BlockHeader({
 
 function GroupingBlock({
   ctx,
+  spec,
   item,
   columns,
   boardRead,
 }: {
   ctx: WriteContext
+  spec: MappingSpec
   item: ConfigKey
   columns: StatusColumn[]
   boardRead: boolean
 }) {
   const stored = useMemo(
-    () => deriveGroupingRows(columns, item.value),
-    [columns, item.value],
+    () => deriveGroupingRows(columns, item.value, spec),
+    [columns, item.value, spec],
   )
   const [draftName, setDraftName] = useState('')
   const [draftGroup, setDraftGroup] = useState<StateGroup>('unstarted')
@@ -308,14 +330,14 @@ function GroupingBlock({
   } = useBlockWrite({
     ctx,
     stored,
-    signature: JSON.stringify([columns, item.value]),
+    signature: JSON.stringify([spec.key, columns, item.value]),
     write: async (draft: GroupingRow[]) => {
       await writeConfig(ctx.repo, {
-        key: BOARD_STATES_KEY,
-        value: serializeBoardStates(draft),
+        key: spec.key,
+        value: serializeGrouping(draft, spec),
         layer: ctx.target,
       })
-      return [BOARD_STATES_KEY]
+      return [spec.key]
     },
     savedNote: SYNC_NOTE,
     onRestart: () => setNameError(null),
@@ -328,14 +350,14 @@ function GroupingBlock({
   }
 
   const addRow = () => {
-    const invalid = boardNameError(draftName)
+    const invalid = boardNameError(draftName, spec.noun)
     if (invalid) {
       setNameError(invalid)
       return
     }
     const name = draftName.trim()
     if (rows.some((row) => row.name.toLowerCase() === name.toLowerCase())) {
-      setNameError('That column is already listed.')
+      setNameError(`That ${spec.noun} is already listed.`)
       return
     }
     edit((prev) => [
@@ -346,29 +368,30 @@ function GroupingBlock({
     setNameError(null)
   }
 
-  const serialized = serializeBoardStates(rows)
+  const serialized = serializeGrouping(rows, spec)
   const unmapped = rows.filter((row) => row.group === UNMAPPED).length
-  const exhaustive = serialized !== '' && unmapped > 0
+  const exhaustive = !spec.overlay && serialized !== '' && unmapped > 0
 
   return (
     <section className="flex flex-col gap-3">
       <BlockHeader
-        title="board column grouping"
-        keyName={BOARD_STATES_KEY}
+        title={spec.title}
+        keyName={spec.key}
         item={item}
-        description="Each Kanban column the team's boards carry, and the section trau files its work under. Leave every column unmapped to keep grouping by the state categories the project reports."
+        description={spec.description}
       />
 
       <div className="flex flex-col divide-y divide-border/60 rounded-md border border-border">
         {rows.length === 0 && (
           <p className="px-3 py-3 font-mono text-xs text-faint">
-            no columns yet — add one below
+            no {spec.noun}s yet — add one below
           </p>
         )}
         {rows.map((row) => (
           <GroupingRowView
             key={row.name}
             row={row}
+            spec={spec}
             boardRead={boardRead}
             exhaustive={exhaustive}
             onChange={(group) => setGroup(row.name, group)}
@@ -387,13 +410,14 @@ function GroupingBlock({
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.nativeEvent.isComposing) addRow()
             }}
-            placeholder="column the board did not report"
-            aria-label="New board column name"
+            placeholder={spec.placeholder}
+            aria-label={`New ${spec.noun} name`}
             spellCheck={false}
             className="h-8 max-w-xs px-2 py-1 font-mono text-xs placeholder:text-faint"
           />
           <GroupSelect
-            label="New board column group"
+            label={`New ${spec.noun} group`}
+            spec={spec}
             value={draftGroup}
             onChange={setDraftGroup}
           />
@@ -404,7 +428,7 @@ function GroupingBlock({
             onClick={addRow}
           >
             <Plus className="size-3.5" aria-hidden="true" />
-            Add column
+            {spec.addLabel}
           </Button>
         </div>
         {nameError && (
@@ -425,8 +449,8 @@ function GroupingBlock({
           />
           <span>
             {unmapped === 1
-              ? '1 column stays unmapped'
-              : `${unmapped} columns stay unmapped`}
+              ? `1 ${spec.noun} stays unmapped`
+              : `${unmapped} ${spec.noun}s stay unmapped`}
             . A mapping that is set is exhaustive, so that work groups as{' '}
             {sectionLabel(UNMAPPED)}.
           </span>
@@ -440,7 +464,12 @@ function GroupingBlock({
         saving={saving}
         note={note}
         error={error}
-        preview={groupingPreview(item.value, serialized, edited(rows, stored))}
+        preview={groupingPreview(
+          item.value,
+          serialized,
+          edited(rows, stored),
+          spec,
+        )}
       />
     </section>
   )
@@ -464,19 +493,23 @@ function groupingPreview(
   value: string,
   serialized: string,
   dirty: boolean,
+  spec: MappingSpec,
 ): string {
   const shown = dirty ? serialized : value.trim()
-  const text = shown === '' ? EMPTY_MAPPING : shown
+  const text =
+    shown === '' ? (spec.overlay ? EMPTY_OVERLAY : EMPTY_MAPPING) : shown
   return dirty ? `will write: ${text}` : text
 }
 
 function GroupingRowView({
   row,
+  spec,
   boardRead,
   exhaustive,
   onChange,
 }: {
   row: GroupingRow
+  spec: MappingSpec
   boardRead: boolean
   exhaustive: boolean
   onChange: (group: StateGroup) => void
@@ -496,8 +529,12 @@ function GroupingRowView({
           → {sectionLabel(UNMAPPED)}
         </span>
       )}
+      {spec.overlay && row.group !== row.suggested && (
+        <span className="font-mono text-[0.65rem] text-faint">overridden</span>
+      )}
       <GroupSelect
         label={`${row.name} group`}
+        spec={spec}
         value={row.group}
         onChange={onChange}
       />
@@ -507,13 +544,19 @@ function GroupingRowView({
 
 function GroupSelect({
   label,
+  spec,
   value,
   onChange,
 }: {
   label: string
+  spec: MappingSpec
   value: StateGroup
   onChange: (group: StateGroup) => void
 }) {
+  // An overlay row is always governed by something, so Unknown is not offered —
+  // except to a row already sitting on it, which would otherwise render blank.
+  const choices =
+    spec.overlay && value !== UNMAPPED ? OVERLAY_GROUP_CHOICES : GROUP_CHOICES
   return (
     <Select value={value} onValueChange={(next) => onChange(toGroup(next))}>
       <SelectTrigger
@@ -524,7 +567,7 @@ function GroupSelect({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {GROUP_CHOICES.map((group) => (
+        {choices.map((group) => (
           <SelectItem key={group} value={group}>
             <StateGroupChip group={group} />
             <span className="font-mono text-xs">{sectionLabel(group)}</span>
@@ -537,10 +580,12 @@ function GroupSelect({
 
 function PinsBlock({
   ctx,
+  spec,
   items,
   pinOptions,
 }: {
   ctx: WriteContext
+  spec: MappingSpec
   items: ConfigKey[]
   pinOptions: StatusPinOption[]
 }) {
@@ -586,7 +631,7 @@ function PinsBlock({
       <BlockHeader
         title="write pins"
         keyName="STATUS_*"
-        description="The workflow status each lifecycle stage writes. A pin names a work-item state, never a board column — Azure DevOps refuses a board-column write. Leave one empty to resolve it from the workflow itself."
+        description={spec.pinNote}
       />
 
       <div className="flex flex-col divide-y divide-border/60 rounded-md border border-border">
