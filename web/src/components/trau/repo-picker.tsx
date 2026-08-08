@@ -1,6 +1,19 @@
-import { useEffect, useRef, useState } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { useState } from 'react'
+import { Check, ChevronDown } from 'lucide-react'
 
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
 export function RepoPicker({
@@ -17,24 +30,6 @@ export function RepoPicker({
   className?: string
 }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    function onPointerDown(e: PointerEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node))
-        setOpen(false)
-    }
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [open])
 
   return (
     <div className={cn('flex flex-col gap-1.5', className)}>
@@ -43,44 +38,53 @@ export function RepoPicker({
           {label}
         </span>
       ) : null}
-      <div className="relative w-48" ref={ref}>
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          className="flex w-full items-center justify-between rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground hover:border-ring/50"
-        >
-          {value || '—'}
-          <ChevronDown
-            className="size-3.5 text-muted-foreground"
-            aria-hidden="true"
-          />
-        </button>
-        {open && (
-          <ul
-            role="listbox"
-            className="absolute z-20 mt-1 w-full overflow-hidden rounded-md border border-border bg-popover py-1 shadow-lg"
+      <div className="w-48">
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={label || undefined}
+              className="flex w-full items-center justify-between rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground hover:border-ring/50"
+            >
+              <span className="truncate">{value || '—'}</span>
+              <ChevronDown
+                className="size-3.5 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="w-(--radix-popover-trigger-width) min-w-48 p-0"
           >
-            {repos.map((repo) => (
-              <li key={repo} role="option" aria-selected={repo === value}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(repo)
-                    setOpen(false)
-                  }}
-                  className={cn(
-                    'flex w-full px-2.5 py-1.5 text-left font-mono text-sm hover:bg-secondary',
-                    repo === value ? 'text-primary' : 'text-foreground',
-                  )}
-                >
-                  {repo}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+            <Command>
+              <CommandInput placeholder="Search…" />
+              <CommandList>
+                <CommandEmpty>No match.</CommandEmpty>
+                <CommandGroup>
+                  {repos.map((repo) => (
+                    <CommandItem
+                      key={repo}
+                      value={repo}
+                      onSelect={() => {
+                        setOpen(false)
+                        onChange(repo)
+                      }}
+                    >
+                      <Check
+                        className={cn(
+                          'size-4',
+                          repo === value ? 'opacity-100' : 'opacity-0',
+                        )}
+                      />
+                      <span className="flex-1 truncate font-mono">{repo}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
   )
