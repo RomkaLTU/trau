@@ -109,10 +109,7 @@ func grillMemberDecisionSchema(panel []string, round int) json.RawMessage {
 			"proposals you rejected, in a sentence or two.",
 	}
 	delete(schema, "required")
-	out, err := json.Marshal(schema)
-	if err != nil {
-		return grillDecisionSchema
-	}
+	out, _ := json.Marshal(schema)
 	return out
 }
 

@@ -946,7 +946,7 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
 }
 
 function parseDisagreement(raw: unknown): GrillDisagreement | undefined {
-  if (raw === null || typeof raw !== 'object') return undefined
+  if (!isRecord(raw)) return undefined
   const d = raw as Partial<GrillDisagreement>
   return {
     winner: typeof d.winner === 'string' ? d.winner : '',
