@@ -264,6 +264,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	} else if cfg.RepoRoot == "" {
 		cfg.RepoRoot = repoRoot
 	}
+	// Resolved after the layered config so the project layer keeps coming from the
+	// registered root's .trau.ini, and before any work so a bad path costs nothing.
+	if cfg.WorkTree, err = config.ResolveWorkTree(opts.WorkTree); err != nil {
+		return console.Actionable(err, "resolve --worktree", "pass a path to an existing working tree, e.g. `git worktree add ../wt-x <base>`")
+	}
+	if cfg.WorkTree != "" {
+		logger.Verbosef("running in worktree %s (repo identity stays %s)", cfg.WorkTree, cfg.RepoRoot)
+	}
 
 	if cfg.EffectiveTrackerProvider() == "internal" {
 		// Internal issue IDs are minted with the repo-derived InternalPrefix, not the
@@ -288,7 +296,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
-	if err := state.EnsureGitignore(cfg.RepoRoot, cfg.RunsDir); err != nil {
+	if err := state.EnsureGitignore(cfg.WorkRoot(), cfg.RunsDir); err != nil {
 		logger.Verbosef("ensure runs .gitignore: %v", err)
 	}
 
@@ -1345,7 +1353,9 @@ func proofsRepoInfo(ctx context.Context, cfg config.Config, repoRoot, repoDir st
 // run's own layered value for the target repo, and a Folder child's own .trau.ini
 // for a child — the same grain baseOf and forgeOf already read a child at.
 func declaredForge(cfg config.Config, repoRoot, root string) string {
-	if root == repoRoot {
+	// A worktree is the target repo reached by another path, not a Child, so it
+	// answers from the run's own layered FORGE.
+	if root == repoRoot || (cfg.WorkTree != "" && root == cfg.WorkTree) {
 		return cfg.Forge
 	}
 	return config.Declared(root, "FORGE")
@@ -1528,11 +1538,17 @@ func deliveryBuilder(cfg config.Config, repoRoot string) func(string) pipeline.D
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer, rec *sessionRecorder, fallbackNotice *agent.ModelFallbackNotice) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	// workRoot is the tree this run acts in; repoRoot stays its identity, and every
+	// hub-keyed store below is still built from it.
+	workRoot := repoRoot
+	if cfg.WorkTree != "" {
+		workRoot = cfg.WorkTree
+	}
 	// A folder root has no git config of its own to wire into; a folder run pins
 	// its identity per child at commit time instead.
 	folder := folderrepo.Is(repoRoot)
 	if !folder {
-		if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
+		if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot, workRoot); err != nil {
 			return nil, fmt.Errorf("wire %s into the repo's local git config: %w", pipeline.RepoConfigFile, err)
 		} else if added {
 			fmt.Fprintf(os.Stderr, "wired %s into the repo's local git config (include.path)\n", pipeline.RepoConfigFile)
@@ -1540,7 +1556,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 	}
 	var verifyChecks []checks.Check
 	if cfg.VerifyChecks {
-		loaded, _, err := checks.Load(repoRoot)
+		loaded, _, err := checks.Load(workRoot)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %v — falling back to default verify checks\n", err)
 			loaded = checks.Defaults()
@@ -1564,8 +1580,8 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Artifacts:            newArtifactStore(cfg, repoRoot),
 		PhaseLogs:            newPhaseLogStore(cfg, repoRoot),
 		LessonLedger:         newLessonStore(cfg, repoRoot),
-		Git:                  pipeline.ExecGit{Repo: repoRoot},
-		Delivery:             deliveryAt(repoRoot),
+		Git:                  pipeline.ExecGit{Repo: workRoot},
+		Delivery:             deliveryAt(workRoot),
 		FolderRepo:           folder,
 		GitAt:                func(root string) pipeline.Git { return pipeline.ExecGit{Repo: root} },
 		DeliveryAt:           deliveryAt,
@@ -1611,7 +1627,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		CodeStyleNote:        cfg.CodeStyleNote,
 		TestEffort:           cfg.TestEffort,
 		VerifyEffort:         cfg.VerifyEffort,
-		SkillsExpected:       skillsExpected(repoRoot),
+		SkillsExpected:       skillsExpected(workRoot),
 		RequiredSkills:       cfg.RequiredSkills,
 		RequiredSkillsVerify: cfg.RequiredSkillsVerify,
 		SkillsMode:           cfg.SkillsMode,
@@ -1636,6 +1652,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		OwnedProject:         cfg.Project,
 
 		RepoRoot:            repoRoot,
+		WorkTree:            cfg.WorkTree,
 		TimelogEnabled:      cfg.TimelogEnabled,
 		TimelogStorage:      cfg.TimelogStorage,
 		TimelogOutputFormat: cfg.TimelogOutputFormat,
@@ -2201,6 +2218,8 @@ func (a *appActions) reloadConfig() error {
 	} else if cfg.RepoRoot == "" {
 		cfg.RepoRoot = a.cfg.RepoRoot
 	}
+	// The worktree is CLI-only, so a config reload has to carry it over.
+	cfg.WorkTree = a.cfg.WorkTree
 	a.cfg = cfg
 	a.scope.Team = cfg.LinearTeam
 	return nil
@@ -2357,6 +2376,8 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 	} else if cfg.RepoRoot == "" {
 		cfg.RepoRoot = a.cfg.RepoRoot
 	}
+	// The worktree is CLI-only, so a config reload has to carry it over.
+	cfg.WorkTree = a.cfg.WorkTree
 	a.cfg = cfg
 	a.scope.Team = cfg.LinearTeam
 
@@ -3250,7 +3271,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			effort: cfg.ClaudeEffort,
 			extra: map[string]string{
 				"disallowed_tools": cfg.ClaudeDisallowedTools,
-				"result_dir":       cfg.RunsDir,
+				"result_dir":       cfg.ResultDir(),
 			},
 		}
 	case "codex":
@@ -3262,7 +3283,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			extra: map[string]string{
 				"profile":    cfg.CodexProfile,
 				"mode":       cfg.CodexMode,
-				"result_dir": cfg.RunsDir,
+				"result_dir": cfg.ResultDir(),
 			},
 		}
 	case "kimi":
@@ -3273,7 +3294,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			effort: "",
 			extra: map[string]string{
 				"mode":       cfg.KimiMode,
-				"result_dir": cfg.RunsDir,
+				"result_dir": cfg.ResultDir(),
 			},
 		}
 	}
@@ -3385,7 +3406,7 @@ func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Conf
 	if stderr == nil {
 		return
 	}
-	repoRoot := cfg.RepoRoot
+	workRoot := cfg.WorkRoot()
 	con := console.New(stderr, stderr)
 	autoInstallSkills(cfg, con)
 	warnMissingRequiredSkills(cfg, con)
@@ -3398,7 +3419,7 @@ func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Conf
 			continue
 		}
 		if spec.NeedsSkills {
-			r := agent.CheckSkillReadiness(repoRoot)
+			r := agent.CheckSkillReadiness(workRoot)
 			if !r.HasSkills {
 				msg := agent.MissingSkillsMessage(r)
 				if msg == "" {
@@ -3430,7 +3451,7 @@ func warnMissingRequiredSkills(cfg config.Config, con *console.Console) {
 		{"REQUIRED_SKILLS_VERIFY", cfg.RequiredSkillsVerify, "verify"},
 	}
 	for _, pin := range pins {
-		missing := agent.MissingRequiredSkills(cfg.RepoRoot, pin.names)
+		missing := agent.MissingRequiredSkills(cfg.WorkRoot(), pin.names)
 		if len(missing) == 0 {
 			continue
 		}
@@ -3446,7 +3467,7 @@ func warnMissingRequiredSkills(cfg config.Config, con *console.Console) {
 // machine, so it happens on the explicit gesture on the web Skills page and
 // nowhere else.
 func warnSkillDrift(cfg config.Config, con *console.Console) {
-	report := agent.CheckSkillDrift(cfg.RepoRoot)
+	report := agent.CheckSkillDrift(cfg.WorkRoot())
 	if len(report.Drifted) == 0 {
 		return
 	}
@@ -3463,7 +3484,7 @@ func warnSkillDrift(cfg config.Config, con *console.Console) {
 // all. Advisory only — an unusable rule drops out and the phase falls back down
 // the resolution chain, so the run proceeds either way.
 func warnSkillRules(cfg config.Config, con *console.Console) {
-	resolver := agent.NewSkillResolver(cfg.RepoRoot, cfg.RequiredSkills, cfg.RequiredSkillsVerify)
+	resolver := agent.NewSkillResolver(cfg.WorkRoot(), cfg.RequiredSkills, cfg.RequiredSkillsVerify)
 	if err := resolver.RulesError(); err != nil {
 		con.Logf("⚠ %s could not be read: %v — phases resolve skills from REQUIRED_SKILLS and the fallback chain", skillrules.File, err)
 		return
@@ -3482,7 +3503,7 @@ func autoInstallSkills(cfg config.Config, con *console.Console) {
 	if !cfg.AutoInstallSkills {
 		return
 	}
-	r := agent.CheckSkillReadiness(cfg.RepoRoot)
+	r := agent.CheckSkillReadiness(cfg.WorkRoot())
 	if r.HasSkills || len(r.Missing) == 0 {
 		return
 	}
@@ -3490,11 +3511,11 @@ func autoInstallSkills(cfg config.Config, con *console.Console) {
 	defer cancel()
 	for _, rec := range r.Missing {
 		con.Logf("↳ installing skill %s (%s)", rec.Name, rec.Package)
-		if err := agent.InstallSkill(ctx, cfg.RepoRoot, rec); err != nil {
+		if err := agent.InstallSkill(ctx, cfg.WorkRoot(), rec); err != nil {
 			con.Logf("⚠ %v", err)
 		}
 	}
-	if has, dirs := agent.CheckSkills(cfg.RepoRoot); has {
+	if has, dirs := agent.CheckSkills(cfg.WorkRoot()); has {
 		con.Logf("↳ skills installed into %s — review and commit them", strings.Join(dirs, ", "))
 	}
 }
@@ -3526,7 +3547,7 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		Flags:              strings.Fields(pc.flags),
 		Model:              model,
 		Effort:             effort,
-		Dir:                cfg.RepoRoot,
+		Dir:                cfg.WorkRoot(),
 		Preamble:           cfg.PhasePreamble(provider, phase),
 		Cols:               cfg.AgentCols,
 		Rows:               cfg.AgentRows,

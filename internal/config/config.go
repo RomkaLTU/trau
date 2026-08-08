@@ -107,6 +107,12 @@ type Config struct {
 	BaseBranch string
 	Remote     string
 	RepoRoot   string
+	// WorkTree is the working tree a run acts in when the operator pointed it at
+	// one other than RepoRoot (--worktree). It carries no configuration layer of
+	// its own and is never read from a file or the environment: the layered config
+	// still resolves from RepoRoot's .trau.ini, and every hub record stays keyed to
+	// RepoRoot. Empty means the run works in RepoRoot.
+	WorkTree string
 	// Forge names the code host the repo's remote points at, overriding what its
 	// remote says. Empty is the normal case: the forge is identified per
 	// repository from that repository's own remote.
@@ -1490,6 +1496,54 @@ func exploreAllowed(disallowed string) bool {
 		}
 	}
 	return true
+}
+
+// WorkRoot is the directory a run's git commands, agent subprocesses and
+// tracked-file lookups act in: the operator-given worktree when there is one,
+// the registered repo root otherwise. Identity never comes from here — use
+// RepoRoot for anything the hub keys a record by.
+func (c Config) WorkRoot() string {
+	if c.WorkTree != "" {
+		return c.WorkTree
+	}
+	return c.RepoRoot
+}
+
+// ResultDir is the root the agent-interface result channel (_agent-results)
+// lives under. A run in a worktree resolves a relative RUNS_DIR against that
+// tree so the channel lands beside the run's own files; without a worktree the
+// value passes through and the child resolves it itself.
+func (c Config) ResultDir() string {
+	if c.WorkTree == "" || c.RunsDir == "" || filepath.IsAbs(c.RunsDir) {
+		return c.RunsDir
+	}
+	return filepath.Join(c.WorkTree, c.RunsDir)
+}
+
+// ResolveWorkTree turns the --worktree flag into the absolute path a run works
+// in; empty means the registered root. The tree must already exist — trau never
+// provisions one — and be a tree git can act in, so a typo fails at startup
+// instead of running the whole pipeline against the wrong checkout.
+func ResolveWorkTree(flagWorkTree string) (string, error) {
+	flagWorkTree = strings.TrimSpace(flagWorkTree)
+	if flagWorkTree == "" {
+		return "", nil
+	}
+	abs, err := filepath.Abs(flagWorkTree)
+	if err != nil {
+		return "", fmt.Errorf("resolve --worktree %q: %w", flagWorkTree, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("--worktree %s: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("--worktree %s: not a directory", abs)
+	}
+	if _, err := os.Stat(filepath.Join(abs, ".git")); err != nil {
+		return "", fmt.Errorf("--worktree %s: not a git working tree (no .git); create it with `git worktree add`", abs)
+	}
+	return abs, nil
 }
 
 // ResolveRepoRoot locates the target app repo, per ADR 0001 §2: the --repo flag

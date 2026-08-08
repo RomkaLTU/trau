@@ -32,11 +32,16 @@ type Options struct {
 	Provider     string
 	Confirm      bool
 	Repo         string
-	NoTUI        bool
-	NoServe      bool
-	JSON         bool
-	Verbose      bool
-	Debug        bool
+	// WorkTree is the working tree the run acts in when it is not the registered
+	// repo root itself (--worktree). The operator provides the tree — trau neither
+	// creates nor removes it — and the run still reports under the registered
+	// Repo. Internal; not user-facing yet.
+	WorkTree string
+	NoTUI    bool
+	NoServe  bool
+	JSON     bool
+	Verbose  bool
+	Debug    bool
 	// DrainReport is the ticket a headless queue child reports its exit outcome
 	// under: the child posts its outcome — a fault or provider pause it hit, or a
 	// clean finish — to the hub keyed by this id so the drainer can settle the
@@ -145,6 +150,12 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.Repo = v
+		case a == "--worktree":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			o.WorkTree = v
 		case a == "--skip":
 			v, err := next(a)
 			if err != nil {

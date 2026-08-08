@@ -937,7 +937,16 @@ type Pipeline struct {
 	// TimelogEnabled is false none of the time-log code runs. RepoRoot is the
 	// resolved target-repo filesystem root, where repo-mode logs and the
 	// .gitignore live. See internal/timelog and recordTimelog (COD-622).
-	RepoRoot            string
+	RepoRoot string
+
+	// WorkTree is the working tree this run acts in when the operator pointed it
+	// at one other than RepoRoot (--worktree). Git, the agent phases, the run
+	// directory and every tracked-file lookup target it; identity does not — the
+	// hub keys checkpoints, artifacts, phase logs, events, presence, proofs and
+	// lessons by RepoRoot exactly as a normal run's. Empty means the run works in
+	// RepoRoot; read it through workRoot, never directly.
+	WorkTree string
+
 	TimelogEnabled      bool
 	TimelogStorage      string
 	TimelogOutputFormat string
@@ -1807,9 +1816,19 @@ func (p *Pipeline) featureBranch(ctx context.Context, id string) string {
 	return branch
 }
 
+// workRoot is the directory this run's git commands, agent phases and
+// tracked-file lookups act in: the operator-given worktree, or the registered
+// repo root. Nothing the hub keys a record by may read it — that is RepoRoot.
+func (p *Pipeline) workRoot() string {
+	if p.WorkTree != "" {
+		return p.WorkTree
+	}
+	return p.RepoRoot
+}
+
 // runDir is ticket id's run directory, resolving a relative RUNS_DIR against the
-// repo root the way every other resolver does. It is empty when no runs dir is
-// configured, so a caller never mistakes the repo root for one.
+// tree the run works in the way every other resolver does. It is empty when no
+// runs dir is configured, so a caller never mistakes the repo root for one.
 func (p *Pipeline) runDir(id string) string {
 	if p.RunsDir == "" {
 		return ""
@@ -1817,7 +1836,7 @@ func (p *Pipeline) runDir(id string) string {
 	if filepath.IsAbs(p.RunsDir) {
 		return filepath.Join(p.RunsDir, id)
 	}
-	return filepath.Join(p.RepoRoot, p.RunsDir, id)
+	return filepath.Join(p.workRoot(), p.RunsDir, id)
 }
 
 // CheckoutBranch checks out ticket id's recorded feature branch in the target repo
@@ -2850,7 +2869,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 			}
 		}
 		var section string
-		section, published = p.proofsSection(ctx, id, p.RepoRoot)
+		section, published = p.proofsSection(ctx, id, p.workRoot())
 		body := p.prBody(ctx, id, section)
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
 		if err != nil {
@@ -3480,7 +3499,7 @@ const noChecksGrace = 120
 // genuinely missing checks run out the clock into ErrCITimeout. base is the
 // branch pr targets, which decides whether any workflow could have checked it.
 func (p *Pipeline) pollCI(ctx context.Context, pr, base string) error {
-	return p.pollCIWith(ctx, p.Delivery, p.RepoRoot, pr, base)
+	return p.pollCIWith(ctx, p.Delivery, p.workRoot(), pr, base)
 }
 
 // pollCIWith is pollCI against one repository: d names the PR's own forge, and
@@ -4309,7 +4328,7 @@ func (p *Pipeline) setTitle(title string) {
 const resumeNote = " A previous attempt may have left partial work on this branch; continue from it rather than starting over."
 
 func (p *Pipeline) skillResolver() agent.SkillResolver {
-	return agent.NewSkillResolver(p.RepoRoot, p.RequiredSkills, p.RequiredSkillsVerify)
+	return agent.NewSkillResolver(p.workRoot(), p.RequiredSkills, p.RequiredSkillsVerify)
 }
 
 // skillMatchText is what a build's routing rules match against: the ticket block
@@ -4366,7 +4385,7 @@ func (p *Pipeline) resolveSkills(set agent.SkillSet, installed []string, phase s
 		}
 		return phaseSkills{set: set, mode: mode, note: render(p.prompts, installed, set.Names, p.skillsMenu(phase, installed, set.Names))}
 	}
-	injected := agent.LoadInjectableSkills(p.RepoRoot, set.Names)
+	injected := agent.LoadInjectableSkills(p.workRoot(), set.Names)
 	return phaseSkills{
 		set:       set,
 		mode:      mode,
@@ -4683,14 +4702,14 @@ type worktreeLister interface {
 // whose workspace holds the slice's changed files, AppURL otherwise. Fails open
 // to AppURL — an unsizable tree or unmatched slice never blocks verify.
 func (p *Pipeline) sliceAppURL(ctx context.Context) string {
-	if len(p.AppURLs) == 0 || p.RepoRoot == "" {
+	if len(p.AppURLs) == 0 || p.workRoot() == "" {
 		return p.AppURL
 	}
 	changed, ok := p.sliceChangedFiles(ctx)
 	if !ok {
 		return p.AppURL
 	}
-	if url := agent.WorkspaceAppURL(p.RepoRoot, p.AppURLs, changed); url != "" {
+	if url := agent.WorkspaceAppURL(p.workRoot(), p.AppURLs, changed); url != "" {
 		return url
 	}
 	return p.AppURL
@@ -4701,14 +4720,14 @@ func (p *Pipeline) sliceAppURL(ctx context.Context) string {
 // otherwise. Fails open to LintFixCmd — an unsizable tree or unmatched slice
 // never blocks lint-fix.
 func (p *Pipeline) sliceLintFixCmd(ctx context.Context) string {
-	if p.RepoRoot == "" {
+	if p.workRoot() == "" {
 		return p.LintFixCmd
 	}
 	changed, ok := p.sliceChangedFiles(ctx)
 	if !ok {
 		return p.LintFixCmd
 	}
-	dir := agent.OwningWorkspaceDir(p.RepoRoot, changed)
+	dir := agent.OwningWorkspaceDir(p.workRoot(), changed)
 	if v, ok := config.WorkspaceOverride(dir, "LINT_FIX_CMD"); ok {
 		return v
 	}

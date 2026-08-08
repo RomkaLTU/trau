@@ -26,7 +26,7 @@ func (p *Pipeline) lintFix(ctx context.Context, id string) error {
 		return p.folderLintFix(ctx, id)
 	}
 	if cmd := strings.TrimSpace(p.sliceLintFixCmd(ctx)); cmd != "" {
-		return p.lintFixCmd(ctx, p.RepoRoot, "lint-fix", cmd)
+		return p.lintFixCmd(ctx, p.workRoot(), "lint-fix", cmd)
 	}
 	return p.lintFixAgent(ctx, id)
 }
@@ -63,10 +63,11 @@ func lintFixInstruction(r prompts.Renderer, id string) string {
 	return r.Render("lint_fix", prompts.LintFixData{ID: id})
 }
 
-// runRepoCmd runs one of the repo's own shell commands from its root, echoing it
-// under label so the run log shows what was invoked before its output.
+// runRepoCmd runs one of the repo's own shell commands from the tree the run
+// works in, echoing it under label so the run log shows what was invoked before
+// its output.
 func (p *Pipeline) runRepoCmd(ctx context.Context, label, cmd string) ([]byte, error) {
-	return p.runDirCmd(ctx, p.RepoRoot, label, cmd)
+	return p.runDirCmd(ctx, p.workRoot(), label, cmd)
 }
 
 // runDirCmd runs cmd from dir — the repo root, or one Child repo of a Folder

@@ -18,7 +18,7 @@ func TestEnsureRepoConfigInclude(t *testing.T) {
 	dir := t.TempDir()
 	gitRun(t, dir, "init")
 
-	added, err := EnsureRepoConfigInclude(context.Background(), dir)
+	added, err := EnsureRepoConfigInclude(context.Background(), dir, "")
 	if err != nil {
 		t.Fatalf("absent file: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestEnsureRepoConfigInclude(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	added, err = EnsureRepoConfigInclude(context.Background(), dir)
+	added, err = EnsureRepoConfigInclude(context.Background(), dir, "")
 	if err != nil {
 		t.Fatalf("first wire: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestEnsureRepoConfigInclude(t *testing.T) {
 		t.Fatal("first call did not add the include")
 	}
 
-	added, err = EnsureRepoConfigInclude(context.Background(), dir)
+	added, err = EnsureRepoConfigInclude(context.Background(), dir, "")
 	if err != nil {
 		t.Fatalf("second wire: %v", err)
 	}
