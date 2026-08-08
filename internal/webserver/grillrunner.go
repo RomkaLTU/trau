@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -135,16 +136,22 @@ func (r *grillRunner) launch(_ context.Context, sess hubstore.GrillSession) {
 		return
 	}
 	go func() {
-		if !r.turn(ctx, cancel, sess) {
-			return
-		}
+		again := r.turn(ctx, cancel, sess)
 		// Resuming the chain the turn just minted is the point of going round again,
 		// and the struct it started from does not carry it.
 		next, found, err := r.srv.stores.Grill().Session(sess.ID)
 		if err != nil || !found {
 			return
 		}
-		r.launch(r.baseCtx, next)
+		// An interview that proposed into a second-opinion session is not over: the
+		// draft phase runs here, with the turn slot the interviewer just gave up.
+		if r.srv.grillDraftsPending(next) {
+			r.runDrafts(next)
+			return
+		}
+		if again {
+			r.launch(r.baseCtx, next)
+		}
 	}()
 }
 
@@ -217,7 +224,7 @@ func (r *grillRunner) buildTurn(ctx context.Context, sess hubstore.GrillSession,
 	if scrubbed {
 		logger.Printf("grill %d: composed prompt contained a raw NUL byte — replaced with its visible escape", sess.ID)
 	}
-	return adapter.turnSpec(sess.ID, repo, cfg, sess.Mode, model, resume, prompt)
+	return adapter.turnSpec(grillEndpoint{sid: sess.ID}, repo, cfg, sess.Mode, model, resume, prompt)
 }
 
 // grillTurnArgs assembles the claude argument vector: the configured flags, the
@@ -252,20 +259,44 @@ func grillChildEnv() []string {
 	return out
 }
 
+// grillEndpoint names the MCP surface one turn's child talks to: the session's own
+// tools (ask_user, ask_round, finish_session) for an interviewer turn, or a single
+// challenger's submit_decision surface during the second-opinion draft phase. Every
+// provider config writer builds its URL from here, so the two surfaces differ by the
+// path alone.
+type grillEndpoint struct {
+	sid    int64
+	member string
+}
+
+func (e grillEndpoint) path() string {
+	if e.member == "" {
+		return fmt.Sprintf("%s/grill/%d/mcp", APIPrefix, e.sid)
+	}
+	return fmt.Sprintf("%s/grill/%d/mcp/%s", APIPrefix, e.sid, url.PathEscape(e.member))
+}
+
+// slug names the per-endpoint scratch a provider needs on disk. A challenger draft
+// runs beside the interviewer's own turn, so the two must never share one.
+func (e grillEndpoint) slug() string {
+	if e.member == "" {
+		return strconv.FormatInt(e.sid, 10)
+	}
+	return strconv.FormatInt(e.sid, 10) + "-" + e.member
+}
+
 // Kimi rejects claude's explicit transport type, so the shared server shape leaves
 // it to each provider-specific config writer.
-func (r *grillRunner) grillMCPServer(sid int64) map[string]any {
-	server := map[string]any{
-		"url": fmt.Sprintf("%s%s/grill/%d/mcp", r.baseURL, APIPrefix, sid),
-	}
+func (r *grillRunner) grillMCPServer(ep grillEndpoint) map[string]any {
+	server := map[string]any{"url": r.baseURL + ep.path()}
 	if r.srv.token != "" {
 		server["headers"] = map[string]string{"Authorization": "Bearer " + r.srv.token}
 	}
 	return server
 }
 
-func (r *grillRunner) mcpConfigJSON(sid int64) string {
-	server := r.grillMCPServer(sid)
+func (r *grillRunner) mcpConfigJSON(ep grillEndpoint) string {
+	server := r.grillMCPServer(ep)
 	server["type"] = "http"
 	b, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"trau-grill": server}})
 	return string(b)
@@ -471,6 +502,11 @@ func (r *grillRunner) reconcile(sid int64, adapter grillAdapter, out grillOutput
 		}
 	default:
 		switch {
+		// An interviewer that proposed into a second-opinion session did propose, so
+		// nothing here settles it: the draft phase that follows does, and it outranks
+		// whatever the child's tail says on its way out.
+		case r.srv.grillDraftsPending(sess):
+			return false
 		case reason != "":
 			r.settle(sid, hubstore.GrillStalled, reason)
 		case runErr != nil || resultErr:

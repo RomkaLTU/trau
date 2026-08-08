@@ -207,7 +207,13 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	}
 	outcome, ok := latestGrillOutcome(msgs)
 	if !ok {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "session has no proposed outcome to apply"})
+		// A second-opinion session holds proposals until the user picks one, so nothing
+		// is applicable yet — which is a different instruction from having no proposal.
+		reason := "session has no proposed outcome to apply"
+		if len(grillProposalViews(msgs)) > 0 {
+			reason = "choose one of the proposals before applying"
+		}
+		writeJSON(w, http.StatusConflict, map[string]string{"error": reason})
 		return
 	}
 

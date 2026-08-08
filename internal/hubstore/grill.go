@@ -3,6 +3,7 @@ package hubstore
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -38,6 +39,10 @@ const (
 	GrillKindAnswer   = "answer"
 	GrillKindInfo     = "info"
 	GrillKindOutcome  = "outcome"
+	// A proposal is one participant's draft outcome in a second-opinion session —
+	// the interviewer's and each challenger's alike. The canonical decision stays a
+	// single outcome row, so nothing that reads the settled outcome sees a proposal.
+	GrillKindProposal = "proposal"
 	// An interjection steers a turn already in flight; it carries its own kind so
 	// nothing mistakes it for the answer to a pending question.
 	GrillKindInterjection = "interjection"
@@ -78,7 +83,9 @@ var grillTransitions = map[string]map[string]bool{
 // destination tracking.
 // ApplyWarnings carries what the apply that settled the session could not do but
 // never gated on. AutoAccept answers a question carrying a recommended option with
-// that recommendation rather than asking the user.
+// that recommendation rather than asking the user. Challengers are the providers
+// that draft a second opinion once the interviewer proposes its outcome; empty is a
+// solo session.
 type GrillSession struct {
 	ID               int64
 	Repo             string
@@ -92,22 +99,25 @@ type GrillSession struct {
 	Provider         string
 	Model            string
 	AutoAccept       bool
+	Challengers      []string
 	ParkedReason     string
 	ApplyWarnings    []string
 	CreatedAt        string
 	UpdatedAt        string
 }
 
-// NewGrillSession is the input to Create. State always starts at running. Provider
-// and Mode are locked at create and AutoAccept is its opening value; an empty
-// provider runs claude, an empty mode runs an interview.
+// NewGrillSession is the input to Create. State always starts at running. Provider,
+// Mode and Challengers are locked at create and AutoAccept is its opening value; an
+// empty provider runs claude, an empty mode runs an interview, and no challengers
+// runs a solo session.
 type NewGrillSession struct {
-	Repo       string
-	IssueID    string
-	Mode       string
-	Provider   string
-	Model      string
-	AutoAccept bool
+	Repo        string
+	IssueID     string
+	Mode        string
+	Provider    string
+	Model       string
+	AutoAccept  bool
+	Challengers []string
 }
 
 // GrillMessage is one message in a session's conversation. Payload is the message's
@@ -159,13 +169,15 @@ func NewGrill(db *sql.DB, retention int) *Grill { return &Grill{db: db, retentio
 // creates cannot both win.
 func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 	now := formatGrillTime(time.Now())
+	challengers := encodeGrillChallengers(ns.Challengers)
 	res, err := g.db.Exec(
-		`INSERT INTO grill_sessions(repo, issue_id, state, session_chain, mode, provider, model, auto_accept, parked_reason, created_at, updated_at)
-		 SELECT ?, ?, 'running', '', ?, ?, ?, ?, '', ?, ?
+		`INSERT INTO grill_sessions(repo, issue_id, state, session_chain, mode, provider, model, auto_accept, challengers, parked_reason, created_at, updated_at)
+		 SELECT ?, ?, 'running', '', ?, ?, ?, ?, ?, '', ?, ?
 		 WHERE ? = '' OR NOT EXISTS (
 		     SELECT 1 FROM grill_sessions
 		     WHERE repo = ? AND issue_id = ? AND state NOT IN ('applied', 'abandoned'))`,
-		ns.Repo, ns.IssueID, ns.Mode, ns.Provider, ns.Model, boolToInt(ns.AutoAccept), now, now, ns.IssueID, ns.Repo, ns.IssueID,
+		ns.Repo, ns.IssueID, ns.Mode, ns.Provider, ns.Model, boolToInt(ns.AutoAccept),
+		challengers, now, now, ns.IssueID, ns.Repo, ns.IssueID,
 	)
 	if err != nil {
 		return GrillSession{}, err
@@ -182,17 +194,35 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 		return GrillSession{}, err
 	}
 	return GrillSession{
-		ID:         id,
-		Repo:       ns.Repo,
-		IssueID:    ns.IssueID,
-		State:      GrillRunning,
-		Mode:       ns.Mode,
-		Provider:   ns.Provider,
-		Model:      ns.Model,
-		AutoAccept: ns.AutoAccept,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:          id,
+		Repo:        ns.Repo,
+		IssueID:     ns.IssueID,
+		State:       GrillRunning,
+		Mode:        ns.Mode,
+		Provider:    ns.Provider,
+		Model:       ns.Model,
+		AutoAccept:  ns.AutoAccept,
+		Challengers: decodeGrillChallengers(challengers),
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}, nil
+}
+
+// encodeGrillChallengers renders the locked challenger list as the column's CSV, and
+// decodeGrillChallengers reads it back. Provider names carry no commas, so the pair
+// stays a plain join/split rather than a nested encoding.
+func encodeGrillChallengers(names []string) string {
+	return strings.Join(names, ",")
+}
+
+func decodeGrillChallengers(csv string) []string {
+	var out []string
+	for _, name := range strings.Split(csv, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // grillSessionSelect reads a session alongside its display title. issue_id carries
@@ -215,7 +245,7 @@ const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination
 	              AND json_extract(m.payload, '$.disposition') = 'research'
 	            ORDER BY m.id DESC LIMIT 1
 	        ), ''), g.state,
-	        g.session_chain, g.mode, g.provider, g.model, g.auto_accept, g.parked_reason,
+	        g.session_chain, g.mode, g.provider, g.model, g.auto_accept, g.challengers, g.parked_reason,
 	        g.apply_warnings, g.created_at, g.updated_at
 	 FROM grill_sessions g
 	 LEFT JOIN issues i ON i.repo = g.repo AND i.identifier = g.issue_id`
@@ -752,18 +782,20 @@ func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err
 	out = []GrillSession{}
 	for q.Next() {
 		var (
-			s          GrillSession
-			autoAccept int
-			warnings   string
+			s           GrillSession
+			autoAccept  int
+			challengers string
+			warnings    string
 		)
 		if err := q.Scan(
 			&s.ID, &s.Repo, &s.IssueID, &s.IssueDestination, &s.IssueTitle, &s.ReportTitle, &s.State,
-			&s.SessionChain, &s.Mode, &s.Provider, &s.Model, &autoAccept,
+			&s.SessionChain, &s.Mode, &s.Provider, &s.Model, &autoAccept, &challengers,
 			&s.ParkedReason, &warnings, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		s.AutoAccept = autoAccept != 0
+		s.Challengers = decodeGrillChallengers(challengers)
 		s.ApplyWarnings = decodeList(warnings)
 		out = append(out, s)
 	}

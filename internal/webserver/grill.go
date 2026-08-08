@@ -34,7 +34,9 @@ const grillDefaultProvider = "claude"
 // reverting to the picker default, and ApplyWarnings the caveats that apply carried,
 // so the same remount raises them again. Provider is the session's locked provider
 // and Mode its locked session type; AutoAccept marks a session that answers its own
-// recommendations, so the panel can label the answers it never asked for. Applying
+// recommendations, so the panel can label the answers it never asked for.
+// Challengers names the second-opinion providers locked at create, so the panel chips
+// a session whose interview ends in a side-by-side review. Applying
 // marks an apply the hub is still writing, so a reload and a second tab read it too;
 // it lives in memory alone, so a hub restarted mid-apply reports none.
 type GrillSessionView struct {
@@ -51,6 +53,7 @@ type GrillSessionView struct {
 	Model            string   `json:"model,omitempty"`
 	ModelOptions     []string `json:"model_options,omitempty"`
 	AutoAccept       bool     `json:"auto_accept"`
+	Challengers      []string `json:"challengers,omitempty"`
 	Applying         bool     `json:"applying,omitempty"`
 	// Stopped separates the park the user made themselves from the one an idle window
 	// made for them: their next message steers the agent rather than answering it, which
@@ -105,11 +108,14 @@ type GrillActivityView struct {
 
 // GrillDefaultsView is what a session of the requested mode started right now would
 // run on. Provider availability is mode-dependent, so it is only valid for that mode.
+// Challengers is the GRILL_CHALLENGERS prefill for the second-opinion control, already
+// cut back to providers this machine can spawn.
 type GrillDefaultsView struct {
 	Provider     string                `json:"provider"`
 	Model        string                `json:"model,omitempty"`
 	ModelOptions []string              `json:"model_options,omitempty"`
 	Providers    []GrillProviderOption `json:"providers,omitempty"`
+	Challengers  []string              `json:"challengers,omitempty"`
 }
 
 // GrillProviderOption is one provider a not-yet-started session can run on. Disabled
@@ -162,15 +168,18 @@ type GrillDetailResponse struct {
 // Model are optional; an empty Mode opens an interview. AutoAccept defaults off, so a
 // session only answers its own recommendations when the start surface asks for it.
 // FromSession names the research session whose report seeds an unanchored interview —
-// the Draft an issue act on an open report.
+// the Draft an issue act on an open report. Challengers are the second-opinion
+// providers the interview ends in a side-by-side review against; at most two, none of
+// them the interviewer, and interview mode only.
 type GrillCreateRequest struct {
-	IssueID     string `json:"issue_id"`
-	Idea        string `json:"idea"`
-	Mode        string `json:"mode"`
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	AutoAccept  bool   `json:"auto_accept"`
-	FromSession string `json:"from_session"`
+	IssueID     string   `json:"issue_id"`
+	Idea        string   `json:"idea"`
+	Mode        string   `json:"mode"`
+	Provider    string   `json:"provider"`
+	Model       string   `json:"model"`
+	AutoAccept  bool     `json:"auto_accept"`
+	FromSession string   `json:"from_session"`
+	Challengers []string `json:"challengers"`
 }
 
 // GrillAnswerRequest is the body of POST /grill/{sid}/answer. Text answers a single
@@ -329,13 +338,19 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 	if model == "" {
 		model = s.grillModelDefaultFor(repo, provider)
 	}
+	challengers, errMsg := s.grillValidateChallengers(repo, req.Challengers, provider, mode)
+	if errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+		return
+	}
 	sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
-		Repo:       repo.Root,
-		IssueID:    issueID,
-		Mode:       mode,
-		Provider:   provider,
-		Model:      model,
-		AutoAccept: req.AutoAccept,
+		Repo:        repo.Root,
+		IssueID:     issueID,
+		Mode:        mode,
+		Provider:    provider,
+		Model:       model,
+		AutoAccept:  req.AutoAccept,
+		Challengers: challengers,
 	})
 	if err != nil {
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
@@ -1194,6 +1209,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		Model:            s.grillEffectiveModel(sess),
 		ModelOptions:     grillModelOptionsFor(sess.Provider),
 		AutoAccept:       sess.AutoAccept,
+		Challengers:      sess.Challengers,
 		Applying:         s.grillApplyInFlight(sess.ID),
 		Stopped:          grillStopped(sess),
 		ParkedReason:     sess.ParkedReason,
@@ -1210,7 +1226,88 @@ func (s *Server) grillDefaultsView(repo registry.Repo, mode string) GrillDefault
 		Model:        s.grillModelDefaultFor(repo, provider),
 		ModelOptions: grillModelOptionsFor(provider),
 		Providers:    s.grillProviderOptions(repo, provider, mode),
+		Challengers:  s.grillChallengerDefaults(repo, mode),
 	}
+}
+
+// grillMaxChallengers bounds a session's second opinions. Two independent drafts
+// already give the review something to weigh, and each one costs a provider run per
+// interview.
+const grillMaxChallengers = 2
+
+// grillChallengerDefaults is the GRILL_CHALLENGERS prefill, cut back to what a session
+// of this type could actually start with: names this machine knows and can spawn, each
+// listed once, capped at the per-session limit. The interviewer is deliberately left
+// in — the start surface owns that pick and drops the collision itself, so changing
+// provider costs no round trip.
+func (s *Server) grillChallengerDefaults(repo registry.Repo, mode string) []string {
+	if mode != hubstore.GrillModeInterview {
+		return nil
+	}
+	cfg, err := s.grillConfigFor(repo)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range cfg.GrillChallengers {
+		if len(out) == grillMaxChallengers {
+			break
+		}
+		if _, errMsg := grillValidateProvider(name, mode); errMsg != "" || seen[name] {
+			continue
+		}
+		if grillProviderUnavailableReason(cfg, name, mode) != "" {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+// grillValidateChallengers checks the second opinions a create asked for against the
+// interviewer they will run beside. They only make sense on an interview — the session
+// type that ends in a reviewable outcome — and each name must be a provider this
+// machine can spawn for that mode, named once, and never the interviewer itself, whose
+// proposal they exist to contest.
+func (s *Server) grillValidateChallengers(repo registry.Repo, names []string, provider, mode string) ([]string, string) {
+	wanted := make([]string, 0, len(names))
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" {
+			wanted = append(wanted, name)
+		}
+	}
+	if len(wanted) == 0 {
+		return nil, ""
+	}
+	if mode != hubstore.GrillModeInterview {
+		return nil, "second opinions are only available on an interview, not a " + mode + " session"
+	}
+	if len(wanted) > grillMaxChallengers {
+		return nil, fmt.Sprintf("an interview takes at most %d second opinions, got %d", grillMaxChallengers, len(wanted))
+	}
+	cfg, err := s.grillConfigFor(repo)
+	if err != nil {
+		return nil, "could not load the repository config: " + err.Error()
+	}
+	seen := map[string]bool{}
+	for _, name := range wanted {
+		if _, errMsg := grillValidateProvider(name, mode); errMsg != "" {
+			return nil, errMsg
+		}
+		if seen[name] {
+			return nil, "second opinion " + name + " is listed twice"
+		}
+		seen[name] = true
+		if name == grillEffectiveProvider(provider) {
+			return nil, name + " is the interviewer, so it cannot also give a second opinion"
+		}
+		if reason := grillProviderUnavailableReason(cfg, name, mode); reason != "" {
+			return nil, reason
+		}
+	}
+	return wanted, ""
 }
 
 // grillProviderOptions is the picker's catalog for one session type. A provider whose

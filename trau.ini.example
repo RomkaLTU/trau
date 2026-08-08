@@ -634,6 +634,12 @@ KIMI_MODEL=
 # choice still overrides this for that interview.
 # GRILL_PROVIDER=kimi
 
+# Default second-opinion providers prefilled when starting an interview: up to two
+# comma-separated provider names that each draft their own outcome from the finished
+# interview, for review beside the interviewer's. Empty = solo interviews. The
+# composer drops any name that is unavailable or is the interviewer itself.
+# GRILL_CHALLENGERS=codex,kimi
+
 # --- artifacts ---
 # Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
 # to ./runs (relative to the working directory). Point it at a stable path if you

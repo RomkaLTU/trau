@@ -12,7 +12,10 @@ export type GrillState =
 export type GrillRole = 'agent' | 'user' | 'system'
 // interjection is a message the user typed while a turn was in flight: it steers the
 // agent at its next step rather than answering anything it asked.
-export type GrillKind = 'question' | 'answer' | 'info' | 'outcome' | 'interjection'
+// proposal is one participant's draft outcome in a second-opinion session; the
+// canonical decision stays a single outcome message, minted when the user picks one.
+export type GrillKind =
+  'question' | 'answer' | 'info' | 'outcome' | 'interjection' | 'proposal'
 
 // GrillMode is the session type declared at create: an interview clarifies or
 // authors an issue, research answers a question and delivers a findings report, and
@@ -33,7 +36,9 @@ export type GrillMode = 'interview' | 'research' | 'fix'
 // applying marks an apply the hub is still writing, so a reload and a second tab read
 // it from the hub rather than from a mutation they never ran. stopped separates the
 // park the user made themselves from the one an idle window made for them: their next
-// message steers the agent rather than answering whatever it left open.
+// message steers the agent rather than answering whatever it left open. challengers
+// names the second-opinion providers locked at create, so a session whose interview
+// ends in a side-by-side review says so before it gets there.
 export interface GrillSession {
   id: string
   repo: string
@@ -49,6 +54,7 @@ export interface GrillSession {
   model?: string
   model_options?: string[]
   auto_accept?: boolean
+  challengers?: string[]
   applying?: boolean
   stopped?: boolean
   parked_reason?: string
@@ -120,6 +126,10 @@ export interface GrillDefaults {
   model?: string
   model_options?: string[]
   providers?: GrillProviderOption[]
+  // challengers is the GRILL_CHALLENGERS prefill for the second-opinion control,
+  // already cut back to providers this machine can spawn. The interviewer is still in
+  // it — the start surface owns that pick, so it drops the collision itself.
+  challengers?: string[]
 }
 
 export interface GrillListResponse {
@@ -481,6 +491,9 @@ export interface GrillStartOpening {
   mode?: GrillMode
   autoAccept?: boolean
   fromSession?: string
+  // challengers are the second-opinion providers the interview ends in a side-by-side
+  // review against: at most two, never the interviewer itself. Empty is a solo session.
+  challengers?: string[]
 }
 
 // startGrillSession opens a session. An empty issueId with a seed starts a
@@ -503,6 +516,7 @@ export async function startGrillSession(
       mode: opening.mode ?? 'interview',
       auto_accept: opening.autoAccept ?? false,
       from_session: opening.fromSession ?? '',
+      challengers: opening.challengers ?? [],
     }),
   })
   if (!res.ok) {
@@ -896,6 +910,49 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
     sub_issues: Array.isArray(p.sub_issues) ? p.sub_issues.map(parseSubIssue) : undefined,
     summary: typeof p.summary === 'string' ? p.summary : '',
   }
+}
+
+// SessionProposal is one participant's draft outcome in a second-opinion session,
+// carrying the message id the choose call names it by.
+export interface SessionProposal {
+  id: string
+  provider: string
+  round: number
+  outcome: OutcomePayload
+}
+
+// sessionProposals reads a conversation's proposals in the order they landed. The
+// interviewer's is first, since it is what opened the draft phase.
+export function sessionProposals(messages: GrillMessage[]): SessionProposal[] {
+  const out: SessionProposal[] = []
+  for (const msg of messages) {
+    if (msg.kind !== 'proposal') continue
+    const p = (msg.payload ?? {}) as { provider?: unknown; round?: unknown; outcome?: unknown }
+    if (p.outcome === null || typeof p.outcome !== 'object') continue
+    out.push({
+      id: msg.id,
+      provider: typeof p.provider === 'string' ? p.provider : '',
+      round: Number.isInteger(p.round) ? (p.round as number) : 0,
+      outcome: outcomePayload({ ...msg, payload: p.outcome }),
+    })
+  }
+  return out
+}
+
+// chooseGrillProposal promotes one proposal to the session's canonical outcome. The
+// hub copies the payload into a fresh outcome message, which the editable review and
+// Apply then ride exactly as on a solo session.
+export async function chooseGrillProposal(
+  sid: string,
+  messageId: string,
+): Promise<{ session: GrillSession; message: GrillMessage }> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/choose-proposal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message_id: messageId }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'choose proposal failed'))
+  return res.json()
 }
 
 function parseSource(raw: unknown): ReportSource {

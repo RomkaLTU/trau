@@ -4,7 +4,10 @@ import { ArrowRight, Sparkles } from "lucide-react";
 
 import { BannerRow, ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
-import { OutcomeReview } from "@/components/grill/outcome-review";
+import {
+  OutcomeReview,
+  ProposalChoice,
+} from "@/components/grill/outcome-review";
 import { ReportDocument } from "@/components/grill/report";
 import { RoundForm } from "@/components/grill/round";
 import { Suggestions } from "@/components/grill/suggestions";
@@ -28,6 +31,7 @@ import {
   resumeGrill,
   roundAnswers,
   roundQuestions,
+  sessionProposals,
   stopGrill,
   type GrillActivity,
   type GrillAppliedOutcome,
@@ -151,6 +155,12 @@ export function GrillConversation({
   const reviewing =
     outcomeMsg !== null &&
     (session.state === "finished" || session.state === "applied");
+  // A second-opinion session finishes holding every participant's draft and no
+  // decision: the user picks one first, and that pick is what mints the outcome the
+  // ordinary review then rides.
+  const proposals = sessionProposals(messages);
+  const choosing =
+    outcomeMsg === null && session.state === "finished" && proposals.length > 1;
   // An applied report has nothing left to decide, so the document stands alone.
   const reporting = report && reviewing && proposal?.disposition === "research";
   const decided = reporting && session.state === "applied";
@@ -245,7 +255,8 @@ export function GrillConversation({
     banner !== null &&
     stalled === null &&
     banner.tone !== "thinking" &&
-    !reviewing;
+    !reviewing &&
+    !choosing;
 
   // A stall leaves both ways forward open: Resume restarts the turn the agent died on,
   // and answering resumes the session off the answer itself.
@@ -311,8 +322,14 @@ export function GrillConversation({
 
       {!decided && (
         <div className="flex flex-col gap-3 border-t p-4">
-          {reviewing && outcomeMsg && outcome === "link" ? (
+          {(reviewing || choosing) && outcome === "link" ? (
             <ProposalLink onOpen={onReview} />
+          ) : choosing ? (
+            <ProposalChoice
+              session={session}
+              proposals={proposals}
+              onChosen={(message) => dispatch({ type: "message", message })}
+            />
           ) : reviewing && proposal ? (
             <>
               <OutcomeReview

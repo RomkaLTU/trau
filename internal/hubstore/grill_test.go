@@ -69,6 +69,79 @@ func TestGrillCreateAndMessages(t *testing.T) {
 	}
 }
 
+func TestGrillChallengersRoundTrip(t *testing.T) {
+	g, _ := testGrill(t, 0)
+
+	sess, err := g.Create(NewGrillSession{
+		Repo:        "acme",
+		IssueID:     "COD-1",
+		Mode:        GrillModeInterview,
+		Provider:    "claude",
+		Challengers: []string{"codex", "kimi"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !slices.Equal(sess.Challengers, []string{"codex", "kimi"}) {
+		t.Fatalf("created challengers = %v, want [codex kimi]", sess.Challengers)
+	}
+
+	got, found, err := g.Session(sess.ID)
+	if err != nil || !found {
+		t.Fatalf("session(%d): found=%v err=%v", sess.ID, found, err)
+	}
+	if !slices.Equal(got.Challengers, []string{"codex", "kimi"}) {
+		t.Fatalf("stored challengers = %v, want [codex kimi]", got.Challengers)
+	}
+
+	solo, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-2"})
+	if err != nil {
+		t.Fatalf("create solo: %v", err)
+	}
+	if len(solo.Challengers) != 0 {
+		t.Fatalf("solo challengers = %v, want none", solo.Challengers)
+	}
+	listed, err := g.List("acme", "", GrillModeInterview)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, s := range listed {
+		if s.ID == solo.ID && len(s.Challengers) != 0 {
+			t.Fatalf("listed solo challengers = %v, want none", s.Challengers)
+		}
+		if s.ID == sess.ID && !slices.Equal(s.Challengers, []string{"codex", "kimi"}) {
+			t.Fatalf("listed challengers = %v, want [codex kimi]", s.Challengers)
+		}
+	}
+}
+
+func TestGrillProposalMessageKind(t *testing.T) {
+	g, _ := testGrill(t, 0)
+
+	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1", Challengers: []string{"codex"}})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	payload := `{"provider":"codex","round":0,"outcome":{"disposition":"no_change","summary":"clear"}}`
+	stored, ok, err := g.AppendMessage(sess.ID, NewGrillMessage{
+		Role: GrillRoleAgent, Kind: GrillKindProposal, Payload: payload,
+	})
+	if err != nil || !ok {
+		t.Fatalf("append proposal: ok=%v err=%v", ok, err)
+	}
+
+	msgs, err := g.Messages(sess.ID, 0)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != stored.ID {
+		t.Fatalf("messages = %+v, want the proposal alone", msgs)
+	}
+	if msgs[0].Kind != GrillKindProposal || msgs[0].Payload != payload {
+		t.Fatalf("stored proposal = %+v", msgs[0])
+	}
+}
+
 func TestGrillAppendMessageUnknownSession(t *testing.T) {
 	g, _ := testGrill(t, 0)
 	if _, ok, err := g.AppendMessage(999, NewGrillMessage{Role: GrillRoleUser, Kind: GrillKindAnswer}); ok || err != nil {

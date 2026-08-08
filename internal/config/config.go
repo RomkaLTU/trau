@@ -121,6 +121,11 @@ type Config struct {
 	Provider        string
 	TrackerProvider string
 	GrillProvider   string
+	// GrillChallengers are the providers an Inbox interview prefills its second
+	// opinions with. They are a start-surface default, not a lock: the composer
+	// filters them to what the picked interviewer leaves valid and the user edits
+	// the selection before starting.
+	GrillChallengers []string
 
 	ClaudeConfig          string
 	ClaudeBin             string
@@ -954,6 +959,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("FALLBACK_PROVIDERS"); v != "" {
 		c.FallbackProviders = splitCSV(v)
 		sources["FALLBACK_PROVIDERS"] = src.name
+	}
+	if v, src := get("GRILL_CHALLENGERS"); v != "" {
+		c.GrillChallengers = splitCSV(v)
+		sources["GRILL_CHALLENGERS"] = src.name
 	}
 	if v, src := get("AZURE_TEAMS"); v != "" {
 		c.AzureTeams = splitCSV(v)
@@ -1920,6 +1929,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Claude model for the non-phase agents — grill sessions and the hub helper; pipeline phases run on their own fixed per-phase defaults"},
 		{Key: "GRILL_PROVIDER", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Provider for the hub's grilling agent (claude, codex, kimi); empty means claude", Options: providerOptions},
 		{Key: "GRILL_MODEL", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Claude model for the hub's grilling agent; empty falls back to CLAUDE_MODEL"},
+		{Key: "GRILL_CHALLENGERS", Group: sectionGrilling, WebEditable: true, Description: "Default second-opinion providers prefilled when starting an interview"},
 		{Key: "CLAUDE_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Claude reasoning effort for the non-phase agents — grill sessions and the hub helper; pipeline phases run on their own fixed per-phase defaults"},
 		{Key: "CLAUDE_DISALLOWED_TOOLS", Group: sectionProviders, Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
 		{Key: "CODEX_BIN", Group: sectionProviders, Advanced: true, Default: "codex", Description: "Codex binary"},
@@ -2507,6 +2517,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.TrackerProvider
 	case "GRILL_PROVIDER":
 		return cfg.GrillProvider
+	case "GRILL_CHALLENGERS":
+		return strings.Join(cfg.GrillChallengers, ",")
 	case "CLAUDE_CONFIG":
 		return cfg.ClaudeConfig
 	case "CODEX_CONFIG":

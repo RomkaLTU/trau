@@ -169,6 +169,7 @@ describe("useGrillSession start model", () => {
           mode: "interview",
           auto_accept: false,
           from_session: "",
+          challengers: [],
         }),
       }),
     );
@@ -198,6 +199,7 @@ describe("useGrillSession start model", () => {
           mode: "research",
           auto_accept: false,
           from_session: "",
+          challengers: [],
         }),
       }),
     );
@@ -233,6 +235,7 @@ describe("useGrillSession start model", () => {
           mode: "research",
           auto_accept: true,
           from_session: "",
+          challengers: [],
         }),
       }),
     );

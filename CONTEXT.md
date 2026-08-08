@@ -245,6 +245,14 @@ _Avoid_: pre-grill (code name `pregrill`), pre-interview, prep
 An Inbox item for an issue that does not exist yet — an authoring Interview with no tracker id, shown in the queue with a draft chip and titled by its seed. Purely client-side until the first message starts the session; it becomes a real issue only when its create outcome applies, and it evaporates if abandoned untouched.
 _Avoid_: new issue (that's the entry action), authoring session (the mechanism, not the item), placeholder issue
 
+**Second opinion**:
+The Inbox option where one or two Challenger providers draft and contest an Interview's proposed outcome before review. The Interview itself is unchanged — one interviewer, one conversation with the user — but when it proposes its outcome the Challengers each draft their own from the same transcript, and the session finishes with every proposal side by side for the user to pick one, edit it, and apply. Chosen when the Interview is started and locked for its lifetime; no second opinions is an ordinary solo Interview.
+_Avoid_: panel, debate, consensus mode
+
+**Challenger**:
+A provider added to an Interview to draft and contest outcomes. It never talks to the user and never asks a question: it reads the finished transcript, decides the outcome for itself, and submits exactly one decision. A Challenger that fails is dropped with a note, and an Interview whose Challengers all fail settles on the interviewer's own proposal.
+_Avoid_: panel member, reviewer
+
 **Start over** (an Interview):
 Abandon the current Interview and immediately begin a fresh one on the same Inbox item, in one deliberate click — the old thread settles as abandoned and is never shown again. Touches only the session; the issue, its labels, and anything already applied are untouched.
 _Avoid_: reset (that's the destructive ticket action), restart, retry, discard (that's abandoning without starting anew)

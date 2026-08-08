@@ -68,7 +68,15 @@ var grillMCPTools = []mcpTool{
 			"investigation and what it produced is a report, not an issue body — requires title and findings), or \"no_change\" " +
 			"(nothing needs writing). summary captures the key clarifications reached. Nothing is written to the tracker " +
 			"until the user approves.",
-		InputSchema: json.RawMessage(`{
+		InputSchema: grillDecisionSchema,
+	},
+}
+
+// grillDecisionSchema is the shape of one decision on a session's outcome. Both tools
+// that take one — the interviewer's finish_session and a challenger's submit_decision
+// — declare it, so a second opinion is drafted against the same dispositions and the
+// same per-disposition required fields as the proposal it contests.
+var grillDecisionSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "disposition": {"type": "string", "enum": ["rewrite", "split", "needs_split", "create", "research", "no_change"], "description": "The proposed outcome."},
@@ -106,9 +114,7 @@ var grillMCPTools = []mcpTool{
     "summary": {"type": "string", "description": "A short summary of the clarifications reached during the session."}
   },
   "required": ["disposition", "summary"]
-}`),
-	},
-}
+}`)
 
 // handleGrillMCP serves the per-session MCP endpoint (POST /grill/{sid}/mcp). The
 // session id in the path scopes every tool call to one session, so a child can
@@ -400,63 +406,9 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		respondRPCJSON(w, rpcID, mcpToolError(grillFinishRefusal(steer)))
 		return
 	}
-	var a struct {
-		Disposition         string          `json:"disposition"`
-		Title               string          `json:"title"`
-		ProposedDescription string          `json:"proposed_description"`
-		Findings            string          `json:"findings"`
-		Sources             []grillSource   `json:"sources"`
-		Labels              []string        `json:"labels"`
-		SubIssues           []grillSubIssue `json:"sub_issues"`
-		Summary             string          `json:"summary"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		respondRPCJSON(w, rpcID, mcpToolError("finish_session arguments were not valid JSON"))
-		return
-	}
-	disposition := strings.TrimSpace(a.Disposition)
-	if !validGrillDisposition(disposition) {
-		respondRPCJSON(w, rpcID, mcpToolError("disposition must be one of: rewrite, split, needs_split, create, research, no_change"))
-		return
-	}
-	proposed := strings.TrimSpace(a.ProposedDescription)
-	if needsProposedDescription(disposition) && proposed == "" {
-		respondRPCJSON(w, rpcID, mcpToolError("disposition "+disposition+" requires proposed_description"))
-		return
-	}
-	title := strings.TrimSpace(a.Title)
-	if disposition == grillDispCreate && title == "" {
-		respondRPCJSON(w, rpcID, mcpToolError("disposition create requires a title for the new issue"))
-		return
-	}
-	findings := strings.TrimSpace(a.Findings)
-	if disposition == grillDispResearch {
-		if findings == "" {
-			respondRPCJSON(w, rpcID, mcpToolError("disposition research requires findings: the full Markdown research report"))
-			return
-		}
-		if title == "" {
-			respondRPCJSON(w, rpcID, mcpToolError("disposition research requires a title: the report's own title"))
-			return
-		}
-	}
-	sources, srcMsg := normalizeGrillSources(a.Sources)
-	if srcMsg != "" {
-		respondRPCJSON(w, rpcID, mcpToolError(srcMsg))
-		return
-	}
-	var subIssues []grillSubIssue
-	if disposition == grillDispSplit || (disposition == grillDispCreate && len(a.SubIssues) > 0) {
-		var msg string
-		subIssues, msg = normalizeSplitSubIssues(a.SubIssues)
-		if msg != "" {
-			respondRPCJSON(w, rpcID, mcpToolError(msg))
-			return
-		}
-	}
-	summary := strings.TrimSpace(a.Summary)
-	if summary == "" {
-		respondRPCJSON(w, rpcID, mcpToolError("summary is required"))
+	outcome, disposition, errMsg := grillDecisionOutcome("finish_session", args)
+	if errMsg != "" {
+		respondRPCJSON(w, rpcID, mcpToolError(errMsg))
 		return
 	}
 	sess, found, err := s.stores.Grill().Session(sid)
@@ -471,6 +423,91 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 	if !grillFinishable(sess.State) {
 		respondRPCJSON(w, rpcID, mcpToolError("this session has already ended and cannot be finished again"))
 		return
+	}
+	// A session carrying challengers does not end here: the interviewer's decision is
+	// one proposal of several, so it is recorded as such and the draft phase — which
+	// finishes the session itself — takes over.
+	if len(sess.Challengers) > 0 {
+		s.grillInterviewerProposal(w, sess, rpcID, outcome, disposition)
+		return
+	}
+
+	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleAgent,
+		Kind:    hubstore.GrillKindOutcome,
+		Payload: outcome,
+	})
+	if err != nil {
+		respondRPCError(w, rpcID, rpcInternalError, "store outcome: "+err.Error())
+		return
+	}
+	finished, err := s.stores.Grill().Transition(sid, hubstore.GrillFinished, "")
+	if err != nil {
+		respondRPCJSON(w, rpcID, mcpToolError("could not finish session: "+err.Error()))
+		return
+	}
+	s.publishGrillMessage(msg)
+	s.publishGrillState(finished)
+	respondRPCJSON(w, rpcID, mcpToolSuccess(
+		"Session finished with disposition \""+disposition+"\". The proposed outcome is now awaiting the user's review."))
+}
+
+// grillDecisionOutcome validates a finish_session-shaped decision and renders it as
+// the canonical outcome JSON the transcript stores, alongside the disposition it
+// settled on. tool names the caller in the one message that has to say which call was
+// malformed; every other failure reads the same for the interviewer and for a
+// challenger, since both decide against the same rules. A non-empty third return is a
+// tool-error message the agent can correct.
+func grillDecisionOutcome(tool string, args json.RawMessage) (string, string, string) {
+	var a struct {
+		Disposition         string          `json:"disposition"`
+		Title               string          `json:"title"`
+		ProposedDescription string          `json:"proposed_description"`
+		Findings            string          `json:"findings"`
+		Sources             []grillSource   `json:"sources"`
+		Labels              []string        `json:"labels"`
+		SubIssues           []grillSubIssue `json:"sub_issues"`
+		Summary             string          `json:"summary"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", "", tool + " arguments were not valid JSON"
+	}
+	disposition := strings.TrimSpace(a.Disposition)
+	if !validGrillDisposition(disposition) {
+		return "", "", "disposition must be one of: rewrite, split, needs_split, create, research, no_change"
+	}
+	proposed := strings.TrimSpace(a.ProposedDescription)
+	if needsProposedDescription(disposition) && proposed == "" {
+		return "", "", "disposition " + disposition + " requires proposed_description"
+	}
+	title := strings.TrimSpace(a.Title)
+	if disposition == grillDispCreate && title == "" {
+		return "", "", "disposition create requires a title for the new issue"
+	}
+	findings := strings.TrimSpace(a.Findings)
+	if disposition == grillDispResearch {
+		if findings == "" {
+			return "", "", "disposition research requires findings: the full Markdown research report"
+		}
+		if title == "" {
+			return "", "", "disposition research requires a title: the report's own title"
+		}
+	}
+	sources, srcMsg := normalizeGrillSources(a.Sources)
+	if srcMsg != "" {
+		return "", "", srcMsg
+	}
+	var subIssues []grillSubIssue
+	if disposition == grillDispSplit || (disposition == grillDispCreate && len(a.SubIssues) > 0) {
+		var msg string
+		subIssues, msg = normalizeSplitSubIssues(a.SubIssues)
+		if msg != "" {
+			return "", "", msg
+		}
+	}
+	summary := strings.TrimSpace(a.Summary)
+	if summary == "" {
+		return "", "", "summary is required"
 	}
 	outcome, _ := json.Marshal(struct {
 		Disposition         string          `json:"disposition"`
@@ -491,25 +528,7 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		SubIssues:           subIssues,
 		Summary:             summary,
 	})
-
-	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
-		Role:    hubstore.GrillRoleAgent,
-		Kind:    hubstore.GrillKindOutcome,
-		Payload: string(outcome),
-	})
-	if err != nil {
-		respondRPCError(w, rpcID, rpcInternalError, "store outcome: "+err.Error())
-		return
-	}
-	finished, err := s.stores.Grill().Transition(sid, hubstore.GrillFinished, "")
-	if err != nil {
-		respondRPCJSON(w, rpcID, mcpToolError("could not finish session: "+err.Error()))
-		return
-	}
-	s.publishGrillMessage(msg)
-	s.publishGrillState(finished)
-	respondRPCJSON(w, rpcID, mcpToolSuccess(
-		"Session finished with disposition \""+disposition+"\". The proposed outcome is now awaiting the user's review."))
+	return string(outcome), disposition, ""
 }
 
 // grillPendingQuestion returns the question the session is already waiting on when
