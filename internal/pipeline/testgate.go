@@ -49,7 +49,7 @@ const (
 // verdict is shaped exactly like a verify verdict so every downstream consumer
 // takes it unchanged.
 func (p *Pipeline) testGate(ctx context.Context, id string) (verdict, bool) {
-	if p.RepoRoot == "" {
+	if p.workRoot() == "" {
 		return verdict{}, false
 	}
 	p.setActivity(id, activity.TestGate, "")
@@ -251,7 +251,7 @@ func (p *Pipeline) missingTargets(ctx context.Context, targets []testTarget) []s
 	if len(targets) == 0 {
 		return nil
 	}
-	idx := newTestIndex(p.RepoRoot)
+	idx := newTestIndex(p.workRoot())
 	var fails []string
 	for _, t := range targets {
 		if ctx.Err() != nil {
@@ -308,7 +308,7 @@ func (p *Pipeline) listTests(ctx context.Context, t testTarget) (int, bool) {
 	}
 	lctx, cancel := context.WithTimeout(ctx, testGateListBudget)
 	defer cancel()
-	out, err := p.runGateCmd(lctx, p.RepoRoot, "go", append([]string{"test", "-list", pattern}, t.Pkgs...)...)
+	out, err := p.runGateCmd(lctx, p.workRoot(), "go", append([]string{"test", "-list", pattern}, t.Pkgs...)...)
 	if err != nil {
 		p.logf("  ⚠ test gate: could not list tests for %q (not treating it as missing): %s", t.Raw, firstLine(string(out)))
 		return 0, false
@@ -341,7 +341,7 @@ func (p *Pipeline) unstableChangedTests(ctx context.Context) (measured int, fail
 	if !ok {
 		return 0, nil
 	}
-	goDirs, web := changedTestScope(p.RepoRoot, changed)
+	goDirs, web := changedTestScope(p.workRoot(), changed)
 	for _, dir := range goDirs {
 		if ctx.Err() != nil {
 			return measured, fails
@@ -351,7 +351,7 @@ func (p *Pipeline) unstableChangedTests(ctx context.Context) (measured int, fail
 		}
 		measured++
 	}
-	groups := groupWebTests(p.RepoRoot, web)
+	groups := groupWebTests(p.workRoot(), web)
 	for _, ws := range slices.Sorted(maps.Keys(groups)) {
 		if ctx.Err() != nil {
 			return measured, fails
@@ -416,7 +416,7 @@ func (p *Pipeline) raceCheckGo(ctx context.Context, dir string) string {
 	}
 	pctx, cancel := context.WithTimeout(ctx, testGatePkgBudget)
 	defer cancel()
-	out, err := p.runGateCmd(pctx, filepath.Join(p.RepoRoot, filepath.FromSlash(dir)),
+	out, err := p.runGateCmd(pctx, filepath.Join(p.workRoot(), filepath.FromSlash(dir)),
 		"go", "test", "-race", fmt.Sprintf("-count=%d", testGateRaceCount), ".")
 	if err == nil {
 		return ""
@@ -491,7 +491,7 @@ func vitestBin(ws string) string {
 // repeatCheckWeb re-runs a workspace's changed test files, repeated where the
 // runner offers repeats and once where it does not.
 func (p *Pipeline) repeatCheckWeb(ctx context.Context, ws string, files []string) string {
-	dir := filepath.Join(p.RepoRoot, filepath.FromSlash(ws))
+	dir := filepath.Join(p.workRoot(), filepath.FromSlash(ws))
 	bin := vitestBin(dir)
 	if bin == "" {
 		return ""
