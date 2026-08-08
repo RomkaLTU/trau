@@ -191,7 +191,7 @@ it('opens the shortcuts dialog on ? with every registered binding', () => {
     true,
   )
   expect(text.some((row) => row.includes('Go to Backlog'))).toBe(true)
-  expect(text.some((row) => row.includes('Next issue'))).toBe(true)
+  expect(text.some((row) => row.includes('Open the selected issue'))).toBe(true)
   expect(
     text.some((row) => row.includes("Open the highlighted ticket's actions")),
   ).toBe(true)

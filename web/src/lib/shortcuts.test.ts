@@ -45,8 +45,33 @@ describe('SHORTCUTS', () => {
     expect(labels).toContain('Open the command palette')
     expect(labels).toContain('Switch project')
     expect(labels).toContain('Show keyboard shortcuts')
-    expect(labels).toContain('Next issue')
+    expect(labels).toContain('Send the message')
     expect(labels).toContain("Open the highlighted ticket's actions")
+  })
+
+  it('registers the inbox walk and its composer key', () => {
+    const inbox = SHORTCUTS.filter((shortcut) => shortcut.where === 'Inbox')
+    expect(inbox.map((shortcut) => shortcut.keys[0])).toEqual([
+      '↓',
+      '↑',
+      'Home',
+      'End',
+      'Enter',
+      'Tab',
+    ])
+    expect(inbox[0].alt).toEqual(['j'])
+    expect(inbox[1].alt).toEqual(['k'])
+    expect(inbox[4].label).toBe('Open the selected issue')
+    expect(
+      SHORTCUTS.filter((shortcut) => shortcut.where === 'Inbox composer'),
+    ).toEqual([
+      {
+        keys: ['Enter'],
+        label: 'Send the message',
+        group: 'Lists',
+        where: 'Inbox composer',
+      },
+    ])
   })
 
   it('registers every backlog row binding', () => {
