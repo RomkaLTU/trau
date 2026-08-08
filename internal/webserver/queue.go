@@ -69,10 +69,11 @@ type QueueItemView struct {
 // registration order, whether the hub is currently draining it and since when,
 // and whether a stop is ending the child that was running. DrainingSince is
 // absent unless the queue is draining. ReleasingEpic names the Epic whose release
-// holds the queue, so a drain that starts nothing reads as waiting on that release
-// rather than as idle. Batches lists the repo's batches and DrainingBatch names the
-// one the drain in flight is scoped to — empty when it is draining the whole queue
-// — so a client can label the run. Held reports that the drain is armed and
+// holds the whole queue, so a drain that starts nothing reads as waiting on that
+// release rather than as idle; it stays empty where worktrees scope that hold to
+// the epic's own lane and the other lanes keep starting. Batches lists the repo's
+// batches and DrainingBatch names the one the drain in flight is scoped to — empty
+// when it is draining the whole queue — so a client can label the run. Held reports that the drain is armed and
 // starting nothing anyway, with HeldGate naming the gate in the hold vocabulary and
 // HeldReason spelling it out, so a wait is never operationally indistinguishable
 // from a hang. Lanes is how many runs the repo may have in flight at once
@@ -351,10 +352,11 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 // without arming draining, so the tick that settles the item finds the drain off
 // and stops instead of picking up the next row. It refuses with 409 whenever the
 // repo has no room for it: an armed drain, this very item already running, no free
-// run lane, a live epic — which holds the whole repo however many lanes it has — or
-// an Epic whose release still holds the repo, only that Epic's own finalize being
-// let through; and, so the one-shot cannot bypass the drain's dedup, whenever an
-// unsettled queued epic already covers the item.
+// run lane, a live epic — which holds the whole repo where runs share a checkout,
+// and only its own lane where they have worktrees — or an Epic whose release holds
+// the repo on that same grain, only that Epic's own finalize being let through;
+// and, so the one-shot cannot bypass the drain's dedup, whenever an unsettled
+// queued epic already covers the item.
 func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -403,17 +405,22 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s has already settled %s and cannot be run", item.ID, item.Status)})
 		return
 	}
-	if epic, running := firstEpicRunning(items, s.drain.alive); running {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("%s is running and an epic holds the whole repo — wait for it to finish", epic),
-		})
-		return
-	}
-	if item.Kind == queue.KindEpic && s.drain.occupiedLanes(root, items) > 0 {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("%s is an epic and runs on its own — wait for this repo's other lanes to finish", item.ID),
-		})
-		return
+	// An epic owns the shared checkout while it runs, so where runs share one it
+	// holds the whole repo in both directions. Where every run has its own tree the
+	// epic holds one lane — its own — and a Run beside it is as safe as any other.
+	if !worktreeRepo(root) {
+		if epic, running := firstEpicRunning(items, s.drain.alive); running {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": fmt.Sprintf("%s is running and an epic holds the whole repo — wait for it to finish", epic),
+			})
+			return
+		}
+		if item.Kind == queue.KindEpic && s.drain.occupiedLanes(root, items) > 0 {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error": fmt.Sprintf("%s is an epic and runs on its own — wait for this repo's other lanes to finish", item.ID),
+			})
+			return
+		}
 	}
 	if epic, held := s.heldByRelease(root, item.ID); held {
 		writeJSON(w, http.StatusConflict, map[string]string{
@@ -633,7 +640,7 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		DrainingSince: drainingSince,
 		DrainingBatch: meta.Batch,
 		Stopping:      s.isStopping(root),
-		ReleasingEpic: s.releasingEpic(root),
+		ReleasingEpic: s.releaseGateEpic(root),
 		Lanes:         s.repoLaneCap(root),
 		Held:          hold.gate != "",
 		HeldGate:      string(hold.gate),

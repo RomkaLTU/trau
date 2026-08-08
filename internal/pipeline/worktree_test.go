@@ -435,6 +435,112 @@ func TestSettleTicketWorktreeRemovesTheTreeAndPointsTheRunBack(t *testing.T) {
 	p.settleTicketWorktree(context.Background(), "COD-1581")
 }
 
+// TestAnEpicsChildrenAndFinalizeShareOneWorktree is the epic-lane rule: an epic is
+// serial inside, so every sub-issue and the release work in one tree keyed by the
+// epic — provisioned once, adopted with the previous child's work still in it, and
+// reported to the hub under the epic so the epic's own settle is what removes it.
+func TestAnEpicsChildrenAndFinalizeShareOneWorktree(t *testing.T) {
+	p, _, dir := worktreeRepo(t)
+	p.EpicID = "COD-9"
+	var reported [][2]string
+	p.ReportWorktree = func(_ context.Context, ticket, path, _ string) error {
+		reported = append(reported, [2]string{ticket, path})
+		return nil
+	}
+	tree := filepath.Join(dir, "shipflock", "COD-9")
+
+	if err := p.prepareWorktree(context.Background(), "COD-91"); err != nil {
+		t.Fatalf("prepare for the first sub-issue: %v", err)
+	}
+	if p.WorkTree != tree {
+		t.Fatalf("WorkTree = %q, want the epic's tree %q", p.WorkTree, tree)
+	}
+	// A file only the first child's tree can have: an adopted tree keeps it, a
+	// second tree would not have it at all.
+	marker := filepath.Join(tree, "child-one.txt")
+	if err := os.WriteFile(marker, []byte("wip\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{"COD-92", "COD-9"} {
+		if err := p.prepareWorktree(context.Background(), id); err != nil {
+			t.Fatalf("prepare for %s: %v", id, err)
+		}
+		if p.WorkTree != tree {
+			t.Fatalf("%s works in %q, want the epic's tree %q", id, p.WorkTree, tree)
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Fatalf("%s got a fresh tree — the epic's work in progress is gone: %v", id, err)
+		}
+	}
+	if len(reported) != 3 {
+		t.Fatalf("reported %d trees, want one report per prepare", len(reported))
+	}
+	for _, got := range reported {
+		if got != [2]string{"COD-9", tree} {
+			t.Errorf("reported %v, want the epic's id and its one tree", got)
+		}
+	}
+}
+
+// TestTheEpicTreeIsCutOnTheEpicBranch covers the finalize's own provisioning: a
+// release re-entered after a crash — or run for an epic whose children were all
+// already delivered — has to come up in a tree holding the branch it ships.
+func TestTheEpicTreeIsCutOnTheEpicBranch(t *testing.T) {
+	p, root, _ := worktreeRepo(t)
+	p.EpicID = "COD-9"
+	gitRun(t, root, "branch", "epic/COD-9-checkout-rework")
+
+	if err := p.prepareWorktree(context.Background(), "COD-9"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	branch, err := p.Git.CurrentBranch(context.Background())
+	if err != nil {
+		t.Fatalf("current branch: %v", err)
+	}
+	if branch != "epic/COD-9-checkout-rework" {
+		t.Errorf("the epic's tree is on %q, want the epic branch", branch)
+	}
+}
+
+// TestASubIssueSettleLeavesTheEpicTreeStanding: a child's reset, requeue or purge
+// drops its branch, but the tree is the epic's — its siblings and its release still
+// have to work in it — so only the epic's own settle takes it away.
+func TestASubIssueSettleLeavesTheEpicTreeStanding(t *testing.T) {
+	p, _, dir := worktreeRepo(t)
+	p.EpicID = "COD-9"
+	var settled [][2]string
+	p.SettleWorktree = func(_ context.Context, ticket, path string) error {
+		settled = append(settled, [2]string{ticket, path})
+		return nil
+	}
+	if err := p.prepareWorktree(context.Background(), "COD-91"); err != nil {
+		t.Fatalf("prepareWorktree: %v", err)
+	}
+	tree := filepath.Join(dir, "shipflock", "COD-9")
+
+	p.settleTicketWorktree(context.Background(), "COD-91")
+
+	if _, err := os.Stat(tree); err != nil {
+		t.Fatalf("a child's settle took the epic's tree: %v", err)
+	}
+	if p.WorkTree != tree {
+		t.Errorf("WorkTree = %q, want the run still in the epic's tree", p.WorkTree)
+	}
+	if len(settled) != 0 {
+		t.Errorf("settled %v, want a child's settle to close no worktree row", settled)
+	}
+
+	p.settleTicketWorktree(context.Background(), "COD-9")
+
+	if _, err := os.Stat(tree); !os.IsNotExist(err) {
+		t.Errorf("the epic's own settle left the tree behind (err = %v)", err)
+	}
+	if len(settled) != 1 || settled[0] != [2]string{"COD-9", tree} {
+		t.Errorf("settled %v, want the epic and its tree", settled)
+	}
+}
+
 // recordingArtifacts is an in-memory ArtifactStore that keeps the last body per
 // kind.
 type recordingArtifacts struct{ kinds map[string]string }

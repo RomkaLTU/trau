@@ -33,11 +33,38 @@ func (p *Pipeline) worktreesOn() bool {
 	return true
 }
 
+// worktreeTicket names the tree a ticket's work happens in. An Epic is serial
+// inside — every sub-issue builds on the epic branch in turn, in this one process —
+// so it takes exactly one tree, keyed by the epic id and reused by its sub-issues
+// and its finalize. Every other run keys its tree by its own ticket.
+func (p *Pipeline) worktreeTicket(id string) string {
+	if p.EpicID != "" {
+		return p.EpicID
+	}
+	return id
+}
+
 // worktreePath is where this ticket's tree lives — computed from configuration
 // alone, so the loop, the hub and the CLI all name the same directory without
 // passing it to one another.
 func (p *Pipeline) worktreePath(id string) string {
-	return worktree.Path(p.WorktreesDir, filepath.Base(p.RepoRoot), id)
+	return worktree.Path(p.WorktreesDir, filepath.Base(p.RepoRoot), p.worktreeTicket(id))
+}
+
+// worktreeBranch names the branch a fresh tree is created holding: the ticket's
+// recorded branch, else the branch trau already cut for it — the epic branch when
+// the tree is the epic's own, since that is what a finalize works on. Empty starts
+// the tree detached at the base tip and leaves the branch to be cut inside it.
+func (p *Pipeline) worktreeBranch(ctx context.Context, id string) string {
+	if branch := p.State.Get(id, "BRANCH"); branch != "" {
+		return branch
+	}
+	if id == p.EpicID {
+		branch, _ := p.Git.FindEpicBranch(ctx, p.EpicID)
+		return branch
+	}
+	branch, _ := p.Git.FindFeatureBranch(ctx, id)
+	return branch
 }
 
 // prepareWorktree puts the ticket's worktree in place and re-points the run at it:
@@ -50,29 +77,30 @@ func (p *Pipeline) worktreePath(id string) string {
 // simply not this run's business, which is the point of the feature. A branch some
 // other tree already holds parks the ticket with that tree named, and a failed
 // setup command faults it with the command's output kept as an artifact and the
-// tree deliberately left standing.
+// tree deliberately left standing. An Epic run lands here once per sub-issue and
+// once for the finalize, all naming the epic's own tree: provisioning is idempotent,
+// so the first call creates it and every later one adopts it with the previous
+// child's work in place.
 func (p *Pipeline) prepareWorktree(ctx context.Context, id string) error {
 	if !p.worktreesOn() {
 		return nil
 	}
+	key := p.worktreeTicket(id)
 	target := p.worktreePath(id)
 	if target == "" {
 		return fmt.Errorf("WORKTREES=1 for %s but no worktrees directory resolved — set WORKTREES_DIR", id)
 	}
 	if p.WorkTree != "" && p.WorkTree != target {
-		p.logf("  ℹ --worktree %s stands aside: WORKTREES=1 provisions %s for %s", p.WorkTree, target, id)
+		p.logf("  ℹ --worktree %s stands aside: WORKTREES=1 provisions %s for %s", p.WorkTree, target, key)
 	}
 
-	branch := p.State.Get(id, "BRANCH")
-	if branch == "" {
-		branch, _ = p.Git.FindFeatureBranch(ctx, id)
-	}
+	branch := p.worktreeBranch(ctx, id)
 
 	res, err := worktree.Provision(ctx, worktree.Options{
 		RepoRoot: p.RepoRoot,
 		Dir:      p.WorktreesDir,
 		Repo:     filepath.Base(p.RepoRoot),
-		Ticket:   id,
+		Ticket:   key,
 		Branch:   branch,
 		Base:     p.Base,
 		Remote:   p.Remote,
@@ -86,23 +114,25 @@ func (p *Pipeline) prepareWorktree(ctx context.Context, id string) error {
 	case errors.As(err, &setup):
 		// The tree is kept and reported: whoever reads the captured output needs
 		// both it and the directory it failed in.
-		p.adoptWorktree(ctx, id, res)
+		p.adoptWorktree(ctx, key, res)
 		return p.faultWorktreeSetup(id, setup)
 	case err != nil:
 		var held *worktree.HeldError
 		if errors.As(err, &held) {
 			return p.parkWorktreeHeld(id, held)
 		}
-		return fmt.Errorf("provision the worktree for %s: %w", id, err)
+		return fmt.Errorf("provision the worktree for %s: %w", key, err)
 	}
-	p.adoptWorktree(ctx, id, res)
+	p.adoptWorktree(ctx, key, res)
 	return nil
 }
 
 // adoptWorktree re-points the run at the provisioned tree and tells the hub about
-// it. Wiring the repo-pinned git identity into the tree is re-run because the
-// include is measured from the tree's own config file, and reporting is
-// best-effort: a hub that missed the record still gets it from the boot reconcile.
+// it, under the id the tree is keyed by — the epic's own id for an Epic's shared
+// tree, so the settle that removes it is the epic's. Wiring the repo-pinned git
+// identity into the tree is re-run because the include is measured from the tree's
+// own config file, and reporting is best-effort: a hub that missed the record
+// still gets it from the boot reconcile.
 func (p *Pipeline) adoptWorktree(ctx context.Context, id string, res worktree.Result) {
 	if res.Path == "" {
 		return
@@ -154,8 +184,15 @@ func (p *Pipeline) parkWorktreeHeld(id string, held *worktree.HeldError) error {
 // settleTicketWorktree removes the ticket's tree and closes its hub row. Every
 // settle path lands here — a reset, a requeue, a purge — so the CLI leaves the same
 // record the hub's own settle does and neither has to trust the other to have run.
+// A sub-issue of a running Epic owns no tree of its own: it works in the epic's,
+// which its siblings and the finalize still need, so it leaves the tree to the
+// epic's own settle.
 func (p *Pipeline) settleTicketWorktree(ctx context.Context, id string) {
 	if !p.worktreesOn() {
+		return
+	}
+	if key := p.worktreeTicket(id); key != id {
+		p.logf("  ℹ %s keeps the worktree it shares with epic %s — the epic settles it", id, key)
 		return
 	}
 	path := p.worktreePath(id)

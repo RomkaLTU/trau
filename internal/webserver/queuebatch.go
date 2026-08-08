@@ -167,7 +167,9 @@ func (s *Server) handleQueueBatchStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "the queue is draining — stop it before starting a batch"})
 		return
 	}
-	if epic, running := firstEpicRunning(items, s.drain.alive); running {
+	// Only where runs share a checkout does the epic in flight own it; with worktrees
+	// it holds its own lane and a batch drains beside it.
+	if epic, running := firstEpicRunning(items, s.drain.alive); running && !worktreeRepo(root) {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": fmt.Sprintf("%s is running and an epic holds the whole repo — wait for it to finish", epic),
 		})

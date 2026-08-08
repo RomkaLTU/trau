@@ -214,6 +214,13 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		p.logf("  epic %s still open — waiting on %s", p.EpicID, strings.Join(open, ", "))
 		return &EpicUnfinalizedError{EpicID: p.EpicID, Open: open}
 	}
+	// The release runs in the epic's own tree — the one its children built in, or a
+	// fresh one when this process shipped no child (a resumed release, or an epic
+	// whose children were all already delivered) — so the merge stays out of the
+	// shared checkout and the repo's other lanes keep running beside it.
+	if err := p.prepareWorktree(ctx, p.EpicID); err != nil {
+		return err
+	}
 	p.checkpointEpicReleasing(ctx)
 	// The release is its own unit of work, so it re-resolves the skip set against
 	// the epic rather than inheriting whatever the last sub-issue resolved — a skip

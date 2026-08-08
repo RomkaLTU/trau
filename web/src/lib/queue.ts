@@ -61,7 +61,8 @@ export interface QueueResponse {
   // row still reads running but the run is already on its way out.
   stopping: boolean
   // releasing_epic names the epic whose release holds the queue: while it is set
-  // the hub starts no new run in the repo. Absent when nothing gates it.
+  // the hub starts no new run in the repo. Absent when nothing gates it, and on a
+  // repo with worktrees, where a releasing epic holds only its own lane.
   releasing_epic?: string
   // lanes is how many runs the repo may have in flight at once — WORKTREE_PARALLEL
   // where worktrees isolate the trees, 1 everywhere else.

@@ -132,9 +132,10 @@ func (d *drainer) tick(root string) (drainAction, error) {
 // taxonomy — pausing the drain on a fault or provider pause, but leaving a row
 // whose removal is in flight to the removal, which drops it rather than parking
 // it — waits while every one of the repo's lanes is busy, while a live epic holds
-// the whole repo, while a pending self-reload is waiting for its idle gap, or while
-// an Epic's release holds the repo — only that Epic's own finalize starts then — or
-// finishes the drain once the queue has nothing left to run so a completed — or armed but
+// the checkout it shares with every other run, while a pending self-reload is
+// waiting for its idle gap, or while an Epic's release holds that same shared
+// checkout — only that Epic's own finalize starts then — or finishes the drain
+// once the queue has nothing left to run so a completed — or armed but
 // empty — queue reads stopped instead of idling armed. A tick that finds a
 // running epic first advances its sub-issue rows onto what their checkpoints
 // already say, so the queue's count moves as children settle. Every wait it
@@ -171,8 +172,10 @@ func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 			d.srv.clearQueued(d.srv.drainCtx, root, running)
 			d.forgetAutoResume(root, running.ID)
 			if status == queue.StatusDone {
-				// Only a shipped ticket gives its tree up. A give-up settles too,
-				// and its tree is exactly what a human needs to read afterwards.
+				// Only shipped work gives its tree up. A give-up settles too, and its
+				// tree is exactly what a human needs to read afterwards; so does an
+				// epic handed over awaiting-merge, whose tree stays until the sweep
+				// sees its PR land and settles it here.
 				d.srv.settleWorktreeAt(root, running.ID)
 			}
 		}
@@ -220,15 +223,19 @@ func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 	if lanes == 1 && live > 0 {
 		return drainWait, drainHold{}, nil
 	}
-	// An epic drives several tickets from one process, so it stays serial in this
-	// slice: a live epic holds the whole repo, and an epic waiting to start waits
-	// for every other lane to drain first.
-	if epic, running := firstEpicRunning(items, d.alive); running {
-		return heldBy(holdRepoBusy, fmt.Sprintf("%s is running and an epic holds the whole repo", epic))
-	}
-	if next.Kind == queue.KindEpic && used > 0 {
-		return heldBy(holdLanesFull, fmt.Sprintf(
-			"%s is an epic and runs on its own — it starts once the repo's other lanes drain", next.ID))
+	// An epic drives several tickets from one process. Where runs share a checkout
+	// that process owns the repo: a live epic holds every lane, and an epic waiting
+	// to start waits for the others to drain. Where every run has its own tree the
+	// epic is simply a lane of its own — one worktree, keyed by the epic, that its
+	// children and its finalize take turns in.
+	if !worktreeRepo(root) {
+		if epic, running := firstEpicRunning(items, d.alive); running {
+			return heldBy(holdRepoBusy, fmt.Sprintf("%s is running and an epic holds the whole repo", epic))
+		}
+		if next.Kind == queue.KindEpic && used > 0 {
+			return heldBy(holdLanesFull, fmt.Sprintf(
+				"%s is an epic and runs on its own — it starts once the repo's other lanes drain", next.ID))
+		}
 	}
 	if used >= lanes {
 		if lanes == 1 {
@@ -634,8 +641,10 @@ func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 
 // spec is the launch a queued item spawns: a ticket runs as the existing
 // run-once, an epic as the existing epic flow, matching the /instances start
-// paths so a queued run is indistinguishable from a manual one. noResume ignores
-// stored checkpoints; an item's Provider override rides along as --provider and
+// paths so a queued run is indistinguishable from a manual one. Either way it names
+// the tree the run works in when the repo provisions them — one per ticket, one per
+// epic — so a run whose tree already exists works in it from its first git command.
+// noResume ignores stored checkpoints; an item's Provider override rides along as --provider and
 // its skip set as --skip, so the pipeline bypasses exactly the work the operator
 // unticked when the item was run. --drain-report carries the ticket the child
 // reports its exit outcome under, so the child posts to the hub keyed by it.
@@ -645,9 +654,9 @@ func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 		args = append(args, "--parent", it.ID)
 	} else {
 		args = append(args, "--parent", it.ID, "--once")
-		if path := worktreeFor(root, it.ID); path != "" {
-			args = append(args, "--worktree", path)
-		}
+	}
+	if path := worktreeFor(root, it.ID); path != "" {
+		args = append(args, "--worktree", path)
 	}
 	if noResume {
 		args = append(args, "--no-resume")
@@ -662,18 +671,27 @@ func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}
 }
 
-// worktreeFor is the tree a ticket run will work in when the repo has WORKTREES=1,
+// worktreeFor is the tree a run will work in when the repo has WORKTREES=1,
 // computed from the repo's own configuration — the same computation the child
 // makes, so passing it names the tree rather than instructing where to put it. An
-// epic drives several tickets in one process and gets none: each of its children
-// provisions its own. A folder repo has no repository at its root to add a tree
-// to, so it gets none either (ADR 0044).
+// epic drives several tickets in one process and takes one tree for all of them,
+// keyed by the epic id: its sub-issues build on the epic branch in turn, and the
+// finalize ships from the same tree. A folder repo has no repository at its root to
+// add a tree to, so it gets none (ADR 0044).
 func worktreeFor(root, ticket string) string {
 	cfg, err := repoConfig(root)
 	if err != nil || !cfg.Worktrees || folderrepo.Is(root) {
 		return ""
 	}
 	return worktree.Path(cfg.WorktreesRoot(), filepath.Base(root), ticket)
+}
+
+// worktreeRepo reports whether root isolates each run in its own git worktree — the
+// question every whole-repo hold has to ask, since a repo with trees lets an epic
+// and its release act in the epic's own tree while the other lanes keep working.
+func worktreeRepo(root string) bool {
+	cfg, err := repoConfig(root)
+	return err == nil && cfg.Worktrees && !folderrepo.Is(root)
 }
 
 // checkpointOutcome reads the finished child's recorded checkpoint from the
@@ -784,8 +802,8 @@ func runnableItem(items []queue.Item, id string) (queue.Item, bool) {
 }
 
 // firstEpicRunning names the epic a repo has in flight, if any. An epic drives its
-// sub-issues from one process and this slice keeps that whole-repo hold, so the
-// drain asks about it before it counts lanes.
+// sub-issues from one process, which owns a shared checkout outright, so the gates
+// that guard one ask about it before they count lanes.
 func firstEpicRunning(items []queue.Item, alive func(pid int) bool) (string, bool) {
 	for _, it := range items {
 		if it.Kind == queue.KindEpic && it.Status == queue.StatusRunning && alive(it.PID) {

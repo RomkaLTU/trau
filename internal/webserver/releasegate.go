@@ -30,6 +30,17 @@ func (s *Server) releasingEpic(root string) string {
 	return ""
 }
 
+// releaseGateEpic names the Epic whose release holds root's whole queue — what the
+// board reads to say nothing else starts. Only a whole-repo hold answers: with
+// worktrees the release holds the epic's own lane and the rest of the queue keeps
+// starting beside it, so there is no gate to name.
+func (s *Server) releaseGateEpic(root string) string {
+	if worktreeRepo(root) {
+		return ""
+	}
+	return s.releasingEpic(root)
+}
+
 // liveRelease reads one checkpoint row the way the gate does.
 func liveRelease(row hubstore.CheckpointRow) bool {
 	return state.ResumableRelease(
@@ -41,8 +52,11 @@ func liveRelease(row hubstore.CheckpointRow) bool {
 
 // heldByRelease reports whether a release holds root's queue against the item
 // about to start, and names the Epic holding it. That Epic's own finalize is the
-// one run the gate lets through, on the drain and the one-shot path alike.
+// one run the gate lets through, on the drain and the one-shot path alike. The hold
+// is as wide as the tree the merge happens in: a shared checkout is held whole,
+// because the release owns it mid-merge, while a repo with worktrees releases
+// inside the epic's own tree and every other item keeps starting beside it.
 func (s *Server) heldByRelease(root, id string) (string, bool) {
 	epic := s.releasingEpic(root)
-	return epic, epic != "" && epic != id
+	return epic, epic != "" && epic != id && !worktreeRepo(root)
 }
