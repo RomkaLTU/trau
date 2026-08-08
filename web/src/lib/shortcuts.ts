@@ -67,8 +67,13 @@ function rowWalk(where: string, open: string): Shortcut[] {
 }
 
 const LISTS: Shortcut[] = [
-  { keys: ['j'], label: 'Next issue', group: 'Lists', where: 'Inbox' },
-  { keys: ['k'], label: 'Previous issue', group: 'Lists', where: 'Inbox' },
+  ...rowWalk('Inbox', 'Open the selected issue'),
+  {
+    keys: ['Enter'],
+    label: 'Send the message',
+    group: 'Lists',
+    where: 'Inbox composer',
+  },
   ...rowWalk('Backlog', 'Open the ticket'),
   {
     keys: ['e'],

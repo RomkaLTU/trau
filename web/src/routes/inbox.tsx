@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   useMutation,
@@ -96,11 +96,9 @@ import {
   inboxGroups,
   inboxPill,
   inboxPosition,
-  nextIssueId,
   newDraftItem,
   NEW_DRAFT_ID,
   postDeleteTarget,
-  prevIssueId,
   resolveSelection,
   rowSession,
   skipTarget,
@@ -111,16 +109,16 @@ import {
   type InboxItem,
   type InboxPillTone,
 } from "@/lib/inbox";
-import { inboxKeyAction } from "@/lib/inbox-keys";
+import { useInboxRail, type InboxRail } from "@/lib/inbox-rail";
 import {
   hasUnseenQuestion,
   useSeenMarks,
   type SeenMarks,
 } from "@/lib/inbox-seen";
-import { readKeyStroke } from "@/lib/keys";
 import { repoScopeSwitch } from "@/lib/notification-center";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
 import { useProjectRepo } from "@/lib/projects";
+import { type RovingRowProps } from "@/lib/use-roving-list";
 import { cn } from "@/lib/utils";
 
 interface InboxSearch {
@@ -230,6 +228,13 @@ function InboxPage() {
     if (selected && selected.id !== sticky) setSticky(selected.id);
   }, [selected?.id, sticky]);
 
+  const select = useCallback((id: string) => void setPeek(id), [setPeek]);
+  const rail = useInboxRail({
+    items,
+    selectedId: selected?.id ?? null,
+    onSelect: select,
+  });
+
   // The provider and model every interview started from this panel opens on — Start
   // interview, a first message, a fresh Draft, and Ask ahead alike. It is a page-level
   // choice so walking the queue with j/k keeps it; until the user picks, it trails the
@@ -318,24 +323,6 @@ function InboxPage() {
     const next = skipTarget(items, selected?.id ?? null);
     if (next !== null && next !== selected?.id) void setPeek(next);
   }
-
-  // The workspace owns j/k while it is on screen. The listener sits on the document
-  // because the queue has nothing focused to hang a handler on — the chat does, and
-  // the composer's Enter stays its own.
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      const action = inboxKeyAction(readKeyStroke(e));
-      if (action === null) return;
-      if (!selected) return;
-      const to =
-        action === "next"
-          ? nextIssueId(items, selected.id)
-          : prevIssueId(items, selected.id);
-      if (to !== null) void setPeek(to);
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [items, selected]);
 
   // New issue opens a fresh Draft at the head of the queue and selects it; the
   // composer beside it starts the authoring session on the first message.
@@ -447,7 +434,7 @@ function InboxPage() {
             <QueueSelect
               groups={groups}
               selectedId={selected?.id ?? null}
-              onSelect={(id) => void setPeek(id)}
+              onSelect={select}
             />
             <QueueRail
               repo={repo}
@@ -457,7 +444,8 @@ function InboxPage() {
               selectedId={selected?.id ?? null}
               model={startModel}
               provider={startProvider}
-              onSelect={(id) => void setPeek(id)}
+              rail={rail}
+              onSelect={select}
             />
 
             <section
@@ -1429,6 +1417,7 @@ function QueueRail({
   selectedId,
   model,
   provider,
+  rail,
   onSelect,
 }: {
   repo: string;
@@ -1438,10 +1427,13 @@ function QueueRail({
   selectedId: string | null;
   model: string;
   provider: string;
+  rail: InboxRail;
   onSelect: (id: string) => void;
 }) {
   return (
     <nav
+      ref={rail.listRef}
+      {...rail.listProps}
       aria-label="Triage queue"
       className="hidden min-h-0 flex-col gap-5 overflow-y-auto border-r border-border py-4 pr-3 md:flex"
     >
@@ -1465,6 +1457,8 @@ function QueueRail({
                   key={item.id}
                   item={item}
                   selected={selectedId === item.id}
+                  rowProps={rail.rowProps(item.id)}
+                  controlProps={rail.controlProps}
                   onSelect={() => onSelect(item.id)}
                 />
               ) : (
@@ -1477,6 +1471,8 @@ function QueueRail({
                   selected={selectedId === item.id}
                   model={model}
                   provider={provider}
+                  rowProps={rail.rowProps(item.id)}
+                  controlProps={rail.controlProps}
                   onSelect={() => onSelect(item.id)}
                 />
               ),
@@ -1506,6 +1502,8 @@ function QueueRow({
   selected,
   model,
   provider,
+  rowProps,
+  controlProps,
   onSelect,
 }: {
   repo: string;
@@ -1515,6 +1513,8 @@ function QueueRow({
   selected: boolean;
   model: string;
   provider: string;
+  rowProps: RovingRowProps;
+  controlProps: { tabIndex: number };
   onSelect: () => void;
 }) {
   // The row's pill answers "what is this conversation doing right now" without
@@ -1522,9 +1522,14 @@ function QueueRow({
   const session = rowSession(item, live);
   const pill = session ? inboxPill(session) : null;
   return (
-    <li className="group/row relative">
+    <li
+      {...rowProps}
+      aria-label={item.draft ? "Open draft" : `Open ${item.id}`}
+      className="group/row relative"
+    >
       <button
         type="button"
+        {...controlProps}
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
         aria-label={item.draft ? "Open draft" : `Open ${item.id}`}
@@ -1595,6 +1600,7 @@ function QueueRow({
           issueId={item.id}
           model={model}
           provider={provider}
+          tabIndex={controlProps.tabIndex}
           className="absolute right-1 top-1 opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100"
         />
       )}
@@ -1617,16 +1623,21 @@ function DraftChip() {
 function DoneRow({
   item,
   selected,
+  rowProps,
+  controlProps,
   onSelect,
 }: {
   item: InboxItem;
   selected: boolean;
+  rowProps: RovingRowProps;
+  controlProps: { tabIndex: number };
   onSelect: () => void;
 }) {
   return (
-    <li className="relative">
+    <li {...rowProps} aria-label={`Open ${item.id}`} className="relative">
       <button
         type="button"
+        {...controlProps}
         onClick={onSelect}
         aria-current={selected ? "true" : undefined}
         aria-label={`Open ${item.id}`}
@@ -1912,12 +1923,14 @@ function PregrillButton({
   issueId,
   model,
   provider,
+  tabIndex,
   className,
 }: {
   repo: string;
   issueId: string;
   model: string;
   provider: string;
+  tabIndex?: number;
   className?: string;
 }) {
   const queryClient = useQueryClient();
@@ -1932,6 +1945,7 @@ function PregrillButton({
       variant="ghost"
       size="icon"
       className={cn("size-7 shrink-0", className)}
+      tabIndex={tabIndex}
       onClick={() => pregrill.mutate()}
       disabled={pregrill.isPending}
       aria-label={`Ask ahead ${issueId}`}
