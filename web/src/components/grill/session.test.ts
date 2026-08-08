@@ -168,6 +168,7 @@ describe("useGrillSession start model", () => {
           provider: "kimi",
           mode: "interview",
           auto_accept: false,
+          from_session: "",
         }),
       }),
     );
@@ -196,6 +197,7 @@ describe("useGrillSession start model", () => {
           provider: "",
           mode: "research",
           auto_accept: false,
+          from_session: "",
         }),
       }),
     );
@@ -230,6 +232,7 @@ describe("useGrillSession start model", () => {
           provider: "kimi",
           mode: "research",
           auto_accept: true,
+          from_session: "",
         }),
       }),
     );

@@ -49,6 +49,19 @@ func grillAuthoringPrompt(r prompts.Renderer, idea string, autoAccept bool) stri
 	})
 }
 
+// grillAuthoringFromReportPrompt is the first-turn prompt for a draft started from a
+// finished research report: the report's whole findings ride in the prompt — never in
+// the visible thread — so the agent opens on what the investigation left undecided,
+// the scope and product choices, rather than re-asking what it already settled.
+func grillAuthoringFromReportPrompt(r prompts.Renderer, report grillReport, autoAccept bool) string {
+	return r.Render("grill_authoring_from_report", prompts.GrillReportData{
+		Report:     report.title,
+		Findings:   report.findings,
+		Sources:    grillReportSourceSection(report.sources),
+		AutoAccept: autoAccept,
+	})
+}
+
 // grillResearchPrompt is the first-turn prompt for a research session anchored to an
 // issue: the agent answers the question against primary sources — the web and the
 // repo — with the issue as its context, and finishes with a findings report rather

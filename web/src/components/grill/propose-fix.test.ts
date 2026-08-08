@@ -110,6 +110,7 @@ describe("useProposeFix", () => {
           provider: "",
           mode: "fix",
           auto_accept: true,
+          from_session: "",
         }),
       }),
     );

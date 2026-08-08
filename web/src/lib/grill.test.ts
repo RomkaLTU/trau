@@ -1217,6 +1217,7 @@ describe('startGrillSession', () => {
       provider: '',
       mode: 'interview',
       auto_accept: false,
+      from_session: '',
     })
   })
 

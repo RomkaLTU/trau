@@ -161,13 +161,16 @@ type GrillDetailResponse struct {
 // seed, or the focus note an issue-bound interview opens on. Mode, Provider and
 // Model are optional; an empty Mode opens an interview. AutoAccept defaults off, so a
 // session only answers its own recommendations when the start surface asks for it.
+// FromSession names the research session whose report seeds an unanchored interview —
+// the Draft an issue act on an open report.
 type GrillCreateRequest struct {
-	IssueID    string `json:"issue_id"`
-	Idea       string `json:"idea"`
-	Mode       string `json:"mode"`
-	Provider   string `json:"provider"`
-	Model      string `json:"model"`
-	AutoAccept bool   `json:"auto_accept"`
+	IssueID     string `json:"issue_id"`
+	Idea        string `json:"idea"`
+	Mode        string `json:"mode"`
+	Provider    string `json:"provider"`
+	Model       string `json:"model"`
+	AutoAccept  bool   `json:"auto_accept"`
+	FromSession string `json:"from_session"`
 }
 
 // GrillAnswerRequest is the body of POST /grill/{sid}/answer. Text answers a single
@@ -288,6 +291,36 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		if opening == "" {
 			opening = grillFixOpeningNote(run)
 		}
+	}
+	// Draft an issue starts an ordinary unanchored interview whose whole seed is a
+	// finished research report: the report grounds the first turn's prompt, and the
+	// note it opens on names and links the report it came from. That note is the only
+	// record of the source — provenance is one-way and adds no column — so the runner
+	// reads the report back out of it when it builds the prompt.
+	if from := strings.TrimSpace(req.FromSession); from != "" {
+		if mode != hubstore.GrillModeInterview {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from_session opens an interview, not a " + mode + " session"})
+			return
+		}
+		if issueID != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from_session drafts a new issue, so it takes no issue_id"})
+			return
+		}
+		sid, err := strconv.ParseInt(from, 10, 64)
+		if err != nil || sid <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid from_session"})
+			return
+		}
+		report, err := s.grillReportFor(repo.Root, sid)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, errGrillReportMissing) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		opening = grillReportOpeningNote(report, repo.Name)
 	}
 	if provider == "" {
 		provider = s.grillDefaultProviderFor(repo, mode)

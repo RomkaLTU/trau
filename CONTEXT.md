@@ -253,6 +253,10 @@ _Avoid_: reset (that's the destructive ticket action), restart, retry, discard (
 The one-click act offered on a quarantined or faulted run that opens an Inbox Interview over the ticket, seeded with the run's whole failure dossier — checkpoint, phase logs, artifacts, and the lessons the run taught — and pointed at the WIP branch still holding the attempt. It runs on Ask ahead's contract, reaching the user only for a decision that needs their taste, and ends in a proposed rewrite that keeps the original goal, states what the failed attempt revealed, and instructs the next one. It re-describes the ticket and nothing else: handing it back to the picker is still Requeue's job.
 _Avoid_: diagnose (the agent's activity, not the act), retry (that's Requeue), fix it, handle
 
+**Draft an issue**:
+The one-click act offered on an open research Report that opens an Inbox Interview seeded with the Report, always as a new Draft — never over an existing issue. The interview's first turn is grounded in the whole findings, so it grills for scope, product decisions and slicing instead of re-asking what the research settled; the visible thread opens on one short note naming and linking the Report. The Report is untouched — still approvable, still open to follow-ups — and each click drafts an independent issue.
+_Avoid_: file it, convert to issue (the Report is not converted, it stays), promote, spin off
+
 **Atlas**:
 The per-Repo web page of agent-generated architecture Views, scoped to the Active repo like every screen. Everything it shows is derived from the Repo's code at a stamped commit — never hand-drawn, never edited in place. When merges land after that commit the Atlas is stale and says so; only a deliberate Regenerate refreshes it.
 _Avoid_: diagram page (generic — any surface can render a diagram), map (informal planning jargon), blueprint (implies intent, not derived reality)

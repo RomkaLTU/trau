@@ -279,6 +279,14 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 		if research {
 			return grillResearchIdeaPrompt(renderer, note, sess.AutoAccept)
 		}
+		// A draft started from a report names its source in that note alone, so the
+		// report is read back from it here. A source since deleted leaves an ordinary
+		// authoring session opening on the note — the draft is not lost with it.
+		if sid, ok := grillReportSourceID(note); ok {
+			if report, err := r.srv.grillReportFor(sess.Repo, sid); err == nil {
+				return grillAuthoringFromReportPrompt(renderer, report, sess.AutoAccept)
+			}
+		}
 		return grillAuthoringPrompt(renderer, note, sess.AutoAccept)
 	}
 	title, description := "", ""

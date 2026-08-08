@@ -5,6 +5,7 @@ import {
   Check,
   Copy,
   Download,
+  FilePlus2,
   Loader2,
   Pencil,
   Printer,
@@ -13,6 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { useDraftFromReport } from "@/components/grill/draft-from-report";
 import { noReport, WarningList } from "@/components/grill/outcome-review";
 import { Markdown } from "@/components/markdown";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
@@ -283,10 +285,43 @@ function ReportActions({
         <Printer className="size-3.5" aria-hidden="true" />
         Export PDF
       </Button>
+      <DraftIssue repo={repo} session={session} />
       {session.state === "applied" && (
         <DeleteReport repo={repo} session={session} onDeleted={onDeleted} />
       )}
     </div>
+  );
+}
+
+// A finished report is where the reading stops and the work starts: Draft an issue
+// opens an Inbox interview seeded with it, in one click and with nothing to fill in.
+// The report is left exactly as it is, so a second click drafts a second issue.
+function DraftIssue({
+  repo,
+  session,
+}: {
+  repo: string;
+  session: GrillSession;
+}) {
+  const { drafting, draft } = useDraftFromReport({
+    repo,
+    sessionId: session.id,
+  });
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      disabled={drafting}
+      onClick={draft}
+    >
+      {drafting ? (
+        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+      ) : (
+        <FilePlus2 className="size-3.5" aria-hidden="true" />
+      )}
+      Draft an issue
+    </Button>
   );
 }
 

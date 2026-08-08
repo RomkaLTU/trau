@@ -28,6 +28,9 @@ const (
 	goldenGrillAttachments = "\n--- Attachments ---\n/tmp/trau-attachments-COD-123/shot.png — shot.png (image/png, 2.0KB)\nThese are local copies of the ticket's files. Images may show UI states or error screenshots that matter for this task — read them.\n"
 	goldenGrillFocus       = "Whether the collapse threshold should be configurable."
 	goldenGrillQuestion    = "Which OAuth flow the desktop client should use."
+	goldenGrillReport      = "How the SDK retries"
+	goldenGrillFindings    = "## Conclusion\n\nThe SDK backs off exponentially."
+	goldenGrillSources     = "\n--- Sources the report cited ---\n1. SDK retry policy — https://example.com/docs — states the backoff schedule\n"
 	goldenGrillFailure     = "gave_up at phase verify — verify failed three times on the same assertion"
 	goldenGrillDossier     = "/tmp/trau-attachments-COD-123/dossier.md"
 
@@ -68,6 +71,14 @@ func grillIssueAutoAccept() GrillIssueData {
 	data := grillIssueFocused(goldenGrillFocus)
 	data.AutoAccept = true
 	return data
+}
+
+func grillFromReport(sources string) GrillReportData {
+	return GrillReportData{
+		Report:   goldenGrillReport,
+		Findings: goldenGrillFindings,
+		Sources:  sources,
+	}
 }
 
 func grillFix(branch string) GrillFixData {
@@ -294,6 +305,7 @@ func TestGrillPromptsInterviewRoundByRound(t *testing.T) {
 		{"grill_research", grillResearchAnchored(goldenGrillFocus)},
 		{"grill_pregrill", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
 		{"grill_fix", grillFix(goldenBranch)},
+		{"grill_authoring_from_report", grillFromReport(goldenGrillSources)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -344,6 +356,48 @@ func TestResearchPromptRequiresPlanApproval(t *testing.T) {
 	}
 }
 
+// The report a draft is seeded from is the one thing this prompt must carry whole —
+// the thread never shows it — and the interview it opens has to start past the
+// findings rather than re-asking what they settle.
+func TestReportPromptCarriesTheReportAndStartsPastIt(t *testing.T) {
+	cases := []struct {
+		name    string
+		data    GrillReportData
+		wantOut []string
+		skipOut []string
+	}{
+		{
+			name:    "cited",
+			data:    grillFromReport(goldenGrillSources),
+			wantOut: []string{goldenGrillReport, goldenGrillFindings, goldenGrillSources},
+		},
+		{
+			name:    "no_sources",
+			data:    grillFromReport(""),
+			wantOut: []string{goldenGrillReport, goldenGrillFindings},
+			skipOut: []string{"Sources the report cited"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Render("grill_authoring_from_report", tc.data)
+			for _, want := range append(tc.wantOut,
+				"never ask the user a question the report already answers",
+				"how the work is sliced",
+			) {
+				if !strings.Contains(got, want) {
+					t.Errorf("report prompt is missing %q:\n%s", want, got)
+				}
+			}
+			for _, skip := range tc.skipOut {
+				if strings.Contains(got, skip) {
+					t.Errorf("report prompt renders %q with nothing to show:\n%s", skip, got)
+				}
+			}
+		})
+	}
+}
+
 // Both preambles carry the control-byte guidance sentence, and the escape text
 // it names is its own trap: a raw NUL written into the source or the golden
 // would make git treat the file as binary and hide it from review.
@@ -372,8 +426,8 @@ func TestGoldenPreamblesInstructControlByteEscapes(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	cat := Catalog()
-	if len(cat) != 26 {
-		t.Fatalf("catalog has %d prompts, want 26", len(cat))
+	if len(cat) != 27 {
+		t.Fatalf("catalog has %d prompts, want 27", len(cat))
 	}
 	seen := map[string]bool{}
 	for _, p := range cat {
