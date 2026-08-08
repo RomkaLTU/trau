@@ -63,6 +63,19 @@ const KindVerifyNoBrowser = "verify_no_browser"
 // and the verdict says the UI was not driven.
 const KindWorktreeAppFailed = "worktree_app_failed"
 
+// KindAppStarted marks a worktree app that came up and is answering on its port,
+// carrying the ticket whose tree serves it and that port.
+const KindAppStarted = "app_started"
+
+// KindAppStopped marks a worktree app that was ended: by hand, or by the settle
+// that takes its tree off disk.
+const KindAppStopped = "app_stopped"
+
+// KindAppFailed marks a start whose command never listened on the port it was
+// given, so the tree is serving nothing. It is the hub-side twin of
+// KindWorktreeAppFailed, which the run emits when the miss cost it a verify URL.
+const KindAppFailed = "app_failed"
+
 // KindVerifyNoProofs marks a verify that reported driving the browser but left no
 // proofs (screenshots/trace) for the loop to harvest. It fires only for a run the
 // verify agent was actually handed the proofs contract in. Advisory only — a run is

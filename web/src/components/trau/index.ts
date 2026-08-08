@@ -48,5 +48,13 @@ export { NoBrowserBanner } from './no-browser-banner'
 export { RemovedBanner } from './removed-banner'
 export { AppURLsSection } from './app-urls-panel'
 export { AppURLsCard } from './app-urls-card'
+export { WorktreesSection } from './worktrees-panel'
+export { WorktreesCard } from './worktrees-card'
+export {
+  AppStateBadge,
+  AppURLLink,
+  WorktreeAppControls,
+  WorktreeAppLogView,
+} from './worktree-app'
 export { RunPageHeader } from './run-page-header'
 export { NoticeBanner, type RunNotice } from './notice-banner'

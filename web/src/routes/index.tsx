@@ -7,6 +7,7 @@ import {
   PulseStrip,
 } from '@/components/trau/overview'
 import { OverviewBoard } from '@/components/trau/overview-repo-board'
+import { WorktreesCard } from '@/components/trau/worktrees-card'
 import { instancesQueryOptions } from '@/lib/instances'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions } from '@/lib/runs'
@@ -41,6 +42,8 @@ function Overview() {
       <OverviewBoard />
 
       <AppURLsCard />
+
+      <WorktreesCard />
     </div>
   )
 }

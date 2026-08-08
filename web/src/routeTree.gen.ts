@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as WorktreesRouteImport } from './routes/worktrees'
 import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SkillsRouteImport } from './routes/skills'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -31,6 +32,11 @@ import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket
 import { Route as LiveRepoTicketRouteImport } from './routes/live.$repo.$ticket'
 import { Route as TeamRunsRepoWriterTicketRouteImport } from './routes/team-runs.$repo.$writer.$ticket'
 
+const WorktreesRoute = WorktreesRouteImport.update({
+  id: '/worktrees',
+  path: '/worktrees',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TerminalRoute = TerminalRouteImport.update({
   id: '/terminal',
   path: '/terminal',
@@ -156,6 +162,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
   '/terminal': typeof TerminalRoute
+  '/worktrees': typeof WorktreesRoute
   '/projects/new': typeof ProjectsNewRoute
   '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
@@ -179,6 +186,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
   '/terminal': typeof TerminalRoute
+  '/worktrees': typeof WorktreesRoute
   '/projects/new': typeof ProjectsNewRoute
   '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
@@ -203,6 +211,7 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/skills': typeof SkillsRoute
   '/terminal': typeof TerminalRoute
+  '/worktrees': typeof WorktreesRoute
   '/projects/new': typeof ProjectsNewRoute
   '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs_/$repo/$ticket': typeof RunsRepoTicketRoute
@@ -228,6 +237,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/skills'
     | '/terminal'
+    | '/worktrees'
     | '/projects/new'
     | '/live/$repo/$ticket'
     | '/runs/$repo/$ticket'
@@ -251,6 +261,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/skills'
     | '/terminal'
+    | '/worktrees'
     | '/projects/new'
     | '/live/$repo/$ticket'
     | '/runs/$repo/$ticket'
@@ -274,6 +285,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/skills'
     | '/terminal'
+    | '/worktrees'
     | '/projects/new'
     | '/live/$repo/$ticket'
     | '/runs_/$repo/$ticket'
@@ -298,6 +310,7 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   SkillsRoute: typeof SkillsRoute
   TerminalRoute: typeof TerminalRoute
+  WorktreesRoute: typeof WorktreesRoute
   ProjectsNewRoute: typeof ProjectsNewRoute
   LiveRepoTicketRoute: typeof LiveRepoTicketRoute
   RunsRepoTicketRoute: typeof RunsRepoTicketRoute
@@ -306,6 +319,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/worktrees': {
+      id: '/worktrees'
+      path: '/worktrees'
+      fullPath: '/worktrees'
+      preLoaderRoute: typeof WorktreesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/terminal': {
       id: '/terminal'
       path: '/terminal'
@@ -474,6 +494,7 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   SkillsRoute: SkillsRoute,
   TerminalRoute: TerminalRoute,
+  WorktreesRoute: WorktreesRoute,
   ProjectsNewRoute: ProjectsNewRoute,
   LiveRepoTicketRoute: LiveRepoTicketRoute,
   RunsRepoTicketRoute: RunsRepoTicketRoute,

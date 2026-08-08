@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
@@ -41,6 +44,14 @@ const (
 	// would otherwise fill the disk over the days a parked tree stays up, so the
 	// file is trimmed to its tail whenever the hub looks at it.
 	appLogMaxBytes = 1 << 20
+	// appLogViewBytes bounds how much of the captured log the log viewer reads back
+	// per poll. It is generous enough that the default tail is never short-changed
+	// and small enough that a 1MB capture is never shipped whole every few seconds.
+	appLogViewBytes = 128 << 10
+	// appLogLines is how many lines the log endpoint tails when ?n= is not given,
+	// and appLogMaxLines the cap it clamps a larger ask to.
+	appLogLines    = 200
+	appLogMaxLines = 2000
 )
 
 // WorktreeAppView is the app a worktree serves, as the run page and the run child
@@ -100,17 +111,134 @@ func (s *Server) handleWorktreeApp(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
+// WorktreeAppLogsView is the tail of a worktree app's captured output, as the run
+// page's log viewer reads it. Lines is newest-last, the way the file reads.
+type WorktreeAppLogsView struct {
+	Ticket string   `json:"ticket"`
+	Lines  []string `json:"lines"`
+	// Truncated says the capture holds more than the tail carried here, so the
+	// viewer can say so rather than imply the app said nothing before this.
+	Truncated bool `json:"truncated"`
+}
+
+// handleWorktreeAppAction is the run page's app cockpit: start, stop and restart
+// the app one worktree serves. The tree is named in the path rather than a body,
+// so a button is one URL, and every action refuses while a run is working in that
+// tree — bouncing a dev server under the verify that is driving it turns a real
+// verdict into a flake.
+func (s *Server) handleWorktreeAppAction(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ticket := strings.TrimSpace(r.PathValue("ticket"))
+	action := strings.TrimSpace(r.PathValue("action"))
+	if action != "start" && action != "stop" && action != "restart" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown app action " + action})
+		return
+	}
+	row, exists, err := s.stores.Worktrees().ByTicket(repo.Root, ticket)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read worktree: " + err.Error()})
+		return
+	}
+	if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown worktree"})
+		return
+	}
+	if reason := s.worktreeBusyReason(repo.Root, row.Ticket); reason != "" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": reason})
+		return
+	}
+	view, err := s.runAppAction(r.Context(), repo, row.Ticket, action)
+	if err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+func (s *Server) runAppAction(
+	ctx context.Context, repo registry.Repo, ticket, action string,
+) (WorktreeAppView, error) {
+	switch action {
+	case "stop":
+		return s.stopWorktreeAppLocked(repo, ticket)
+	case "restart":
+		return s.restartWorktreeApp(ctx, repo, ticket)
+	default:
+		return s.ensureWorktreeApp(ctx, repo, ticket)
+	}
+}
+
+// handleWorktreeAppLogs tails what a tree's app has printed. n caps the lines
+// returned, so a viewer polling every few seconds carries a screenful rather than
+// the whole bounded capture.
+func (s *Server) handleWorktreeAppLogs(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	ticket := strings.TrimSpace(r.PathValue("ticket"))
+	if _, exists, err := s.stores.Worktrees().ByTicket(repo.Root, ticket); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read worktree: " + err.Error()})
+		return
+	} else if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown worktree"})
+		return
+	}
+	lines, truncated := tailAppLog(s.appLogPath(repo.Root, ticket), appLogRequestLines(r.URL.Query().Get("n")))
+	writeJSON(w, http.StatusOK, WorktreeAppLogsView{Ticket: ticket, Lines: lines, Truncated: truncated})
+}
+
+// appLogRequestLines reads the ?n= cap: the default when it is absent or not a
+// number, clamped to one line at the least and appLogMaxLines at the most.
+func appLogRequestLines(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n <= 0 {
+		return appLogLines
+	}
+	return min(n, appLogMaxLines)
+}
+
 // ensureWorktreeApp has the ticket's app running in its worktree and reports where
 // it is. A repo with no APP_START_CMD answers Serving=false without starting
 // anything; a tree that is gone is an error, since there is nowhere to serve from.
 // An app that will not come up is reported failed with its output rather than
 // raised as an error: the caller's fallback is to verify without a URL, never to
 // fail the run.
-//
-// Starts are collapsed per tree: two lanes racing to the same ticket — the child
-// asking for its URL while a person presses Start — must not spawn two apps on two
-// ports for one tree.
 func (s *Server) ensureWorktreeApp(ctx context.Context, repo registry.Repo, ticket string) (WorktreeAppView, error) {
+	return s.controlWorktreeApp(ctx, repo, ticket, false)
+}
+
+// restartWorktreeApp bounces the tree's app: whatever it is serving ends, and a
+// fresh process takes its place. The stop and the start are one held operation, so
+// nothing observes the gap and starts a second app into it.
+func (s *Server) restartWorktreeApp(ctx context.Context, repo registry.Repo, ticket string) (WorktreeAppView, error) {
+	return s.controlWorktreeApp(ctx, repo, ticket, true)
+}
+
+// controlWorktreeApp is the start and restart body, run one at a time per tree.
+//
+// Every control for one tree — the child asking for its URL, a person pressing
+// Start, the Stop beside it — takes that tree's lock. Two lanes racing to the same
+// ticket must not spawn two apps on two ports for one tree, and a Stop must not
+// land in the middle of a start and leave the started process orphaned.
+func (s *Server) controlWorktreeApp(
+	ctx context.Context, repo registry.Repo, ticket string, restart bool,
+) (WorktreeAppView, error) {
 	cfg, err := repoConfig(repo.Root)
 	if err != nil {
 		return WorktreeAppView{}, fmt.Errorf("read %s config: %w", repo.Name, err)
@@ -119,13 +247,55 @@ func (s *Server) ensureWorktreeApp(ctx context.Context, repo registry.Repo, tick
 	if command == "" {
 		return WorktreeAppView{Ticket: ticket, State: hubstore.AppStopped}, nil
 	}
-	res, err, _ := s.appStart.Do(repo.Root+"\x00"+ticket, func() (any, error) {
-		return s.startWorktreeApp(ctx, repo, ticket, cfg, command)
-	})
-	if err != nil {
-		return WorktreeAppView{}, err
+	lock := s.appLock(repo.Root, ticket)
+	lock.Lock()
+	defer lock.Unlock()
+	if restart {
+		s.haltWorktreeApp(repo.Root, ticket)
 	}
-	return res.(WorktreeAppView), nil
+	return s.startWorktreeApp(ctx, repo, ticket, cfg, command)
+}
+
+// stopWorktreeAppLocked ends the tree's app under that tree's lock and answers with
+// the row as it stands afterwards. It is the Stop button's path: a start already in
+// flight finishes first, so the app it spawned is the one this stop ends.
+func (s *Server) stopWorktreeAppLocked(repo registry.Repo, ticket string) (WorktreeAppView, error) {
+	lock := s.appLock(repo.Root, ticket)
+	lock.Lock()
+	defer lock.Unlock()
+	s.haltWorktreeApp(repo.Root, ticket)
+	row, exists, err := s.stores.Worktrees().ByTicket(repo.Root, ticket)
+	if err != nil {
+		return WorktreeAppView{}, fmt.Errorf("read the worktree for %s: %w", ticket, err)
+	}
+	if !exists {
+		return WorktreeAppView{}, errors.New("no worktree for " + ticket)
+	}
+	return worktreeAppView(row, repoServesApp(repo.Root), ""), nil
+}
+
+// haltWorktreeApp stops whatever the ticket's tree is serving, for the callers that
+// already hold the tree's lock.
+func (s *Server) haltWorktreeApp(root, ticket string) {
+	row, exists, err := s.stores.Worktrees().ByTicket(root, ticket)
+	if err != nil || !exists {
+		return
+	}
+	s.stopWorktreeApp(root, row)
+}
+
+// appLock is the one mutex every control for a tree serializes on, created on first
+// use and kept for as long as the hub runs.
+func (s *Server) appLock(root, ticket string) *sync.Mutex {
+	key := root + "\x00" + ticket
+	s.appLockMu.Lock()
+	defer s.appLockMu.Unlock()
+	if lock, ok := s.appLocks[key]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	s.appLocks[key] = lock
+	return lock
 }
 
 // startWorktreeApp is ensureWorktreeApp's body, run one at a time per tree.
@@ -204,6 +374,7 @@ func (s *Server) startWorktreeApp(
 func (s *Server) recordAppState(
 	root string, row hubstore.Worktree, app hubstore.WorktreeApp, output string,
 ) WorktreeAppView {
+	s.emitAppEvent(root, row.Ticket, app)
 	updated, err := s.stores.Worktrees().SetApp(root, row.ID, app)
 	if err != nil {
 		logger.Verbosef("record the app for %s: %v", row.Ticket, err)
@@ -211,6 +382,45 @@ func (s *Server) recordAppState(
 		return worktreeAppView(row, true, output)
 	}
 	return worktreeAppView(updated, true, output)
+}
+
+// emitAppEvent puts an app's settled standing into the repo's feed. Only the two
+// outcomes a start reaches are events — running and failed — since starting is a
+// moment nobody reads back, and the feed is where an app that went down while
+// nobody was on the run page is discovered.
+func (s *Server) emitAppEvent(root, ticket string, app hubstore.WorktreeApp) {
+	var kind, msg string
+	switch app.State {
+	case hubstore.AppRunning:
+		kind = event.KindAppStarted
+		msg = fmt.Sprintf("app for %s is up on port %d", ticket, app.Port)
+	case hubstore.AppFailed:
+		kind = event.KindAppFailed
+		msg = fmt.Sprintf("app for %s never came up on port %d", ticket, app.Port)
+	case hubstore.AppStopped:
+		kind = event.KindAppStopped
+		msg = "app for " + ticket + " stopped"
+	default:
+		return
+	}
+	fields := map[string]any{"ticket": ticket}
+	if app.Port > 0 {
+		fields["port"] = app.Port
+	}
+	rows, err := s.stores.Events().Append(root, []hubstore.NewEvent{{
+		TS:     time.Now().UTC().Format(time.RFC3339),
+		Kind:   kind,
+		Msg:    msg,
+		Fields: marshalFields(fields),
+	}})
+	if err != nil {
+		logger.Verbosef("emit the %s event for %s: %v", kind, ticket, err)
+		return
+	}
+	name := filepath.Base(root)
+	for _, row := range rows {
+		s.publishEvent(root, name, row)
+	}
 }
 
 // stopWorktreeApp ends whatever a tree is serving and returns its row to stopped.
@@ -225,6 +435,13 @@ func (s *Server) stopWorktreeApp(root string, row hubstore.Worktree) {
 	if row.App == (hubstore.WorktreeApp{State: hubstore.AppStopped}) || row.App == (hubstore.WorktreeApp{}) {
 		return
 	}
+	// Only an app that was actually up is news. A failed start already told the feed
+	// what became of it, and saying it stopped as well reads as a second event.
+	if row.App.State == hubstore.AppRunning || row.App.State == hubstore.AppStarting {
+		s.emitAppEvent(root, row.Ticket, hubstore.WorktreeApp{
+			State: hubstore.AppStopped, Port: row.App.Port,
+		})
+	}
 	if _, err := s.stores.Worktrees().SetApp(root, row.ID, hubstore.WorktreeApp{
 		State: hubstore.AppStopped,
 	}); err != nil {
@@ -233,14 +450,15 @@ func (s *Server) stopWorktreeApp(root string, row hubstore.Worktree) {
 }
 
 // stopWorktreeAppFor stops the app of the repo's row for a ticket, for the settle
-// paths that hold a ticket rather than a row. A ticket with no row — the whole
-// worktree-less world — costs one absent lookup.
+// and removal paths that hold a ticket rather than a row. It takes the tree's lock,
+// so a tree about to leave the disk cannot have an app started into it half a
+// breath later. A ticket with no row — the whole worktree-less world — costs one
+// absent lookup.
 func (s *Server) stopWorktreeAppFor(root, ticket string) {
-	row, exists, err := s.stores.Worktrees().ByTicket(root, ticket)
-	if err != nil || !exists {
-		return
-	}
-	s.stopWorktreeApp(root, row)
+	lock := s.appLock(root, ticket)
+	lock.Lock()
+	defer lock.Unlock()
+	s.haltWorktreeApp(root, ticket)
 }
 
 // reconcileWorktreeApp re-adopts or clears one row's app at boot. A recorded pid
@@ -390,6 +608,54 @@ func appLogTail(path string) string {
 	buf := make([]byte, min(size, appLogTailBytes))
 	n, _ := f.Read(buf)
 	return strings.TrimSpace(string(buf[:n]))
+}
+
+// tailAppLog returns the last n lines of a captured app log, oldest first, and
+// whether anything was left above them. It reads at most appLogViewBytes from the
+// end: a poll every few seconds must not carry the whole capture each time, and a
+// partial first line from that cut is dropped rather than shown as a line the app
+// never printed.
+//
+// A capture that is empty, unreadable, or not written yet is no lines rather than
+// no list: the viewer renders its empty state off a length, so a nil slice would
+// reach it as a JSON null and take the page down instead.
+func tailAppLog(path string, n int) ([]string, bool) {
+	none := []string{}
+	f, err := os.Open(path)
+	if err != nil {
+		return none, false
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return none, false
+	}
+	size := info.Size()
+	cut := size > appLogViewBytes
+	if cut {
+		if _, err := f.Seek(size-appLogViewBytes, 0); err != nil {
+			return none, false
+		}
+	}
+	buf := make([]byte, min(size, appLogViewBytes))
+	read, err := io.ReadFull(f, buf)
+	if read == 0 && err != nil {
+		return none, false
+	}
+	text := string(buf[:read])
+	if cut {
+		if _, rest, ok := strings.Cut(text, "\n"); ok {
+			text = rest
+		}
+	}
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	if len(lines) == 1 && lines[0] == "" {
+		return none, cut
+	}
+	if len(lines) > n {
+		return lines[len(lines)-n:], true
+	}
+	return lines, cut
 }
 
 // capAppLog trims a log file back to its tail once it clears appLogMaxBytes, so a

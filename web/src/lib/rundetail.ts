@@ -95,6 +95,8 @@ export interface Worktree {
   app_started_at?: string
   /** False when the repo has no APP_START_CMD, so this tree serves no app at all. */
   serving: boolean
+  /** The run working in this tree right now, absent when none is — the app controls' refusal in words. */
+  busy?: string
 }
 
 /** The app the hub serves out of a worktree, as the ensure-app call answers. */
@@ -200,53 +202,6 @@ export async function requeueRun(
       error?: string
     } | null
     throw new Error(detail?.error ?? `requeue failed: ${res.status}`)
-  }
-  return res.json()
-}
-
-/**
- * Removes a run's worktree from disk and settles its row. The hub refuses while a
- * run is still live in the repo, which surfaces here as that refusal's own message.
- */
-export async function removeWorktree(
-  repo: string,
-  id: number,
-): Promise<Worktree> {
-  const res = await apiFetch(
-    `/api/v1/repos/${encodeURIComponent(repo)}/worktrees/${id}`,
-    { method: 'DELETE' },
-  )
-  if (!res.ok) {
-    const detail = (await res.json().catch(() => null)) as {
-      error?: string
-    } | null
-    throw new Error(detail?.error ?? `remove worktree failed: ${res.status}`)
-  }
-  return res.json()
-}
-
-/**
- * Asks the hub to have the ticket's worktree app running and hands back where it
- * is. The hub waits for the app's port to accept before answering, so this can sit
- * pending for as long as a cold dev server takes to boot.
- */
-export async function startWorktreeApp(
-  repo: string,
-  ticket: string,
-): Promise<WorktreeApp> {
-  const res = await apiFetch(
-    `/api/v1/repos/${encodeURIComponent(repo)}/worktrees/app`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticket }),
-    },
-  )
-  if (!res.ok) {
-    const detail = (await res.json().catch(() => null)) as {
-      error?: string
-    } | null
-    throw new Error(detail?.error ?? `start app failed: ${res.status}`)
   }
   return res.json()
 }

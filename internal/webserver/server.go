@@ -97,7 +97,8 @@ type Server struct {
 	pathBinaries     func() []string
 	updates          *update.Checker
 	attachFetch      singleflight.Group
-	appStart         singleflight.Group
+	appLockMu        sync.Mutex
+	appLocks         map[string]*sync.Mutex
 	appPortMu        sync.Mutex
 	appPortHeld      map[int]bool
 	appReadyWait     time.Duration
@@ -147,6 +148,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		installSkill:     defaultInstallSkill,
 		removeSkill:      defaultRemoveSkill,
 		skillsCache:      map[string]skillsCacheEntry{},
+		appLocks:         map[string]*sync.Mutex{},
 		executable:       os.Executable,
 		reloadPoll:       drainPoll,
 		appReadyWait:     appReadyTimeout,
@@ -414,6 +416,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees", s.handleWorktrees)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees/app", s.handleWorktreeApp)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees/{id}", s.handleWorktree)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees/{ticket}/app/logs", s.handleWorktreeAppLogs)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees/{ticket}/app/{action}", s.handleWorktreeAppAction)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/workspaces", s.handleRepoWorkspaces)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer", s.handleSteerNotes)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer/expire", s.handleSteerExpire)
