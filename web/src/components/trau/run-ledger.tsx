@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 
@@ -37,6 +37,7 @@ import {
   type RunShip,
 } from '@/lib/runs'
 import { checkpointSteps, liveSteps, type Step } from '@/lib/steps'
+import { useRovingList, type RovingRowProps } from '@/lib/use-roving-list'
 import { cn } from '@/lib/utils'
 
 function useNow(intervalMs: number): number {
@@ -148,12 +149,14 @@ function RowItem({
   showAuthor,
   activity,
   now,
+  rowProps,
 }: {
   row: LedgerRow
   showRepo: boolean
   showAuthor: boolean
   activity?: string
   now: number
+  rowProps: RovingRowProps
 }) {
   const { repo, run, instance } = row
   const pill = rowPill(row)
@@ -170,6 +173,7 @@ function RowItem({
       <Link
         to={to}
         params={{ repo, ticket: run.ticket, writer: shared?.writer ?? '' }}
+        {...rowProps}
         className="group flex flex-col gap-1.5 px-4 py-3 transition-colors hover:bg-secondary/40"
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -283,6 +287,11 @@ export function RunLedger() {
   const [tab, setTab] = useState<LedgerTab>('all')
   const [author, setAuthor] = useState<LedgerAuthor>('everyone')
   const [expanded, setExpanded] = useState(false)
+
+  // Every row is a link, so the list keeps no activation of its own: Enter is
+  // the browser's.
+  const listRef = useRef<HTMLUListElement | null>(null)
+  const walk = useRovingList({ container: listRef })
 
   const instances = instancesQuery.data?.instances ?? []
 
@@ -410,7 +419,11 @@ export function RunLedger() {
           no runs match this filter
         </p>
       ) : (
-        <ul className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60 bg-card/40">
+        <ul
+          ref={listRef}
+          {...walk.listProps}
+          className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60 bg-card/40"
+        >
           {capped.rows.map((row) => (
             <RowItem
               key={rowKey(row)}
@@ -419,6 +432,7 @@ export function RunLedger() {
               showAuthor={shared}
               activity={activityByKey.get(`${row.repo}/${row.run.ticket}`)}
               now={now}
+              rowProps={walk.rowProps(rowKey(row))}
             />
           ))}
         </ul>

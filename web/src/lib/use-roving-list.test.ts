@@ -19,11 +19,17 @@ let root: Root | undefined
 
 // Harness is the smallest list the primitive drives: rows carrying two controls
 // each, which is what Tab has to step through.
-function Harness({ ids }: { ids: string[] }): ReactNode {
+function Harness({
+  ids,
+  opens = true,
+}: {
+  ids: string[]
+  opens?: boolean
+}): ReactNode {
   const container = useRef<HTMLDivElement | null>(null)
   const rows = useRovingList({
     container,
-    onActivate: (id) => opened.push(id),
+    onActivate: opens ? (id) => opened.push(id) : undefined,
   })
   list = rows
   return createElement(
@@ -57,14 +63,14 @@ function Harness({ ids }: { ids: string[] }): ReactNode {
   )
 }
 
-function render(ids: string[]) {
+function render(ids: string[], opens = true) {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const mounted = createRoot(container)
   root = mounted
-  act(() => mounted.render(createElement(Harness, { ids })))
+  act(() => mounted.render(createElement(Harness, { ids, opens })))
   return (next: string[]) =>
-    act(() => mounted.render(createElement(Harness, { ids: next })))
+    act(() => mounted.render(createElement(Harness, { ids: next, opens })))
 }
 
 function rows(): HTMLElement[] {
@@ -175,6 +181,18 @@ it('opens the focused row on Enter', () => {
   expect(press('Enter')).toBe(true)
 
   expect(opened).toEqual(['B'])
+})
+
+it('leaves Enter to a row that opens itself', () => {
+  render(['A', 'B'], false)
+
+  act(() => rows()[0].focus())
+  expect(press('Enter')).toBe(false)
+  expect(opened).toEqual([])
+
+  // The walk is the list's either way.
+  expect(press('j')).toBe(true)
+  expect(at()).toBe('B')
 })
 
 it('steps Tab into the row’s own controls, then out of the list', () => {
