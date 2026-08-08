@@ -39,18 +39,20 @@ const (
 	drainStop      drainAction = "stop"      // draining is off or the queue ran dry; the loop exits
 )
 
-// drainer executes each Repo's queue one child run at a time. It owns no queue
-// state of its own — every decision reads the persisted queue file — so a hub
-// restart resumes exactly where the last one left off. One goroutine per repo
-// keeps draining strictly sequential: a repo never has two hub-spawned children
-// at once.
+// drainer executes each Repo's queue up to WORKTREE_PARALLEL child runs at a time,
+// one lane per run. It owns no queue state of its own — every decision reads the
+// persisted queue file — so a hub restart resumes exactly where the last one left
+// off. One goroutine per repo takes every decision for that repo, so lanes are
+// filled one spawn per tick and a repo without worktrees, whose cap is 1, keeps the
+// strictly sequential drain it always had.
 type drainer struct {
 	srv       *Server
 	poll      time.Duration
 	backoff   time.Duration
 	now       func() time.Time
 	alive     func(pid int) bool
-	repoLive  func(root string) bool
+	busyPIDs  func(root string) []int
+	laneCap   func(root string) int
 	outcome   func(root string, it queue.Item) (class, reason string)
 	prState   func(root, pr string) string
 	autoTries func(root string) int
@@ -73,7 +75,8 @@ func newDrainer(s *Server) *drainer {
 		resumes: map[string]autoResume{},
 		watch:   map[string]drainWatch{},
 	}
-	d.repoLive = d.repoHasLiveInstance
+	d.busyPIDs = s.busyInstancePIDs
+	d.laneCap = s.repoLaneCap
 	d.outcome = d.checkpointOutcome
 	d.autoTries = d.configuredAutoResumeTries
 	return d
@@ -128,10 +131,10 @@ func (d *drainer) tick(root string) (drainAction, error) {
 // item no open blocker holds back, settles a finished one per the failure
 // taxonomy — pausing the drain on a fault or provider pause, but leaving a row
 // whose removal is in flight to the removal, which drops it rather than parking
-// it — waits, never spawning a second child while one is in flight, while a
-// pending self-reload is waiting for its idle gap, or while an Epic's release
-// holds the repo — only that Epic's own finalize starts then — or finishes the
-// drain once the queue has nothing left to run so a completed — or armed but
+// it — waits while every one of the repo's lanes is busy, while a live epic holds
+// the whole repo, while a pending self-reload is waiting for its idle gap, or while
+// an Epic's release holds the repo — only that Epic's own finalize starts then — or
+// finishes the drain once the queue has nothing left to run so a completed — or armed but
 // empty — queue reads stopped instead of idling armed. A tick that finds a
 // running epic first advances its sub-issue rows onto what their checkpoints
 // already say, so the queue's count moves as children settle. Every wait it
@@ -143,10 +146,15 @@ func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 	if err != nil {
 		return heldByErr(holdQueueError, "the repo's queue could not be read", fmt.Errorf("read queue: %w", err))
 	}
-	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
+	// Every lane's child is settled before any new one starts, so a queue running
+	// four at once still reconciles one exit per tick and in the order they landed.
+	for _, running := range items {
+		if running.Status != queue.StatusRunning {
+			continue
+		}
 		d.advanceSubIssues(root, running)
 		if d.alive(running.PID) {
-			return drainWait, drainHold{}, nil
+			continue
 		}
 		class, reason := d.reconcileOutcome(root, running)
 		if status, pause := classifyDrainOutcome(class, meta.OnFault); pause {
@@ -170,7 +178,13 @@ func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 		}
 		return drainReconcile, drainHold{}, nil
 	}
+	live := d.hubLanes(items)
 	if !meta.Draining {
+		// A disarmed queue with children still in flight keeps its loop: nothing
+		// else starts, but every exit still has to be reconciled.
+		if live > 0 {
+			return drainWait, drainHold{}, nil
+		}
 		if d.holdForAutoResume(root) {
 			return drainWait, drainHold{}, nil
 		}
@@ -189,14 +203,38 @@ func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 			d.srv.emitQueueBatchFinished(root, meta.Batch, items)
 			return drainStop, drainHold{}, nil
 		}
+		if !anyRunnable(items, meta.Batch) {
+			// Lanes in flight and nothing else queued in scope: the drain is
+			// working, not held.
+			return drainWait, drainHold{}, nil
+		}
 		return heldBy(holdBlocked, blockedReason(items, meta.Batch))
 	}
 	if repo := d.srv.selfReloadPending(); repo != "" {
 		return heldBy(holdSelfReload, fmt.Sprintf(
 			"a self-reload onto %s is waiting for the hub to fall idle", filepath.Base(repo)))
 	}
-	if d.repoLive(root) {
-		return heldBy(holdRepoBusy, "a loop is already running in this repo")
+	used, lanes := d.occupiedLanes(root, items), d.laneCap(root)
+	// A single-lane repo working through its queue is the serial drain as it always
+	// was: the child in flight is progress rather than a gate worth naming.
+	if lanes == 1 && live > 0 {
+		return drainWait, drainHold{}, nil
+	}
+	// An epic drives several tickets from one process, so it stays serial in this
+	// slice: a live epic holds the whole repo, and an epic waiting to start waits
+	// for every other lane to drain first.
+	if epic, running := firstEpicRunning(items, d.alive); running {
+		return heldBy(holdRepoBusy, fmt.Sprintf("%s is running and an epic holds the whole repo", epic))
+	}
+	if next.Kind == queue.KindEpic && used > 0 {
+		return heldBy(holdLanesFull, fmt.Sprintf(
+			"%s is an epic and runs on its own — it starts once the repo's other lanes drain", next.ID))
+	}
+	if used >= lanes {
+		if lanes == 1 {
+			return heldBy(holdRepoBusy, "a loop is already running in this repo")
+		}
+		return heldBy(holdLanesFull, lanesFullReason(lanes))
 	}
 	if epic, held := d.srv.heldByRelease(root, next.ID); held {
 		finalize, queued := runnableItem(items, epic)
@@ -655,12 +693,82 @@ func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason s
 	return class, row.FailureReason
 }
 
-// repoHasLiveInstance reports whether a loop — a manual loop or a Run once — is
-// already running in root, so the drainer waits for it instead of spawning a
-// second child in the same repo. The wait keeps the drain armed, so a takeover
-// block is temporary: the queue retries once the lock's process dies.
-func (d *drainer) repoHasLiveInstance(root string) bool {
-	return d.srv.hasBusyInstance(root)
+// repoLaneCap is how many runs root may have in flight at once. Only a per-ticket
+// worktree makes concurrency safe, so the cap is WORKTREE_PARALLEL where trees are
+// provisioned and 1 everywhere else — a folder repo, which has no repository at its
+// root for git to add a tree to, and a repo whose config cannot be read included.
+func (s *Server) repoLaneCap(root string) int {
+	cfg, err := repoConfig(root)
+	if err != nil || folderrepo.Is(root) {
+		return 1
+	}
+	return cfg.WorktreeLanes()
+}
+
+// repoLive reports whether a loop — a manual loop or a Run once — is running in
+// root at all. It is the whole-repo question, which the gestures that touch the
+// shared checkout (a git purge, a queue removal's reset, the MCP status) still ask;
+// the drain and the start gates ask the narrower lane question instead.
+func (d *drainer) repoLive(root string) bool {
+	return len(d.busyPIDs(root)) > 0
+}
+
+// occupiedLanes counts the runs root has in flight: every busy instance registered
+// in the repo — a TUI or CLI run holds a lane exactly as a hub-spawned child does,
+// so hub and terminal share one cap — plus every queue row marked running whose
+// child is alive but has not registered its presence yet. Without that second half
+// a tick landing in the gap between a spawn and the child's first heartbeat would
+// see a free lane that is already taken and double-fill it.
+func (d *drainer) occupiedLanes(root string, items []queue.Item) int {
+	seen := map[int]bool{}
+	for _, pid := range d.busyPIDs(root) {
+		seen[pid] = true
+	}
+	for _, it := range items {
+		if it.Status != queue.StatusRunning || it.PID == 0 || seen[it.PID] {
+			continue
+		}
+		if d.alive(it.PID) {
+			seen[it.PID] = true
+		}
+	}
+	return len(seen)
+}
+
+// hubLanes counts the lanes this queue's own children hold: the rows it marked
+// running whose process is still alive. It is what tells a repo working through its
+// queue from one held up by something outside it.
+func (d *drainer) hubLanes(items []queue.Item) int {
+	lanes := 0
+	for _, it := range items {
+		if it.Status == queue.StatusRunning && d.alive(it.PID) {
+			lanes++
+		}
+	}
+	return lanes
+}
+
+// lanesFull reports whether root has no free lane left, the gate every start has to
+// pass. It reads the queue itself so a caller holding no snapshot still counts the
+// children the hub launched but whose presence has not landed yet; an unreadable
+// queue falls back to the registered instances alone rather than refusing the start.
+func (d *drainer) lanesFull(root string) bool {
+	items, _, err := d.srv.stores.Queue(root).Snapshot()
+	if err != nil {
+		logger.Verbosef("lane count %s: %v", root, err)
+		items = nil
+	}
+	return d.occupiedLanes(root, items) >= d.laneCap(root)
+}
+
+// laneBusyError is the refusal a start gets when every lane is taken. A single-lane
+// repo says what it always said; a repo running several names the cap the start ran
+// into, so "wait" reads as a queue of a known width rather than as a mystery.
+func (s *Server) laneBusyError(root string) string {
+	if lanes := s.repoLaneCap(root); lanes > 1 {
+		return fmt.Sprintf("all %d run lanes in this repo are busy — wait for one to finish", lanes)
+	}
+	return "a loop is already running in this repo — wait for it to finish"
 }
 
 // runnableItem returns id's queue row when the drain could launch it. A
@@ -673,6 +781,30 @@ func runnableItem(items []queue.Item, id string) (queue.Item, bool) {
 		}
 	}
 	return queue.Item{}, false
+}
+
+// firstEpicRunning names the epic a repo has in flight, if any. An epic drives its
+// sub-issues from one process and this slice keeps that whole-repo hold, so the
+// drain asks about it before it counts lanes.
+func firstEpicRunning(items []queue.Item, alive func(pid int) bool) (string, bool) {
+	for _, it := range items {
+		if it.Kind == queue.KindEpic && it.Status == queue.StatusRunning && alive(it.PID) {
+			return it.ID, true
+		}
+	}
+	return "", false
+}
+
+// anyRunnable reports whether the armed scope still holds an item the drain could
+// launch, which is what tells a queue held by a blocker from one that has simply
+// handed everything it has to the lanes already running.
+func anyRunnable(items []queue.Item, batch string) bool {
+	for _, it := range items {
+		if queue.Runnable(it.Status) && inBatch(it, batch) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {

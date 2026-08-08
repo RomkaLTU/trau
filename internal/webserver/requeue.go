@@ -80,7 +80,7 @@ func (s *Server) restoreQueueRow(w http.ResponseWriter, root, id string) bool {
 // the CLI offers — then repairs the queue snapshot the drain left behind, so
 // neither the ticket's own row nor an epic carrying it keeps reporting the
 // quarantine. It is gated on the workspace allowlist like a dry-run, and refused
-// while the repo is draining or holds a live loop: a requeue rewrites tracker
+// while the repo is draining or has no free run lane: a requeue rewrites tracker
 // state, checks out the base, and deletes branches a running child could be
 // standing on. It answers with the repaired queue, so the caller lands on the
 // same snapshot the queue endpoint would serve.
@@ -94,7 +94,7 @@ func (s *Server) handleIssueRequeue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
 		return
 	}
-	if meta.Draining || s.repoIsLive(root) {
+	if meta.Draining || s.drain.lanesFull(root) {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": fmt.Sprintf("%s has a loop running — stop it before requeuing %s", filepath.Base(root), id),
 		})

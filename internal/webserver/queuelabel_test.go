@@ -32,7 +32,7 @@ func queuedLabelServer(t *testing.T, ini string) (*Server, *fakeWriter, *fakeSup
 	s.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
 	sup := &fakeSupervisor{}
 	s.sup = sup
-	s.drain.repoLive = func(string) bool { return false }
+	s.drain.busyPIDs = func(string) []int { return nil }
 	s.drain.alive = func(int) bool { return false }
 	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
 	ts := httptest.NewServer(s.Handler())

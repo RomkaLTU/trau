@@ -237,19 +237,32 @@ func TestStartBatchGuards(t *testing.T) {
 			reason: "the queue is draining",
 		},
 		{
-			name: "another item running",
+			name: "another item fills the repo's only lane",
 			setup: func(t *testing.T, s *Server, root string) {
 				if err := s.stores.Queue(root).MarkRunning("COD-1", 4242); err != nil {
 					t.Fatalf("mark running: %v", err)
 				}
 			},
 			status: http.StatusConflict,
-			reason: "COD-1 is already running",
+			reason: "a loop is already running in this repo",
+		},
+		{
+			name: "a live epic holds the whole repo",
+			setup: func(t *testing.T, s *Server, root string) {
+				if _, err := s.stores.Queue(root).Add(queue.Item{Kind: queue.KindEpic, ID: "COD-7"}); err != nil {
+					t.Fatalf("add epic: %v", err)
+				}
+				if err := s.stores.Queue(root).MarkRunning("COD-7", 4242); err != nil {
+					t.Fatalf("mark running: %v", err)
+				}
+			},
+			status: http.StatusConflict,
+			reason: "COD-7 is running and an epic holds the whole repo",
 		},
 		{
 			name: "live instance in the repo",
 			setup: func(t *testing.T, s *Server, _ string) {
-				s.drain.repoLive = func(string) bool { return true }
+				s.drain.busyPIDs = func(string) []int { return []int{4242} }
 			},
 			status: http.StatusConflict,
 			reason: "a loop is already running",

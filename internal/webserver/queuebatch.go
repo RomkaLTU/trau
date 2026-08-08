@@ -126,10 +126,10 @@ func (s *Server) handleQueueBatch(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleQueueBatchStart arms the drain scoped to one batch: it runs the batch's
-// members in queue order, one child at a time, and disarms once none is runnable
-// even though the rest of the queue is still pending. It refuses with 409
-// whenever the repo already has work in flight — an armed drain, a running queue
-// item, a live loop, a working tree another loop holds — with 409 when the batch
+// members in queue order, up to WORKTREE_PARALLEL at a time, and disarms once none
+// is runnable even though the rest of the queue is still pending. It refuses with
+// 409 whenever the repo has no room for it — an armed drain, a live epic, no free
+// run lane, a working tree another loop holds — with 409 when the batch
 // holds nothing to run, and with 409 when a member is blocked by an unshipped
 // ticket the batch does not carry, since only work inside the batch can be
 // unblocked by draining it.
@@ -167,12 +167,14 @@ func (s *Server) handleQueueBatchStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "the queue is draining — stop it before starting a batch"})
 		return
 	}
-	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is already running", running.ID)})
+	if epic, running := firstEpicRunning(items, s.drain.alive); running {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s is running and an epic holds the whole repo — wait for it to finish", epic),
+		})
 		return
 	}
-	if s.drain.repoLive(root) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a loop is already running in this repo — wait for it to finish"})
+	if s.drain.lanesFull(root) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": s.laneBusyError(root)})
 		return
 	}
 	if collision, blocked := s.folderCollision(root); blocked {

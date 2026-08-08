@@ -33,6 +33,7 @@ const (
 	holdBlocked      holdGate = "blocked"
 	holdSelfReload   holdGate = "self-reload"
 	holdRepoBusy     holdGate = "repo-busy"
+	holdLanesFull    holdGate = "lanes-full"
 	holdRelease      holdGate = "release"
 	holdQueueError   holdGate = "queue-error"
 	holdLaunchFailed holdGate = "launch-failed"
@@ -165,6 +166,15 @@ func (d *drainer) noteStall(root string, hold drainHold) bool {
 	w.hold = hold
 	d.watch[root] = w
 	return fresh
+}
+
+// lanesFullReason explains a repo running at its WORKTREE_PARALLEL cap: the next
+// item is not blocked and nothing outside the repo holds it, there is simply no
+// free tree to run it in until one of the lanes finishes.
+func lanesFullReason(lanes int) string {
+	return fmt.Sprintf(
+		"all %d run lanes in this repo are busy — the next item starts as one finishes (WORKTREE_PARALLEL=%d)",
+		lanes, lanes)
 }
 
 // blockedReason names the runnable items the drain passed over because a blocker

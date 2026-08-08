@@ -36,7 +36,7 @@ func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	t.Cleanup(cancel)
 	fake := &fakeSupervisor{}
 	s.sup = fake
-	s.drain.repoLive = func(string) bool { return false }
+	s.drain.busyPIDs = func(string) []int { return nil }
 	s.drain.alive = func(int) bool { return false }
 	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
 	s.drain.prState = func(string, string) string { return "" }
@@ -338,7 +338,12 @@ func TestDrainTickDecisions(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s, fake, root := drainServer(t, "acme")
-			s.drain.repoLive = func(string) bool { return tc.repoLive }
+			s.drain.busyPIDs = func(string) []int {
+				if tc.repoLive {
+					return []int{4242}
+				}
+				return nil
+			}
 			s.drain.alive = func(pid int) bool { return tc.alive[pid] }
 			if tc.outcomeClass != "" {
 				s.drain.outcome = func(string, queue.Item) (string, string) {
@@ -1089,7 +1094,7 @@ func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
 	second.home = home
 	second.sup = &fakeSupervisor{}
 	second.drain.alive = func(int) bool { return false }
-	second.drain.repoLive = func(string) bool { return false }
+	second.drain.busyPIDs = func(string) []int { return nil }
 
 	if _, running := firstWithStatus(snapshot(t, second, root), queue.StatusRunning); !running {
 		t.Fatal("precondition: COD-1 should be persisted as running")
@@ -1116,7 +1121,7 @@ func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	s.sup = &fakeSupervisor{}
 	// A live run holds the repo, so the armed loop waits instead of spawning and
 	// the endpoint's own writes are what the assertions read.
-	s.drain.repoLive = func(string) bool { return true }
+	s.drain.busyPIDs = func(string) []int { return []int{4242} }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	s.drainCtx = ctx
@@ -1236,7 +1241,7 @@ func TestDrainEndpointRefusesStartWithNothingRunnable(t *testing.T) {
 // until the user starts it again.
 func TestDrainEndpointStaysIdleAfterARefusedStart(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
-	s.drain.repoLive = func(string) bool { return true }
+	s.drain.busyPIDs = func(string) []int { return []int{4242} }
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -1321,6 +1326,7 @@ func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, root := drainServer(t, "acme")
+			s.drain.busyPIDs = s.busyInstancePIDs
 			entryRoot := root
 			if tc.otherRepo {
 				entryRoot = filepath.Join(t.TempDir(), "elsewhere")
@@ -1330,8 +1336,8 @@ func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
 				RepoRoot:     entryRoot,
 				SessionState: tc.state,
 			})
-			if got := s.drain.repoHasLiveInstance(root); got != tc.blocks {
-				t.Errorf("repoHasLiveInstance = %v, want %v", got, tc.blocks)
+			if got := s.drain.repoLive(root); got != tc.blocks {
+				t.Errorf("repoLive = %v, want %v", got, tc.blocks)
 			}
 		})
 	}
@@ -1343,7 +1349,7 @@ func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
 // runnable item on a later tick once the lock's process dies.
 func TestTickTakeoverInstanceWaitsArmed(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
-	s.drain.repoLive = s.drain.repoHasLiveInstance
+	s.drain.busyPIDs = s.busyInstancePIDs
 	writeInstanceEntry(t, s, registry.Entry{
 		PID:          os.Getpid(),
 		RepoRoot:     root,
@@ -1371,7 +1377,7 @@ func TestTickTakeoverInstanceWaitsArmed(t *testing.T) {
 
 func TestTickSpawnsDespiteIdleInstance(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
-	s.drain.repoLive = s.drain.repoHasLiveInstance
+	s.drain.busyPIDs = s.busyInstancePIDs
 	writeInstanceEntry(t, s, registry.Entry{
 		PID:          os.Getpid(),
 		RepoRoot:     root,

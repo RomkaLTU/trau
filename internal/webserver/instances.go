@@ -240,15 +240,25 @@ func (s *Server) folderCollision(root string) (folderCollisionError, bool) {
 // idle instance is an open dashboard rather than a run, and a legacy entry with no
 // state counts as busy. An empty root asks across every repo.
 func (s *Server) hasBusyInstance(root string) bool {
+	return len(s.busyInstancePIDs(root)) > 0
+}
+
+// busyInstancePIDs is hasBusyInstance's evidence rather than its verdict: the PIDs
+// of the live instances in root that are past idle. A lane check needs the PIDs and
+// not just a boolean — the drain has to tell a child it launched itself, which its
+// queue row already accounts for, from a TUI or CLI run that occupies a lane of the
+// same cap.
+func (s *Server) busyInstancePIDs(root string) []int {
+	var pids []int
 	for _, e := range s.liveInstances() {
-		if root != "" && e.RepoRoot != root {
+		if root != "" && filepath.Clean(e.RepoRoot) != filepath.Clean(root) {
 			continue
 		}
 		if e.SessionState != registry.StateIdle {
-			return true
+			pids = append(pids, e.PID)
 		}
 	}
-	return false
+	return pids
 }
 
 func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {

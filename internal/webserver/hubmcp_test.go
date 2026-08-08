@@ -35,7 +35,7 @@ func hubMCPServer(t *testing.T) (*httptest.Server, *Server, string) {
 	s.home = home
 	s.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
 	s.sup = &fakeSupervisor{}
-	s.drain.repoLive = func(string) bool { return false }
+	s.drain.busyPIDs = func(string) []int { return nil }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	s.drainCtx = ctx

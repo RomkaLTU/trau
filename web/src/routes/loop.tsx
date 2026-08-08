@@ -24,7 +24,8 @@ function LoopPage() {
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
           Build one ordered queue of tickets and epics, then run it top to
-          bottom — one ticket at a time.
+          bottom — one ticket at a time, or several at once on a repo with
+          worktrees.
         </p>
       </header>
 

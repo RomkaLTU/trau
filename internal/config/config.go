@@ -366,6 +366,14 @@ type Config struct {
 	// nothing is skipped silently. Read it through WorktreeCopyGlobs.
 	WorktreeCopy string
 
+	// WorktreeParallel caps how many runs a repo may have in flight at once, each
+	// in its own worktree. It is meaningful only alongside Worktrees: without a
+	// tree per ticket the concurrent runs would share one checkout, so a repo
+	// without worktrees keeps an effective cap of 1. Read it through
+	// WorktreeLanes. N lanes multiply provider quota, CPU and disk, and any shared
+	// dev database or port the trees inherit is WorktreeSetupCmd's to separate.
+	WorktreeParallel int
+
 	// UsageWindow enables the HUD's provider rate-limit window probe (claude OAuth
 	// usage, codex app-server, kimi balance). On by default; every probe is
 	// metadata-only and fails closed to token/cost totals, so it is safe to leave
@@ -602,6 +610,7 @@ func Defaults() Config {
 		RunsDir:                ".trau/runs",
 		Worktrees:              false,
 		WorktreeCopy:           DefaultWorktreeCopy,
+		WorktreeParallel:       DefaultWorktreeParallel,
 		ServeBind:              "127.0.0.1",
 		ServePort:              8728,
 		ServeToken:             "",
@@ -1137,6 +1146,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	// Empty is a meaningful value here: it turns the copy step off, which the
 	// non-empty default would otherwise make unreachable.
 	strAllowEmpty("WORKTREE_COPY", &c.WorktreeCopy)
+	num("WORKTREE_PARALLEL", &c.WorktreeParallel)
 	if v, src := get("LESSONS"); v != "" {
 		c.Lessons = v == "1"
 		sources["LESSONS"] = src.name
@@ -1565,6 +1575,20 @@ const DefaultWorktreeCopy = ".env,.env.*"
 // DefaultWorktreesDirLabel is how the settings catalog names the WORKTREES_DIR
 // default, which resolves per machine and so cannot be spelled as a literal path.
 const DefaultWorktreesDirLabel = "<TRAU_HOME>/worktrees"
+
+// DefaultWorktreeParallel is the WORKTREE_PARALLEL default: enough lanes for a
+// queue to make real headway without a single repo saturating a provider's quota.
+const DefaultWorktreeParallel = 4
+
+// WorktreeLanes is how many runs this repo may have in flight at once. Only
+// worktrees make concurrency safe — every other repo shares one checkout — so a
+// repo without them, and any value below one, reads as a single lane.
+func (c Config) WorktreeLanes() int {
+	if !c.Worktrees || c.WorktreeParallel < 1 {
+		return 1
+	}
+	return c.WorktreeParallel
+}
 
 // WorktreesRoot is the directory per-ticket worktrees are created under:
 // WORKTREES_DIR when set, else <TRAU_HOME>/worktrees. Empty only when no trau
@@ -2150,6 +2174,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "WORKTREES_DIR", Group: sectionWorktrees, WebEditable: true, Default: DefaultWorktreesDirLabel, Description: "Directory per-ticket worktrees are created under, as <dir>/<repo>/<ticket>. It must not sit inside a registered repo or a folder repo"},
 		{Key: "WORKTREE_SETUP_CMD", Group: sectionWorktrees, WebEditable: true, Advanced: true, Description: "Shell command run with a freshly provisioned worktree as its working directory, after the copy step (e.g. npm ci). A non-zero exit parks the run and keeps the tree for inspection"},
 		{Key: "WORKTREE_COPY", Group: sectionWorktrees, WebEditable: true, Advanced: true, Default: DefaultWorktreeCopy, Description: "Comma-separated globs of gitignored files copied from the registered root into a fresh worktree; tracked content arrives with the checkout. Empty = copy nothing beyond trau's own files"},
+		{Key: "WORKTREE_PARALLEL", Group: sectionWorktrees, Kind: "int", WebEditable: true, Default: strconv.Itoa(DefaultWorktreeParallel), Description: "How many queued runs a repo may have in flight at once, each in its own worktree. Meaningful only with WORKTREES=1 — without a tree per ticket the cap stays 1. N lanes multiply provider quota, CPU and disk, and any shared dev database or port is WORKTREE_SETUP_CMD's to separate"},
 		{Key: "RUNS_DIR", Group: sectionPaths, Default: ".trau/runs", Description: "Directory for run artifacts"},
 		{Key: "SERVE_BIND", Group: sectionHub, Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
 		{Key: "SERVE_PORT", Group: sectionHub, Kind: "int", Default: "8728", Description: "Port for `trau serve`"},
@@ -2869,6 +2894,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.WorktreeSetupCmd
 	case "WORKTREE_COPY":
 		return cfg.WorktreeCopy
+	case "WORKTREE_PARALLEL":
+		return strconv.Itoa(cfg.WorktreeParallel)
 	case "TEAM_SYNC":
 		if cfg.TeamSync {
 			return "1"

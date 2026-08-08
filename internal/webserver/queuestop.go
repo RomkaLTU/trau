@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"sync"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -43,30 +44,54 @@ func (s *Server) isStopping(root string) bool {
 	return s.stopping[root]
 }
 
-// runningChild names the loop process a stop has to end: the queue's own running
-// row when it has one, and otherwise the repo's live instance. The second case is
-// the run the queue never launched — a CLI start, which the Loop view shows as
-// running just the same — and Stop is the gesture that ends it either way.
-func (s *Server) runningChild(root string, items []queue.Item) (ticket string, pid int, ok bool) {
-	if it, found := firstWithStatus(items, queue.StatusRunning); found {
-		return it.ID, it.PID, true
-	}
-	if e, live := s.liveInstance(root); live {
-		return e.Ticket, e.PID, true
-	}
-	return "", 0, false
+// childRun is one loop process a queue Stop has to end, named by the ticket it is
+// working so the log says which lane failed to die rather than only its PID.
+type childRun struct {
+	ticket string
+	pid    int
 }
 
-// stopRunningChild ends the child a stop found in flight, exactly as a per-run
-// Stop does: a graceful stop so the loop checkpoints and preserves its WIP,
-// escalating to a group kill only if it outlasts the grace. It settles nothing itself —
-// the drain tick that finds the process gone reads the stopped checkpoint and
-// parks the item, so the ticket stays resumable and every other row stays
-// queued. A child whose death is never confirmed keeps the row as it is; the
-// in-flight flag still clears, so a later POST retries.
-func (s *Server) stopRunningChild(root, ticket string, pid int) {
-	defer s.endStopping(root)
-	if err := s.stopAndWait(pid, stopKillGrace); err != nil {
-		logger.Verbosef("stop %s queue: stop %s (pid %d): %v", root, ticket, pid, err)
+// runningChildren names the loop processes a stop has to end: every one of the
+// queue's own running rows — a repo draining WORKTREE_PARALLEL lanes has one per
+// lane, and a Stop that ended only the first would leave the rest running against a
+// disarmed queue — and, when the queue holds none, the repo's live instance. That
+// second case is the run the queue never launched — a CLI start, which the Loop view
+// shows as running just the same — and Stop is the gesture that ends it either way.
+func (s *Server) runningChildren(root string, items []queue.Item) []childRun {
+	kids := make([]childRun, 0, len(items))
+	for _, it := range items {
+		if it.Status == queue.StatusRunning {
+			kids = append(kids, childRun{ticket: it.ID, pid: it.PID})
+		}
 	}
+	if len(kids) > 0 {
+		return kids
+	}
+	if e, live := s.liveInstance(root); live {
+		return []childRun{{ticket: e.Ticket, pid: e.PID}}
+	}
+	return nil
+}
+
+// stopRunningChildren ends every child a stop found in flight, exactly as a per-run
+// Stop does: a graceful stop so each loop checkpoints and preserves its WIP,
+// escalating to a group kill only if it outlasts the grace. The lanes are stopped
+// concurrently so the grace is spent once rather than once per lane. It settles
+// nothing itself — the drain tick that finds a process gone reads its stopped
+// checkpoint and parks that item, so every ticket stays resumable and every other
+// row stays queued. A child whose death is never confirmed keeps its row as it is;
+// the in-flight flag still clears, so a later POST retries.
+func (s *Server) stopRunningChildren(root string, kids []childRun) {
+	defer s.endStopping(root)
+	var wg sync.WaitGroup
+	for _, kid := range kids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.stopAndWait(kid.pid, stopKillGrace); err != nil {
+				logger.Verbosef("stop %s queue: stop %s (pid %d): %v", root, kid.ticket, kid.pid, err)
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -73,8 +73,11 @@ type QueueItemView struct {
 // rather than as idle. Batches lists the repo's batches and DrainingBatch names the
 // one the drain in flight is scoped to — empty when it is draining the whole queue
 // — so a client can label the run. Held reports that the drain is armed and
-// starting nothing anyway, with HeldReason naming the gate that holds it, so a
-// wait is never operationally indistinguishable from a hang.
+// starting nothing anyway, with HeldGate naming the gate in the hold vocabulary and
+// HeldReason spelling it out, so a wait is never operationally indistinguishable
+// from a hang. Lanes is how many runs the repo may have in flight at once
+// (WORKTREE_PARALLEL, 1 without worktrees), which is what makes a lanes-full hold
+// legible: N of N busy rather than an unexplained pause.
 type QueueResponse struct {
 	Repo          string          `json:"repo"`
 	Draining      bool            `json:"draining"`
@@ -82,7 +85,9 @@ type QueueResponse struct {
 	DrainingBatch string          `json:"draining_batch"`
 	Stopping      bool            `json:"stopping"`
 	ReleasingEpic string          `json:"releasing_epic,omitempty"`
+	Lanes         int             `json:"lanes"`
 	Held          bool            `json:"held"`
+	HeldGate      string          `json:"held_gate,omitempty"`
 	HeldReason    string          `json:"held_reason,omitempty"`
 	HeldSince     string          `json:"held_since,omitempty"`
 	Batches       []BatchView     `json:"batches"`
@@ -345,10 +350,11 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 // child exactly as a drain would, then starts the loop that waits for it —
 // without arming draining, so the tick that settles the item finds the drain off
 // and stops instead of picking up the next row. It refuses with 409 whenever the
-// repo already has work in flight: an armed drain, a running queue item, a live
-// loop, or an Epic whose release still holds the repo — only that Epic's own
-// finalize is let through — and, so the one-shot cannot bypass the drain's dedup,
-// whenever an unsettled queued epic already covers the item.
+// repo has no room for it: an armed drain, this very item already running, no free
+// run lane, a live epic — which holds the whole repo however many lanes it has — or
+// an Epic whose release still holds the repo, only that Epic's own finalize being
+// let through; and, so the one-shot cannot bypass the drain's dedup, whenever an
+// unsettled queued epic already covers the item.
 func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -373,19 +379,21 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "the queue is draining — pause it before running a single item"})
 		return
 	}
-	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
+	id := strings.TrimSpace(r.PathValue("id"))
+	// The same ticket never runs twice — its worktree, branch and per-ticket temp
+	// files are keyed by its id — while a different one only needs a free lane.
+	if running, ok := itemByID(items, id); ok && running.Status == queue.StatusRunning {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is already running", running.ID)})
 		return
 	}
-	if s.drain.repoLive(root) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a loop is already running in this repo — wait for it to finish"})
+	if s.drain.lanesFull(root) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": s.laneBusyError(root)})
 		return
 	}
 	if collision, blocked := s.folderCollision(root); blocked {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": collision.Error()})
 		return
 	}
-	id := strings.TrimSpace(r.PathValue("id"))
 	item, queued := itemByID(items, id)
 	if !queued {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
@@ -393,6 +401,18 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if !queue.Runnable(item.Status) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s has already settled %s and cannot be run", item.ID, item.Status)})
+		return
+	}
+	if epic, running := firstEpicRunning(items, s.drain.alive); running {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s is running and an epic holds the whole repo — wait for it to finish", epic),
+		})
+		return
+	}
+	if item.Kind == queue.KindEpic && s.drain.occupiedLanes(root, items) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s is an epic and runs on its own — wait for this repo's other lanes to finish", item.ID),
+		})
 		return
 	}
 	if epic, held := s.heldByRelease(root, item.ID); held {
@@ -614,7 +634,9 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		DrainingBatch: meta.Batch,
 		Stopping:      s.isStopping(root),
 		ReleasingEpic: s.releasingEpic(root),
+		Lanes:         s.repoLaneCap(root),
 		Held:          hold.gate != "",
+		HeldGate:      string(hold.gate),
 		HeldReason:    hold.reason,
 		HeldSince:     heldSince,
 		Batches:       batchViews(batches),
@@ -623,9 +645,9 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 }
 
 // handleQueueStop stops a repo's loop where it stands: it disarms the drain
-// synchronously so no tick spawns a new child, then — in the background — ends
-// the child that was running (runningChild) with the same escalation a per-run
-// Stop uses. It clears nothing: the stopped item parks at its checkpoint and
+// synchronously so no tick spawns a new lane, then — in the background — ends every
+// child that was running (runningChildren) with the same escalation a per-run
+// Stop uses. It clears nothing: each stopped item parks at its checkpoint and
 // every row stays queued, so Start picks the queue back up from there. It
 // answers with the queue — 202 while the stop is in flight, 200 when there was
 // no child to end — and a second POST during a stop is a no-op that answers the
@@ -655,8 +677,8 @@ func (s *Server) handleQueueStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
 		return
 	}
-	ticket, pid, running := s.runningChild(root, items)
-	if !running {
+	kids := s.runningChildren(root, items)
+	if len(kids) == 0 {
 		s.writeQueue(w, http.StatusOK, root)
 		return
 	}
@@ -670,7 +692,7 @@ func (s *Server) handleQueueStop(w http.ResponseWriter, r *http.Request) {
 	// Answered before the stop starts, so a child that dies on its graceful stop cannot
 	// clear the in-flight flag out from under the ack that reports it.
 	s.writeQueue(w, http.StatusAccepted, root)
-	go s.stopRunningChild(root, ticket, pid)
+	go s.stopRunningChildren(root, kids)
 }
 
 // enqueue registers a ticket or epic for execution. It is gated on the workspace

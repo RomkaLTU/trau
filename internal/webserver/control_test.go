@@ -57,6 +57,7 @@ type fakeSupervisor struct {
 	captureErr error
 	stopErr    error
 	killErr    error
+	onSpawn    func(pid int)
 	onStop     func(pid int)
 	onKill     func(pid int)
 }
@@ -69,7 +70,11 @@ func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
 		return 0, f.spawnErr
 	}
 	f.pid++
-	return 40000 + f.pid, nil
+	pid := 40000 + f.pid
+	if f.onSpawn != nil {
+		f.onSpawn(pid)
+	}
+	return pid, nil
 }
 
 func (f *fakeSupervisor) Capture(_ context.Context, spec SpawnSpec) ([]byte, error) {
