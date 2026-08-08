@@ -266,7 +266,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	// Resolved after the layered config so the project layer keeps coming from the
 	// registered root's .trau.ini, and before any work so a bad path costs nothing.
-	if cfg.WorkTree, err = config.ResolveWorkTree(opts.WorkTree); err != nil {
+	if cfg.WorkTree, err = config.ResolveRunWorkTree(opts.WorkTree, cfg.Worktrees); err != nil {
 		return console.Actionable(err, "resolve --worktree", "pass a path to an existing working tree, e.g. `git worktree add ../wt-x <base>`")
 	}
 	if cfg.WorkTree != "" {
@@ -1246,6 +1246,24 @@ func newQAFetcher(cfg config.Config, repoRoot string) func(context.Context) (hub
 	}
 }
 
+// newWorktreeReporter posts the tree a run created or adopted to the hub, which
+// keys the record by repo and ticket exactly as it keys every other run record.
+func newWorktreeReporter(cfg config.Config, repoRoot string) func(context.Context, string, string, string) error {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context, ticket, path, branch string) error {
+		return hub.ReportWorktree(ctx, repoName(repoRoot), ticket, path, branch)
+	}
+}
+
+// newWorktreeSettler tells the hub a ticket's tree is finished with, so the CLI's
+// --reset/--requeue/--reset-local leave the same record the hub's own settle does.
+func newWorktreeSettler(cfg config.Config, repoRoot string) func(context.Context, string, string) error {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context, ticket, path string) error {
+		return hub.SettleWorktree(ctx, repoName(repoRoot), ticket, path)
+	}
+}
+
 // newAppURLFetcher reads the repo's stored app URL entries from the serve hub.
 // The pipeline calls it once at every ticket-run start; entries replace the
 // configured APP_URL/APP_URLS wholesale and a failure there falls back to them
@@ -1653,6 +1671,12 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 
 		RepoRoot:            repoRoot,
 		WorkTree:            cfg.WorkTree,
+		Worktrees:           cfg.Worktrees,
+		WorktreesDir:        cfg.WorktreesRoot(),
+		WorktreeSetupCmd:    cfg.WorktreeSetupCmd,
+		WorktreeCopy:        cfg.WorktreeCopyGlobs(),
+		ReportWorktree:      newWorktreeReporter(cfg, repoRoot),
+		SettleWorktree:      newWorktreeSettler(cfg, repoRoot),
 		TimelogEnabled:      cfg.TimelogEnabled,
 		TimelogStorage:      cfg.TimelogStorage,
 		TimelogOutputFormat: cfg.TimelogOutputFormat,

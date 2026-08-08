@@ -165,3 +165,109 @@ func TestProjectLayerIgnoresTheWorktree(t *testing.T) {
 		t.Fatalf("WorkRoot() = %q, want %q", cfg.WorkRoot(), work)
 	}
 }
+
+// TestLoadWorktreeKeys covers the WORKTREES catalog: the four keys load, the
+// dotenv copy default is what a repo gets without saying anything, and every one
+// reports its own effective value back to the settings surface.
+func TestLoadWorktreeKeys(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	body := "WORKTREES=1\nWORKTREES_DIR=/srv/trees\nWORKTREE_SETUP_CMD=npm ci\nWORKTREE_COPY=.env,config/*.local\n"
+	if err := os.WriteFile(local, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Worktrees {
+		t.Error("Worktrees = false, want it on")
+	}
+	if cfg.WorktreesRoot() != "/srv/trees" {
+		t.Errorf("WorktreesRoot() = %q, want /srv/trees", cfg.WorktreesRoot())
+	}
+	if cfg.WorktreeSetupCmd != "npm ci" {
+		t.Errorf("WorktreeSetupCmd = %q", cfg.WorktreeSetupCmd)
+	}
+	if got := cfg.WorktreeCopyGlobs(); len(got) != 2 || got[0] != ".env" || got[1] != "config/*.local" {
+		t.Errorf("WorktreeCopyGlobs() = %v, want the two configured globs", got)
+	}
+	for key, want := range map[string]string{
+		"WORKTREES":          "1",
+		"WORKTREES_DIR":      "/srv/trees",
+		"WORKTREE_SETUP_CMD": "npm ci",
+		"WORKTREE_COPY":      ".env,config/*.local",
+	} {
+		if got := keyValue(cfg, key); got != want {
+			t.Errorf("keyValue(%s) = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestWorktreeDefaults pins the off-by-default stance and the two derived
+// defaults: the dotenv globs, and a worktrees root under TRAU_HOME.
+func TestWorktreeDefaults(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+
+	cfg, err := LoadLayered("", "", filepath.Join(t.TempDir(), "missing.ini"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Worktrees {
+		t.Error("Worktrees defaults on — it must be opt-in")
+	}
+	if want := filepath.Join(home, "worktrees"); cfg.WorktreesRoot() != want {
+		t.Errorf("WorktreesRoot() = %q, want %q", cfg.WorktreesRoot(), want)
+	}
+	if cfg.WorktreeCopy != DefaultWorktreeCopy {
+		t.Errorf("WorktreeCopy = %q, want %q", cfg.WorktreeCopy, DefaultWorktreeCopy)
+	}
+}
+
+// TestWorktreeCopyCanBeSwitchedOff: the default is non-empty, so an empty value
+// has to reach the config or "copy nothing else" would be unreachable.
+func TestWorktreeCopyCanBeSwitchedOff(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	if err := os.WriteFile(local, []byte("WORKTREE_COPY=\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.WorktreeCopyGlobs(); len(got) != 0 {
+		t.Errorf("WorktreeCopyGlobs() = %v, want none", got)
+	}
+}
+
+// TestResolveRunWorkTreeAcceptsATreeNotYetProvisioned: with WORKTREES=1 the flag
+// names the tree trau is about to create, so a path that is not there yet resolves
+// to empty rather than failing the run before it starts. Without the key the flag
+// keeps its operator meaning and a missing tree is still an error.
+func TestResolveRunWorkTreeAcceptsATreeNotYetProvisioned(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "worktrees", "shipflock", "COD-1581")
+
+	got, err := ResolveRunWorkTree(missing, true)
+	if err != nil {
+		t.Fatalf("ResolveRunWorkTree with worktrees on: %v", err)
+	}
+	if got != "" {
+		t.Errorf("ResolveRunWorkTree = %q, want empty until the run provisions it", got)
+	}
+	if _, err := ResolveRunWorkTree(missing, false); err == nil {
+		t.Error("a missing tree was accepted with worktrees off")
+	}
+
+	// A tree already standing there resolves as usual, so a resume works in it
+	// from the first git command.
+	if err := os.MkdirAll(filepath.Join(missing, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ResolveRunWorkTree(missing, true); err != nil || got != missing {
+		t.Errorf("ResolveRunWorkTree on an existing tree = (%q, %v), want %q", got, err, missing)
+	}
+}

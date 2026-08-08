@@ -49,6 +49,12 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 		}
 	}
 	branch := p.featureBranch(ctx, id)
+	// The tree goes before the branch: git refuses to delete a branch a worktree
+	// still has checked out. It happens after the merged refusal above, so a
+	// requeue that is turned away leaves the tree standing — and the attempts are
+	// re-read, since the ones taken above were pointed at the tree that just went.
+	p.settleTicketWorktree(ctx, id)
+	attempts = p.attempts(id)
 
 	var changed []string
 	var errs []error

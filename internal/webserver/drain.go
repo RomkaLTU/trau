@@ -12,6 +12,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/forge/bitbucketapi"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -19,6 +20,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/worktree"
 )
 
 // drainPoll is how often a draining repo re-evaluates: long enough not to spin,
@@ -160,6 +162,11 @@ func (d *drainer) decide(root string) (drainAction, drainHold, error) {
 			}
 			d.srv.clearQueued(d.srv.drainCtx, root, running)
 			d.forgetAutoResume(root, running.ID)
+			if status == queue.StatusDone {
+				// Only a shipped ticket gives its tree up. A give-up settles too,
+				// and its tree is exactly what a human needs to read afterwards.
+				d.srv.settleWorktreeAt(root, running.ID)
+			}
 		}
 		return drainReconcile, drainHold{}, nil
 	}
@@ -461,6 +468,7 @@ func (d *drainer) reconcileQueue(root string) {
 		}
 		d.forgetAutoResume(root, it.ID)
 		d.srv.clearQueued(d.srv.drainCtx, root, it)
+		d.srv.settleWorktreeAt(root, it.ID)
 		d.srv.emitQueueReconciled(root, it, evidence)
 	}
 }
@@ -599,6 +607,9 @@ func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 		args = append(args, "--parent", it.ID)
 	} else {
 		args = append(args, "--parent", it.ID, "--once")
+		if path := worktreeFor(root, it.ID); path != "" {
+			args = append(args, "--worktree", path)
+		}
 	}
 	if noResume {
 		args = append(args, "--no-resume")
@@ -611,6 +622,20 @@ func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 	}
 	args = append(args, "--drain-report", it.ID)
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}
+}
+
+// worktreeFor is the tree a ticket run will work in when the repo has WORKTREES=1,
+// computed from the repo's own configuration — the same computation the child
+// makes, so passing it names the tree rather than instructing where to put it. An
+// epic drives several tickets in one process and gets none: each of its children
+// provisions its own. A folder repo has no repository at its root to add a tree
+// to, so it gets none either (ADR 0044).
+func worktreeFor(root, ticket string) string {
+	cfg, err := repoConfig(root)
+	if err != nil || !cfg.Worktrees || folderrepo.Is(root) {
+		return ""
+	}
+	return worktree.Path(cfg.WorktreesRoot(), filepath.Base(root), ticket)
 }
 
 // checkpointOutcome reads the finished child's recorded checkpoint from the

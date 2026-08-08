@@ -76,6 +76,18 @@ export interface Anomaly {
   reasons: string[]
 }
 
+/** The per-ticket git worktree a run works in when the repo has WORKTREES=1. */
+export interface Worktree {
+  id: number
+  repo: string
+  ticket: string
+  path: string
+  branch: string
+  /** active while the tree is on disk, settled once removed, orphaned when its directory vanished. */
+  state: 'active' | 'settled' | 'orphaned'
+  created_at?: string
+}
+
 export interface RunDetail extends Run {
   costs: PhaseCost[]
   durations?: StepDuration[]
@@ -88,6 +100,7 @@ export interface RunDetail extends Run {
   no_skills?: boolean
   no_browser?: boolean
   removed?: boolean
+  worktree?: Worktree
 }
 
 async function fetchRunDetail(
@@ -164,6 +177,27 @@ export async function requeueRun(
       error?: string
     } | null
     throw new Error(detail?.error ?? `requeue failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+/**
+ * Removes a run's worktree from disk and settles its row. The hub refuses while a
+ * run is still live in the repo, which surfaces here as that refusal's own message.
+ */
+export async function removeWorktree(
+  repo: string,
+  id: number,
+): Promise<Worktree> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/worktrees/${id}`,
+    { method: 'DELETE' },
+  )
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as {
+      error?: string
+    } | null
+    throw new Error(detail?.error ?? `remove worktree failed: ${res.status}`)
   }
   return res.json()
 }

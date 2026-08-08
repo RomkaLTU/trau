@@ -47,4 +47,8 @@ func (s *Server) resetLocalChild(repo registry.Repo, id string) {
 	}); err != nil {
 		logger.Verbosef("purge %s: git cleanup for %s: %v", repo.Name, id, err)
 	}
+	// The child removes the tree too, but only when it could read the same config
+	// and reach the same path; the hub owns the row either way, so it finishes the
+	// job from its own record (ADR 0044).
+	s.settleWorktree(repo, id)
 }

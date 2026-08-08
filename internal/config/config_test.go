@@ -1123,6 +1123,7 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
 		"GRILL_PROVIDER", "GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
 		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH", "SKILLS_MODE",
+		"WORKTREES", "WORKTREES_DIR", "WORKTREE_SETUP_CMD", "WORKTREE_COPY",
 	}
 	for _, k := range editable {
 		if !byKey[k].WebEditable {
@@ -1166,6 +1167,20 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 	}
 	if !slices.Contains(byKey["GRILL_PROVIDER"].Options, "kimi") {
 		t.Errorf("GRILL_PROVIDER options = %v, want provider names", byKey["GRILL_PROVIDER"].Options)
+	}
+
+	// The worktrees keys are their own section, and the two that decide behaviour
+	// carry the defaults the docs promise.
+	for _, k := range []string{"WORKTREES", "WORKTREES_DIR", "WORKTREE_SETUP_CMD", "WORKTREE_COPY"} {
+		if byKey[k].Group != sectionWorktrees {
+			t.Errorf("%s Section = %q, want %q", k, byKey[k].Group, sectionWorktrees)
+		}
+	}
+	if !byKey["WORKTREES"].Bool || byKey["WORKTREES"].Default != "0" {
+		t.Errorf("WORKTREES meta = %+v, want an off-by-default toggle", byKey["WORKTREES"])
+	}
+	if byKey["WORKTREE_COPY"].Default != DefaultWorktreeCopy {
+		t.Errorf("WORKTREE_COPY default = %q, want %q", byKey["WORKTREE_COPY"].Default, DefaultWorktreeCopy)
 	}
 }
 

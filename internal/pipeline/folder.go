@@ -91,6 +91,12 @@ func (p *Pipeline) attempts(id string) []attempt {
 // leave be reported instead.
 func (p *Pipeline) baseCheckout(ctx context.Context, a attempt, discard bool) error {
 	if a.repo == "" {
+		// With worktrees on there is nothing to move off: the branch being dropped
+		// lived in the ticket's own tree, which the settle removed first, and the
+		// user's checkout is never this run's to switch (ADR 0044).
+		if p.worktreesOn() {
+			return nil
+		}
 		_, err := p.checkoutBase(ctx, true)
 		return err
 	}

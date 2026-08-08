@@ -31,6 +31,7 @@ type Stores struct {
 	attachments *Attachments
 	qa          *QAAccounts
 	appURLs     *AppURLs
+	worktrees   *Worktrees
 	routing     *Routing
 	steer       *SteerNotes
 	proofs      *RunProofs
@@ -65,6 +66,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 		attachments: NewAttachments(db, filepath.Join(home, AttachmentsDir), retention.AttachmentCacheBytes),
 		qa:          NewQAAccounts(db),
 		appURLs:     NewAppURLs(db),
+		worktrees:   NewWorktrees(db),
 		routing:     NewRouting(db),
 		steer:       NewSteerNotes(db),
 		proofs:      NewRunProofs(db, filepath.Join(home, ProofsDir)),
@@ -129,6 +131,9 @@ func (s *Stores) QA() *QAAccounts { return s.qa }
 
 // AppURLs returns the per-repo store of browser-verify app URL entries.
 func (s *Stores) AppURLs() *AppURLs { return s.appURLs }
+
+// Worktrees returns the per-repo store of per-ticket git worktrees.
+func (s *Stores) Worktrees() *Worktrees { return s.worktrees }
 
 // Routing returns the store of the routing fingerprint each repo last ran under.
 func (s *Stores) Routing() *Routing { return s.routing }

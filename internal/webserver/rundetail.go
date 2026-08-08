@@ -40,6 +40,11 @@ type RunDetail struct {
 	// reconciliation sweep. The run detail still renders from its durable artifacts;
 	// the flag lets the page mark that the underlying ticket is gone.
 	Removed bool `json:"removed,omitempty"`
+	// Worktree is the per-ticket git worktree this run works (or worked) in, when
+	// the repo has WORKTREES=1. Absent for every run in a shared checkout, so the
+	// page shows the panel only where there is a tree to show — and, while the tree
+	// is still active, a button to remove it.
+	Worktree *WorktreeView `json:"worktree,omitempty"`
 }
 
 // AnomalyView is one flagged cost anomaly for a run: the phase that cleared a soft
@@ -141,6 +146,12 @@ func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunD
 	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), s.stores.Events(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket), s.noBrowserWarning(repo, ticket))
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
+	}
+	if row, ok, err := s.stores.Worktrees().ByTicket(repo.Root, ticket); err == nil && ok {
+		view := worktreeView(row)
+		d.Worktree = &view
+	} else if err != nil {
+		logger.Verbosef("worktree row %s/%s: %v", repo.Name, ticket, err)
 	}
 	return d
 }

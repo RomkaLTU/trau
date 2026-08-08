@@ -179,6 +179,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	s.importAllArtifacts()
 	s.importAllLessons()
 	s.importAllPhaseLogs()
+	s.reconcileWorktrees()
 	for _, root := range s.effectiveRoots() {
 		items, meta, err := s.stores.Queue(root).Snapshot()
 		if err != nil {
@@ -402,6 +403,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/qa/roster", s.handleQARoster)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/app-urls", s.handleAppURLs)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/app-urls/{id}", s.handleAppURL)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees", s.handleWorktrees)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees/{id}", s.handleWorktree)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/workspaces", s.handleRepoWorkspaces)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer", s.handleSteerNotes)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer/expire", s.handleSteerExpire)

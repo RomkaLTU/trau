@@ -52,11 +52,15 @@ func (s *Server) requeueTarget(w http.ResponseWriter, r *http.Request, idKey str
 // spawnRequeue drives a fresh trau through the same --requeue recovery the CLI
 // offers, in the repo root and never with --force.
 func (s *Server) spawnRequeue(ctx context.Context, root, id string) ([]byte, error) {
-	return s.sup.Capture(ctx, SpawnSpec{
+	out, err := s.sup.Capture(ctx, SpawnSpec{
 		Dir:  root,
 		Args: []string{"--repo", root, "--requeue", id, "--no-tui"},
 		Env:  childEnv(s.home),
 	})
+	// The child removes the tree as part of its own requeue; the hub owns the row,
+	// so it settles from its own record whether or not the child got that far.
+	s.settleWorktreeAt(root, id)
+	return out, err
 }
 
 // restoreQueueRow repairs the queue snapshot the drain left behind. The recovery
