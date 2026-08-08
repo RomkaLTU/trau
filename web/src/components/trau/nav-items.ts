@@ -103,3 +103,45 @@ export const NAV_GROUPS: NavGroup[] = [
 export const UNLISTED_ITEMS: NavItem[] = [
   { label: 'App URLs', icon: Globe, to: '/app-urls', requiresProject: true },
 ]
+
+export interface GTarget {
+  /** The second key of the `g` sequence. */
+  key: string
+  item: NavItem
+}
+
+const G_LABELS: [string, string][] = [
+  ['o', 'Overview'],
+  ['l', 'Loop'],
+  ['b', 'Backlog'],
+  ['i', 'Inbox'],
+  ['e', 'Research'],
+  ['r', 'Runs'],
+  ['t', 'Terminal'],
+  ['a', 'Atlas'],
+  ['c', 'Costs'],
+  ['n', 'Lessons'],
+  ['k', 'Skills'],
+  ['s', 'Settings'],
+  ['h', 'Hub'],
+]
+
+// G_TARGETS is the g-sequence route map. Each jump points at the sidebar's own
+// nav item, so it carries that page's route, search, and project gate.
+export const G_TARGETS: GTarget[] = (() => {
+  const byLabel = new Map(
+    NAV_GROUPS.flatMap((group) => group.items).map((item) => [item.label, item]),
+  )
+  return G_LABELS.flatMap(([key, label]) => {
+    const item = byLabel.get(label)
+    return item ? [{ key, item }] : []
+  })
+})()
+
+export const G_TARGET_KEYS: ReadonlySet<string> = new Set(
+  G_TARGETS.map((target) => target.key),
+)
+
+export function gTarget(key: string): NavItem | null {
+  return G_TARGETS.find((target) => target.key === key)?.item ?? null
+}
