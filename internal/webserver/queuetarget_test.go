@@ -84,6 +84,51 @@ func TestEnqueueInternalRepoTakesPrefixedID(t *testing.T) {
 	}
 }
 
+// TestEnqueueInternalRepoRejectsRetiredPrefixedID is the collision the prefix rule
+// alone cannot see: the tracker the repo left numbered its tickets under the same
+// prefix the internal tracker mints under, so a stale id looks exactly like one of
+// the repo's own. The raised sequence is what separates them — every number below
+// it the store does not hold went with the dropped mirror.
+func TestEnqueueInternalRepoRejectsRetiredPrefixedID(t *testing.T) {
+	s, root, ts := internalQueueHub(t)
+	seedSyncedIssue(t, s.stores.Issues(), root, hubstore.Issue{Identifier: "ACME-100", Title: "Old work"})
+	if _, err := s.stores.Issues().RaiseInternalSeq(root, "ACME"); err != nil {
+		t.Fatalf("raise seq: %v", err)
+	}
+	if err := s.stores.Issues().DropSynced(root); err != nil {
+		t.Fatalf("drop mirror: %v", err)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "ACME-100"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d (%s), want 409", res.StatusCode, errorOf(t, res))
+	}
+	if msg := errorOf(t, res); !strings.Contains(msg, "ACME-100") || !strings.Contains(msg, "no longer connected") {
+		t.Errorf("error = %q, want the disconnected-tracker refusal naming ACME-100", msg)
+	}
+
+	_, view := getQueue(t, ts, "acme")
+	if len(view.Items) != 0 {
+		t.Errorf("queue = %+v, want the refused id left out", view.Items)
+	}
+
+	// The number the sequence hands out next is the repo's own work, not the old
+	// tracker's, so it still queues.
+	iss, err := s.stores.Issues().CreateInternal(root, "ACME", hubstore.InternalDraft{Title: "Fresh"})
+	if err != nil {
+		t.Fatalf("create internal issue: %v", err)
+	}
+	if iss.Identifier != "ACME-101" {
+		t.Fatalf("minted %s, want ACME-101", iss.Identifier)
+	}
+	fresh := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: iss.Identifier})
+	defer func() { _ = fresh.Body.Close() }()
+	if fresh.StatusCode != http.StatusCreated {
+		t.Fatalf("enqueue %s = %d (%s), want 201", iss.Identifier, fresh.StatusCode, errorOf(t, fresh))
+	}
+}
+
 // TestEnqueueExternalRepoKeepsUncheckedIDs is the hybrid regression: a repo bound to
 // an external tracker but carrying no direct credentials still queues whatever it is
 // handed — an internal-prefixed id included — because there is a reader for that

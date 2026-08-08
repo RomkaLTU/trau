@@ -3,7 +3,9 @@ package webserver
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/registry"
@@ -12,6 +14,9 @@ import (
 // internalProvider is the TRACKER_PROVIDER value that means "no external tracker,
 // the hub holds the issues".
 const internalProvider = "internal"
+
+// trackerProviderKey is the config key naming where a repo's issues live.
+const trackerProviderKey = "TRACKER_PROVIDER"
 
 // TrackerSwitchBlocker is one queue entry that refuses a switch to the internal
 // tracker.
@@ -33,7 +38,30 @@ func (e *trackerSwitchBusy) Error() string { return blockedSwitchMessage(e.Block
 // switchesToInternal reports whether a settings write points a repo at the
 // internal tracker.
 func switchesToInternal(key, value string) bool {
-	return key == "TRACKER_PROVIDER" && strings.EqualFold(strings.TrimSpace(value), internalProvider)
+	return key == trackerProviderKey && strings.EqualFold(strings.TrimSpace(value), internalProvider)
+}
+
+// claimTrackerProvider makes TRACKER_PROVIDER a project-owned key on every member
+// root, so the seed pass that follows overwrites a repo that set the provider for
+// itself. Left unclaimed, a repo onboarded straight onto a tracker keeps the
+// provider in its own config file, goes on syncing from the tracker the project
+// just left, and the next pull restores the very mirror the switch dropped.
+func (s *Server) claimTrackerProvider(roots []string) error {
+	projects := s.stores.Projects()
+	for _, root := range roots {
+		seeded, err := projects.SeededTrackerKeys(root)
+		if err != nil {
+			return fmt.Errorf("read the seeded tracker keys of %s: %w", root, err)
+		}
+		if seeded[trackerProviderKey] {
+			continue
+		}
+		seeded[trackerProviderKey] = true
+		if err := projects.MarkTrackerSeeded(root, slices.Collect(maps.Keys(seeded))); err != nil {
+			return fmt.Errorf("claim the tracker provider of %s: %w", root, err)
+		}
+	}
+	return nil
 }
 
 // guardSwitchToInternal runs the migration a switch to the internal tracker owes
