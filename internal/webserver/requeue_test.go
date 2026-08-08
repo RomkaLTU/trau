@@ -30,6 +30,7 @@ func requeueServer(t *testing.T, name string) (*Server, *fakeSupervisor, string,
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	root := filepath.Join(t.TempDir(), name)
+	writeRepoINI(t, root, "LINEAR_TEAM=COD\n")
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
 	s.home = home
 	fake := &fakeSupervisor{}

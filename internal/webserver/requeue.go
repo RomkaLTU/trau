@@ -20,8 +20,10 @@ import (
 const requeueTimeout = 3 * time.Minute
 
 // requeueTarget resolves what both requeue endpoints need before they can act: a
-// POST, a plausible ticket id under idKey, and a repo the workspace allowlist
-// admits. It writes the refusal itself and answers false once it has.
+// POST, a plausible ticket id under idKey, a repo the workspace allowlist admits,
+// and a ticket that repo's tracker can still resolve — a row queued before a switch
+// to internal names an id no reader answers for. It writes the refusal itself and
+// answers false once it has.
 func (s *Server) requeueTarget(w http.ResponseWriter, r *http.Request, idKey string) (root, id string, ok bool) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -39,6 +41,9 @@ func (s *Server) requeueTarget(w http.ResponseWriter, r *http.Request, idKey str
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": fmt.Sprintf("repo %q is not on the serve workspace allowlist and is observe-only; add its root to SERVE_WORKSPACE to requeue its tickets", name),
 		})
+		return "", "", false
+	}
+	if s.refuseUnresolvableTarget(w, name, id) {
 		return "", "", false
 	}
 	return root, id, true

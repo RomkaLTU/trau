@@ -25,6 +25,7 @@ func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), name)
+	writeRepoINI(t, root, "LINEAR_TEAM=COD\n")
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	// Start arms the daily release check against GitHub; nothing here is about
