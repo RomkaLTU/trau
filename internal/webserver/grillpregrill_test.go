@@ -155,6 +155,28 @@ func TestPregrillPassBounding(t *testing.T) {
 	}
 }
 
+// Ask ahead runs while nobody is there to review anything, so it opens plain solo
+// sessions however the repo's second-opinion default is set.
+func TestPregrillPassNeverCarriesChallengers(t *testing.T) {
+	srv, repo := newPregrillServer(t, parkTurn)
+	if err := os.WriteFile(config.ProjectConfigPath(repo.Root), []byte("GRILL_CHALLENGERS=codex,kimi\n"), 0o644); err != nil {
+		t.Fatalf("write repo config: %v", err)
+	}
+
+	srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1"}}, 5)
+
+	sessions, err := srv.stores.Grill().List(repo.Root, "", "")
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("created %d sessions, want 1", len(sessions))
+	}
+	if len(sessions[0].Challengers) != 0 {
+		t.Fatalf("pre-grill session challengers = %v, want none", sessions[0].Challengers)
+	}
+}
+
 func TestPregrillPassSkipsActiveSession(t *testing.T) {
 	srv, repo := newPregrillServer(t, parkTurn)
 

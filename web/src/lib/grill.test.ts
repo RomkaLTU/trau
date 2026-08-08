@@ -1218,6 +1218,7 @@ describe('startGrillSession', () => {
       mode: 'interview',
       auto_accept: false,
       from_session: '',
+      challengers: [],
     })
   })
 

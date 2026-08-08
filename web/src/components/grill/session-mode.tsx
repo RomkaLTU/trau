@@ -20,6 +20,31 @@ const MODE_BADGE: Partial<
   },
 };
 
+// SecondOpinionChip marks a session whose interview ends in a side-by-side review:
+// the challengers each draft their own outcome once the interviewer proposes. It sits
+// beside the mode badge rather than replacing it — the mode is still an interview.
+export function SecondOpinionChip({
+  challengers,
+  className,
+}: {
+  challengers?: string[];
+  className?: string;
+}) {
+  if (!challengers || challengers.length === 0) return null;
+
+  return (
+    <span
+      title={`Second opinion — ${challengers.join(" and ")} draft their own outcome for review beside the interviewer's`}
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full border border-teal/40 bg-teal/10 px-1.5 py-0.5 font-mono text-[0.65rem] uppercase tracking-wide text-teal",
+        className,
+      )}
+    >
+      second opinion
+    </span>
+  );
+}
+
 export function SessionModeBadge({
   mode,
   className,

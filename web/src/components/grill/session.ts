@@ -84,6 +84,7 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
         provider: sess.provider,
         mode: sess.mode,
         autoAccept: sess.auto_accept,
+        challengers: sess.challengers,
       });
     },
     onSuccess: (sess) => {
@@ -102,8 +103,9 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
 
   // startOver only fires when a live session exists to discard, and stays a no-op while
   // one restart is already in flight. The fresh session inherits the discarded one's
-  // mode, provider, model and auto-accept, so starting again neither undoes a
-  // mid-interview switch nor quietly turns a research session back into an interview.
+  // mode, provider, model, auto-accept and second opinions, so starting again neither
+  // undoes a mid-interview switch nor quietly turns a research session back into an
+  // interview or a second-opinion one back into a solo interview.
   const startOver = () => {
     if (!active || restart.isPending) return;
     restart.mutate(active);

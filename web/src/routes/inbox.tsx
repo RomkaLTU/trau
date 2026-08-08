@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
 import {
+  ChevronDown,
   Clock,
   Loader2,
   MoreHorizontal,
@@ -33,7 +34,10 @@ import {
   GrillProviderSelect,
 } from "@/components/grill/model-select";
 import { useGrillSession } from "@/components/grill/session";
-import { SessionModeBadge } from "@/components/grill/session-mode";
+import {
+  SecondOpinionChip,
+  SessionModeBadge,
+} from "@/components/grill/session-mode";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import {
@@ -161,9 +165,17 @@ interface InterviewStart {
   defaults?: GrillDefaults;
   provider: string;
   model: string;
+  // challengers are the second-opinion providers the interview will end in a
+  // side-by-side review against — always minus the interviewer, so switching provider
+  // drops the collision rather than opening a session the hub would refuse.
+  challengers: string[];
   onProviderChange: (provider: string) => void;
   onModelChange: (model: string) => void;
+  onChallengersChange: (challengers: string[]) => void;
 }
+
+// MAX_SECOND_OPINIONS mirrors the hub's own per-session cap.
+const MAX_SECOND_OPINIONS = 2;
 
 // starterOpening turns the panel's current pick into a start payload, so every surface
 // that opens a session sends the same provider and model. The inbox only ever opens
@@ -176,6 +188,7 @@ function starterOpening(
     seed,
     model: starter.model,
     provider: starter.provider,
+    challengers: starter.challengers,
     mode: "interview",
   };
 }
@@ -246,22 +259,34 @@ function InboxPage() {
     useQuery(grillDefaultsQueryOptions(repo, "interview")).data ?? undefined;
   const [pickedProvider, setPickedProvider] = useState<string | null>(null);
   const [pickedModel, setPickedModel] = useState<string | null>(null);
+  const [pickedChallengers, setPickedChallengers] = useState<string[] | null>(
+    null,
+  );
   useEffect(() => {
     setPickedProvider(null);
     setPickedModel(null);
+    setPickedChallengers(null);
   }, [repo]);
 
   const startProvider = pickedProvider ?? defaults?.provider ?? "claude";
   const startModel = pickedModel ?? defaults?.model ?? "";
+  // The GRILL_CHALLENGERS prefill still carries whichever provider is interviewing, so
+  // the interviewer is dropped here rather than in the setting: picking a new one
+  // re-derives the selection instead of leaving a pair the hub would refuse.
+  const startChallengers = (pickedChallengers ?? defaults?.challengers ?? [])
+    .filter((name) => name !== startProvider)
+    .slice(0, MAX_SECOND_OPINIONS);
   const starter: InterviewStart = {
     defaults,
     provider: startProvider,
     model: startModel,
+    challengers: startChallengers,
     onProviderChange: (next) => {
       setPickedProvider(next);
       setPickedModel("");
     },
     onModelChange: setPickedModel,
+    onChallengersChange: setPickedChallengers,
   };
 
   const [contextOpen, setContextOpen] = useState(loadContextOpen);
@@ -760,6 +785,7 @@ function DoneColumn({
           <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
             <span className="font-mono text-muted-foreground">{item.id}</span>
             <SessionModeBadge mode={session.mode} />
+            <SecondOpinionChip challengers={session.challengers} />
             <span className="truncate">{item.title}</span>
           </span>
           <div className="flex shrink-0 items-center gap-2">
@@ -1017,6 +1043,7 @@ function SessionBar({
         </div>
         <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
           <SessionModeBadge mode={session?.mode} />
+          <SecondOpinionChip challengers={session?.challengers} />
           {reconnecting && (
             <span className="inline-flex items-center gap-1 text-xs text-warn">
               <span aria-hidden="true">⚠</span>
@@ -1316,6 +1343,80 @@ function StartModelSelect({
         hideProvider
         onChange={starter.onModelChange}
       />
+      <SecondOpinionSelect starter={starter} />
+    </div>
+  );
+}
+
+// SecondOpinionSelect is the start surface's second-opinion control: up to two other
+// providers, each of which drafts its own outcome once the interviewer proposes one,
+// for the user to review side by side. The interviewer is never offered — its opinion
+// is the one being contested — and a provider this machine cannot run for the session
+// type stays listed with the reason it is out, so the loss explains itself. An empty
+// pick is an ordinary solo interview.
+function SecondOpinionSelect({ starter }: { starter: InterviewStart }) {
+  const options = (starter.defaults?.providers ?? []).filter(
+    (p) => p.name !== starter.provider,
+  );
+  const picked = starter.challengers;
+  const full = picked.length >= MAX_SECOND_OPINIONS;
+
+  return (
+    <div className="flex items-center gap-1">
+      <span className="text-xs text-muted-foreground">Second opinions</span>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="Second opinion providers"
+            className="h-7 gap-1 px-2 font-mono text-xs text-muted-foreground"
+          >
+            {picked.length === 0 ? "none" : picked.join(", ")}
+            <ChevronDown className="size-3" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {options.length === 0 && (
+            <DropdownMenuItem disabled className="font-mono text-xs">
+              no other provider is available
+            </DropdownMenuItem>
+          )}
+          {options.map((option) => {
+            const on = picked.includes(option.name);
+            const capped = !on && full;
+            const reason =
+              option.reason ??
+              (capped
+                ? `at most ${MAX_SECOND_OPINIONS} second opinions`
+                : undefined);
+            return (
+              <DropdownMenuCheckboxItem
+                key={option.name}
+                checked={on}
+                disabled={option.disabled === true || capped}
+                title={reason}
+                onCheckedChange={(next) =>
+                  starter.onChallengersChange(
+                    next === true
+                      ? [...picked, option.name]
+                      : picked.filter((name) => name !== option.name),
+                  )
+                }
+                onSelect={(e) => e.preventDefault()}
+                className="font-mono text-xs"
+              >
+                {option.name}
+                {reason && (
+                  <span className="ml-2 text-[0.65rem] text-muted-foreground">
+                    {reason}
+                  </span>
+                )}
+              </DropdownMenuCheckboxItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }
@@ -1560,6 +1661,7 @@ function QueueRow({
               </span>
             )}
             <SessionModeBadge mode={session?.mode} />
+            <SecondOpinionChip challengers={session?.challengers} />
             {unread && (
               <span
                 className="size-1.5 rounded-full bg-warn"
@@ -1658,6 +1760,7 @@ function DoneRow({
           <span aria-hidden="true">✓</span>
           {item.id}
           <SessionModeBadge mode={item.session?.mode} />
+          <SecondOpinionChip challengers={item.session?.challengers} />
         </span>
         <span className="line-clamp-1 text-xs leading-relaxed text-muted-foreground">
           {item.title}

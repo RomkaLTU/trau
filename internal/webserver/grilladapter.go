@@ -18,7 +18,7 @@ import (
 
 type grillAdapter interface {
 	resumable(chain string) bool
-	turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error)
+	turnSpec(ep grillEndpoint, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error)
 	deltaText(line []byte) string
 	activityEvent(line []byte) []GrillActivityView
 	parseResult(stream []byte) (chainID string, resultErr bool)
@@ -181,11 +181,11 @@ func (a claudeGrillAdapter) resumable(chain string) bool { return agent.SessionE
 
 // Claude ignores mode: its grill children run permission-skipped and already carry the
 // built-in web search and fetch tools.
-func (a claudeGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
+func (a claudeGrillAdapter) turnSpec(ep grillEndpoint, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
 	return grillTurnSpec{
 		bin:  grillProviderBin(cfg, "claude"),
 		dir:  repo.Root,
-		args: grillTurnArgs(strings.Fields(cfg.ClaudeFlags), model, a.r.mcpConfigJSON(sid), resume, prompt),
+		args: grillTurnArgs(strings.Fields(cfg.ClaudeFlags), model, a.r.mcpConfigJSON(ep), resume, prompt),
 		env:  grillChildEnv(),
 	}, nil
 }
@@ -204,7 +204,7 @@ type codexGrillAdapter struct{ r *grillRunner }
 
 func (a codexGrillAdapter) resumable(chain string) bool { return codexGrillSessionExists(chain) }
 
-func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
+func (a codexGrillAdapter) turnSpec(ep grillEndpoint, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
 	return grillTurnSpec{
 		bin: grillProviderBin(cfg, "codex"),
 		dir: repo.Root,
@@ -214,7 +214,7 @@ func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Co
 			model,
 			cfg.CodexEffort,
 			mode,
-			a.r.codexMCPConfigArgs(sid),
+			a.r.codexMCPConfigArgs(ep),
 			resume,
 			prompt,
 		),
@@ -234,9 +234,8 @@ func (a codexGrillAdapter) parseResult(stream []byte) (string, bool) {
 
 const codexGrillMCPTokenEnv = "TRAU_GRILL_MCP_TOKEN"
 
-func (r *grillRunner) codexMCPConfigArgs(sid int64) []string {
-	url := fmt.Sprintf("%s%s/grill/%d/mcp", r.baseURL, APIPrefix, sid)
-	args := []string{"-c", "mcp_servers.trau-grill.url=" + strconv.Quote(url)}
+func (r *grillRunner) codexMCPConfigArgs(ep grillEndpoint) []string {
+	args := []string{"-c", "mcp_servers.trau-grill.url=" + strconv.Quote(r.baseURL+ep.path())}
 	if r.srv.token != "" {
 		args = append(args, "-c", "mcp_servers.trau-grill.bearer_token_env_var="+strconv.Quote(codexGrillMCPTokenEnv))
 	}
@@ -393,8 +392,8 @@ type kimiGrillAdapter struct{ r *grillRunner }
 
 func (a kimiGrillAdapter) resumable(chain string) bool { return kimiGrillSessionExists(chain) }
 
-func (a kimiGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
-	home, err := a.r.kimiGrillHome(sid)
+func (a kimiGrillAdapter) turnSpec(ep grillEndpoint, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
+	home, err := a.r.kimiGrillHome(ep)
 	if err != nil {
 		return grillTurnSpec{}, err
 	}
@@ -491,13 +490,13 @@ func parseKimiGrillStream(stream []byte) (sessionID string, resultErr bool) {
 
 // Kimi only reads MCP servers from its home at session start, so each grill session
 // gets an overlay home with shared auth/session state and a scoped mcp.json.
-func (r *grillRunner) kimiGrillHome(sid int64) (string, error) {
+func (r *grillRunner) kimiGrillHome(ep grillEndpoint) (string, error) {
 	real := kimiHomeDir()
 	entries, err := os.ReadDir(real)
 	if err != nil {
 		return "", fmt.Errorf("read kimi home %s: %w", real, err)
 	}
-	dir := filepath.Join(os.TempDir(), fmt.Sprintf("trau-grill-kimi-%d", sid))
+	dir := filepath.Join(os.TempDir(), "trau-grill-kimi-"+ep.slug())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -511,7 +510,7 @@ func (r *grillRunner) kimiGrillHome(sid int64) (string, error) {
 			return "", err
 		}
 	}
-	b, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"trau-grill": r.grillMCPServer(sid)}})
+	b, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"trau-grill": r.grillMCPServer(ep)}})
 	if err := os.WriteFile(filepath.Join(dir, "mcp.json"), b, 0o600); err != nil {
 		return "", err
 	}

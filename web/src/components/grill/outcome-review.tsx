@@ -42,6 +42,7 @@ import {
 import {
   abandonGrill,
   applyGrill,
+  chooseGrillProposal,
   diffHasChanges,
   diffLines,
   grillAppliedOutcome,
@@ -52,9 +53,11 @@ import {
   type GrillApplyStep,
   type GrillAppliedOutcome,
   type GrillDestination,
+  type GrillMessage,
   type GrillMode,
   type GrillSession,
   type OutcomePayload,
+  type SessionProposal,
   type SubIssueProposal,
 } from "@/lib/grill";
 import { issueQueryOptions } from "@/lib/issues";
@@ -99,6 +102,68 @@ export function OutcomeProposal({ outcome }: { outcome: OutcomePayload }) {
             )}
           </div>
         </details>
+      )}
+    </div>
+  );
+}
+
+// ProposalChoice is the second-opinion review: every participant's draft outcome side
+// by side, labeled by the provider that wrote it and each shown in its disposition's
+// own shape. Nothing here is editable and nothing reaches the tracker — picking one
+// promotes it to the session's outcome, and the ordinary editable review and Apply
+// take over from there unchanged.
+export function ProposalChoice({
+  session,
+  proposals,
+  onChosen,
+}: {
+  session: GrillSession;
+  proposals: SessionProposal[];
+  onChosen: (message: GrillMessage) => void;
+}) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const choose = useMutation({
+    mutationFn: (messageId: string) =>
+      chooseGrillProposal(session.id, messageId),
+    onSuccess: (res) => onChosen(res.message),
+  });
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <Badge variant="outline">second opinion</Badge>
+        <span className="text-xs text-muted-foreground">
+          {proposals.length} proposals — pick the one to review and apply
+        </span>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {proposals.map((proposal) => (
+          <div key={proposal.id} className="flex min-w-0 flex-col gap-2">
+            <span className="font-mono text-xs text-muted-foreground">
+              {proposal.provider || "unknown provider"}
+            </span>
+            <OutcomeProposal outcome={proposal.outcome} />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={choose.isPending}
+              onClick={() => {
+                setPicked(proposal.id);
+                choose.mutate(proposal.id);
+              }}
+            >
+              {choose.isPending && picked === proposal.id ? (
+                <Loader2 className="animate-spin" />
+              ) : (
+                <Check />
+              )}
+              Use this proposal
+            </Button>
+          </div>
+        ))}
+      </div>
+      {choose.error && (
+        <p className="text-xs text-destructive">{choose.error.message}</p>
       )}
     </div>
   );
