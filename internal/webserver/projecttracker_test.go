@@ -313,16 +313,18 @@ func TestProjectTrackerIgnoresMembersWhileGrouping(t *testing.T) {
 	}
 
 	if res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{
-		"TRACKER_PROVIDER": "internal",
+		"TRACKER_PROVIDER": "github",
 	}); res.StatusCode != http.StatusOK {
 		t.Fatalf("put tracker = %d (%s)", res.StatusCode, body)
 	}
 	wantINI(t, api, own)
-	wantINI(t, web, map[string]string{"TRACKER_PROVIDER": "internal"})
+	wantINI(t, web, map[string]string{"TRACKER_PROVIDER": "github"})
 }
 
 // A key a member sets on its own settings page is the repo's from then on, even
-// though the project seeded it first.
+// though the project seeded it first. The switch to the internal tracker is the
+// one exception — it claims the provider back for the project, so that it cannot
+// leave a member talking to the tracker the project just left.
 func TestProjectTrackerLeavesAKeyTheRepoTookBack(t *testing.T) {
 	home := t.TempDir()
 	base := t.TempDir()
@@ -339,7 +341,7 @@ func TestProjectTrackerLeavesAKeyTheRepoTookBack(t *testing.T) {
 		}
 	}
 	if res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{
-		"TRACKER_PROVIDER": "internal",
+		"TRACKER_PROVIDER": "linear",
 	}); res.StatusCode != http.StatusOK {
 		t.Fatalf("put tracker = %d (%s)", res.StatusCode, body)
 	}
@@ -350,13 +352,13 @@ func TestProjectTrackerLeavesAKeyTheRepoTookBack(t *testing.T) {
 	}
 
 	if res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{
-		"TRACKER_PROVIDER": "internal",
+		"TRACKER_PROVIDER": "linear",
 		"LINEAR_TEAM":      "COD",
 	}); res.StatusCode != http.StatusOK {
 		t.Fatalf("second put tracker = %d (%s)", res.StatusCode, body)
 	}
 	wantINI(t, web, map[string]string{"TRACKER_PROVIDER": "github", "LINEAR_TEAM": "COD"})
-	wantINI(t, api, map[string]string{"TRACKER_PROVIDER": "internal", "LINEAR_TEAM": "COD"})
+	wantINI(t, api, map[string]string{"TRACKER_PROVIDER": "linear", "LINEAR_TEAM": "COD"})
 }
 
 // Switching the project's tracker clears the keys the old one left behind in the

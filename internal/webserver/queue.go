@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -475,20 +476,57 @@ func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, nam
 // left over from a tracker this repo no longer talks to. Every other no-reader repo
 // stays best-effort — there is nothing to check the id against.
 func (s *Server) unresolvableTarget(repo registry.Repo, provider, id string) string {
-	if provider != "internal" {
-		return ""
-	}
-	prefix := s.internalPrefix(repo)
-	if config.ValidatePrefix(id, prefix) == nil {
+	if provider != internalProvider {
 		return ""
 	}
 	if _, internal, err := s.stores.Issues().Internal(repo.Root, id); err != nil || internal {
 		return ""
 	}
+	prefix := s.internalPrefix(repo)
+	if config.ValidatePrefix(id, prefix) != nil {
+		return fmt.Sprintf(
+			"%s belongs to a tracker this repo is no longer connected to — it tracks its issues internally now, so only its own %s-<n> issues can be queued",
+			id, prefix,
+		)
+	}
+	if !s.retiredInternalID(repo.Root, prefix, id) {
+		return ""
+	}
 	return fmt.Sprintf(
-		"%s belongs to a tracker this repo is no longer connected to — it tracks its issues internally now, so only its own %s-<n> issues can be queued",
-		id, prefix,
+		"%s belongs to a tracker this repo is no longer connected to — it numbered its tickets under %s- too, and %s went with the mirror the switch to the internal tracker dropped",
+		id, prefix, id,
 	)
+}
+
+// retiredInternalID reports whether id names a number the repo's internal tracker
+// has already moved past without holding an issue for it. That is what a dropped
+// mirror leaves behind when the tracker it came from numbered its tickets under
+// the prefix the internal tracker now mints under: the sequence was lifted clear
+// of the id precisely so it would never be minted again. A number the sequence
+// has yet to reach is left alone — the internal tracker can still hand it out.
+func (s *Server) retiredInternalID(root, prefix, id string) bool {
+	n, ok := internalIDNumber(id, prefix)
+	if !ok {
+		return false
+	}
+	next, err := s.stores.Issues().InternalSeq(root)
+	if err != nil {
+		return false
+	}
+	return n < next
+}
+
+// internalIDNumber reads the number off a prefix-N identifier.
+func internalIDNumber(id, prefix string) (int64, bool) {
+	rest, ok := strings.CutPrefix(strings.ToUpper(id), strings.ToUpper(prefix)+"-")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // refuseUnresolvableTarget writes the refusal and answers true when id names a ticket

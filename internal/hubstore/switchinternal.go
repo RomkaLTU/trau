@@ -24,6 +24,22 @@ func (s *Issues) CountSynced(repo string) (int, error) {
 	return n, nil
 }
 
+// InternalSeq is the next number the repo's internal tracker will mint, one for a
+// repo that has never minted. Every smaller number is spoken for — by an issue the
+// hub holds, or by an id a dropped mirror retired when RaiseInternalSeq lifted the
+// sequence clear of it.
+func (s *Issues) InternalSeq(repo string) (int64, error) {
+	var next int64
+	err := s.db.QueryRow(`SELECT next FROM issue_seq WHERE repo = ?`, repo).Scan(&next)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 1, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
 // BusyExternalItem names the first live queue entry the repo still holds for a
 // ticket the external tracker owns, or nil when nothing blocks. A legacy entry
 // stamped with no source counts as external: it predates the internal tracker,

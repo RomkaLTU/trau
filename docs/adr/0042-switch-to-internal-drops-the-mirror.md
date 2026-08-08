@@ -51,6 +51,14 @@ lands on.
    cursor emptied. Internal issues survive untouched.
 4. **The key is then written.** Credentials and every other tracker key are left
    exactly as they were, as is the cached team/project binding.
+   **The project-wide write claims `TRACKER_PROVIDER` for the project as it goes.**
+   Project keys normally defer to a member that sets one in its own `.trau.ini`,
+   and a repo onboarded straight onto a tracker owns the provider that way. Left
+   deferred, the switch would move only the project layer: the member would go on
+   resolving `jira` from its own file, and its next sync tick would re-pull the
+   whole mirror the switch had just dropped. A project-wide switch says where the
+   project's issues live from now on, so it is the one write that outranks the
+   member's own answer.
 5. **Nothing is written to the external tracker.** No labels, no comments, no
    transitions. The tickets stay as they are.
 
@@ -79,6 +87,14 @@ force-resync.
   is silently absent from the re-pulled board. A repo that expects to switch back
   should set `ISSUE_PREFIX` to something the tracker never mints, which removes the
   collision entirely.
+- **The raised sequence is also what a queue target is judged against.** An
+  internal-provider repo refuses an id it holds no issue for (COD-1563). Where the
+  old tracker numbered its tickets under the repo's own prefix, the prefix says
+  nothing — `SAVE24-100` looks exactly like an internal id — so the refusal falls
+  back to `issue_seq`: a prefixed number below it that the store does not hold is
+  one the seq advance stepped over, and it is refused by name. A number the
+  sequence has yet to reach still queues, since the internal tracker can hand it
+  out.
 - **Only the hub write paths are hooked.** A provider edit made by hand in
   `~/.trau.ini` or a repo's `.trau.ini`, or by any path other than these two
   endpoints, still lands as a bare key write and leaves the mirror behind. The

@@ -246,6 +246,58 @@ func TestProjectTrackerSwitchToInternalMigratesEveryMember(t *testing.T) {
 	}
 }
 
+// A member that set TRACKER_PROVIDER in its own config file still follows the
+// project onto the internal tracker: the switch says where the project's issues
+// live from now on, and a repo left pointing at the old tracker would re-pull the
+// mirror the switch just dropped on its next sync.
+func TestProjectTrackerSwitchToInternalOverridesARepoOwnedProvider(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	api := gitRepo(t, base, "api", "dir")
+	_, ts := controlServer(t, home, nil)
+	registerRepoReq(t, ts, api)
+
+	project := createProjectReq(t, ts, "Platform")
+	if res, body := addProjectRepo(t, ts, project.ID, api); res.StatusCode != http.StatusOK {
+		t.Fatalf("add %s = %d (%s)", api, res.StatusCode, body)
+	}
+	if res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{
+		"TRACKER_PROVIDER": "jira",
+		"JIRA_BASE_URL":    "https://acme.atlassian.net",
+		"JIRA_EMAIL":       "dev@acme.io",
+		"JIRA_API_TOKEN":   "jira-secret",
+	}); res.StatusCode != http.StatusOK {
+		t.Fatalf("seed tracker = %d (%s)", res.StatusCode, body)
+	}
+	// Writing the provider at the repo layer hands the key back to the repo, the
+	// state a repo onboarded straight onto a tracker is already in.
+	if res := putConfig(t, ts, "api", ConfigWriteRequest{
+		Key: "TRACKER_PROVIDER", Value: "jira", Layer: "project",
+	}); res.StatusCode != http.StatusOK {
+		t.Fatalf("repo-layer provider write = %d", res.StatusCode)
+	}
+
+	store := testStoresAt(t, home).Issues()
+	if _, _, err := store.Upsert(api, "jira", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "Mirrored", StatusGroup: "unstarted", ExternalID: "j-1"},
+	}); err != nil {
+		t.Fatalf("seed mirror: %v", err)
+	}
+
+	if res, body := putProjectTrackerReq(t, ts, project.ID, map[string]string{"TRACKER_PROVIDER": "internal"}); res.StatusCode != http.StatusOK {
+		t.Fatalf("switch = %d (%s)", res.StatusCode, body)
+	}
+
+	wantINI(t, api, map[string]string{"TRACKER_PROVIDER": "internal", "JIRA_API_TOKEN": "jira-secret"})
+	stored, err := store.List(api)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(stored) != 0 {
+		t.Errorf("%s still mirrors %v, want the mirror dropped", api, identifiers(stored))
+	}
+}
+
 // Live tracker work in the queue is held under an identifier the drop would
 // retire, so the whole write is refused — with the blocking id named — and
 // nothing moves.
