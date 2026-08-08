@@ -57,6 +57,12 @@ const KindVerifyNoSkills = "verify_no_skills"
 // as front-end.
 const KindVerifyNoBrowser = "verify_no_browser"
 
+// KindWorktreeAppFailed marks a run whose per-worktree app would not come up, so
+// browser verify had no live URL to drive and fell back to its advisory no-URL
+// path. Advisory only — a run is never failed because a dev server would not boot,
+// and the verdict says the UI was not driven.
+const KindWorktreeAppFailed = "worktree_app_failed"
+
 // KindVerifyNoProofs marks a verify that reported driving the browser but left no
 // proofs (screenshots/trace) for the loop to harvest. It fires only for a run the
 // verify agent was actually handed the proofs contract in. Advisory only — a run is

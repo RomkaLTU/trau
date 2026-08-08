@@ -1264,6 +1264,18 @@ func newWorktreeSettler(cfg config.Config, repoRoot string) func(context.Context
 	}
 }
 
+// newAppEnsurer asks the hub to have this ticket's worktree app running and hands
+// back its URL. The pipeline calls it once per run, at verify time, and only for a
+// UI slice under an active browser gate: the hub starts the app at first need and
+// waits for its port, so the answer is a live URL or a failure that says why.
+func newAppEnsurer(cfg config.Config, repoRoot string) func(context.Context, string) (string, bool, error) {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context, ticket string) (string, bool, error) {
+		app, err := hub.EnsureWorktreeApp(ctx, repoName(repoRoot), ticket)
+		return app.URL, app.Serving, err
+	}
+}
+
 // newAppURLFetcher reads the repo's stored app URL entries from the serve hub.
 // The pipeline calls it once at every ticket-run start; entries replace the
 // configured APP_URL/APP_URLS wholesale and a failure there falls back to them
@@ -1677,6 +1689,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		WorktreeCopy:        cfg.WorktreeCopyGlobs(),
 		ReportWorktree:      newWorktreeReporter(cfg, repoRoot),
 		SettleWorktree:      newWorktreeSettler(cfg, repoRoot),
+		EnsureAppURL:        newAppEnsurer(cfg, repoRoot),
 		TimelogEnabled:      cfg.TimelogEnabled,
 		TimelogStorage:      cfg.TimelogStorage,
 		TimelogOutputFormat: cfg.TimelogOutputFormat,

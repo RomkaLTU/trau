@@ -46,20 +46,23 @@ func testStoresAt(t *testing.T, home string) *hubstore.Stores {
 // processes, so the control layer's OS interactions are asserted without
 // launching anything.
 type fakeSupervisor struct {
-	mu         sync.Mutex
-	spawns     []SpawnSpec
-	captures   []SpawnSpec
-	stops      []int
-	kills      []int
-	pid        int
-	spawnErr   error
-	captureOut []byte
-	captureErr error
-	stopErr    error
-	killErr    error
-	onSpawn    func(pid int)
-	onStop     func(pid int)
-	onKill     func(pid int)
+	mu          sync.Mutex
+	spawns      []SpawnSpec
+	appSpawns   []AppSpec
+	captures    []SpawnSpec
+	stops       []int
+	kills       []int
+	pid         int
+	spawnErr    error
+	appSpawnErr error
+	onAppSpawn  func(spec AppSpec, pid int)
+	captureOut  []byte
+	captureErr  error
+	stopErr     error
+	killErr     error
+	onSpawn     func(pid int)
+	onStop      func(pid int)
+	onKill      func(pid int)
 }
 
 func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
@@ -73,6 +76,24 @@ func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	pid := 40000 + f.pid
 	if f.onSpawn != nil {
 		f.onSpawn(pid)
+	}
+	return pid, nil
+}
+
+// SpawnApp records the worktree app it was asked to start and hands back a pid
+// without running anything. onAppSpawn lets a test stand a real listener up on the
+// allocated port, which is the only way the readiness probe can be satisfied.
+func (f *fakeSupervisor) SpawnApp(spec AppSpec) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appSpawns = append(f.appSpawns, spec)
+	if f.appSpawnErr != nil {
+		return 0, f.appSpawnErr
+	}
+	f.pid++
+	pid := 40000 + f.pid
+	if f.onAppSpawn != nil {
+		f.onAppSpawn(spec, pid)
 	}
 	return pid, nil
 }

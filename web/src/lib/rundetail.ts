@@ -86,6 +86,29 @@ export interface Worktree {
   /** active while the tree is on disk, settled once removed, orphaned when its directory vanished. */
   state: 'active' | 'settled' | 'orphaned'
   created_at?: string
+  /** The port the hub allocated to the app this tree serves, absent when it serves none. */
+  port?: number
+  /** Where the tree's app answers, present only while it is actually running. */
+  app_url?: string
+  app_state?: 'stopped' | 'starting' | 'running' | 'failed'
+  app_pid?: number
+  app_started_at?: string
+  /** False when the repo has no APP_START_CMD, so this tree serves no app at all. */
+  serving: boolean
+}
+
+/** The app the hub serves out of a worktree, as the ensure-app call answers. */
+export interface WorktreeApp {
+  ticket: string
+  port?: number
+  url?: string
+  state: 'stopped' | 'starting' | 'running' | 'failed'
+  pid?: number
+  started_at?: string
+  /** The tail of the start command's output, carried only when the app failed. */
+  output?: string
+  /** False when the repo has no APP_START_CMD, so there is no app to serve. */
+  serving: boolean
 }
 
 export interface RunDetail extends Run {
@@ -198,6 +221,32 @@ export async function removeWorktree(
       error?: string
     } | null
     throw new Error(detail?.error ?? `remove worktree failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+/**
+ * Asks the hub to have the ticket's worktree app running and hands back where it
+ * is. The hub waits for the app's port to accept before answering, so this can sit
+ * pending for as long as a cold dev server takes to boot.
+ */
+export async function startWorktreeApp(
+  repo: string,
+  ticket: string,
+): Promise<WorktreeApp> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/worktrees/app`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket }),
+    },
+  )
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as {
+      error?: string
+    } | null
+    throw new Error(detail?.error ?? `start app failed: ${res.status}`)
   }
   return res.json()
 }

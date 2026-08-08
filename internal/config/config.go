@@ -374,6 +374,20 @@ type Config struct {
 	// dev database or port the trees inherit is WorktreeSetupCmd's to separate.
 	WorktreeParallel int
 
+	// AppStartCmd runs under `sh -c` with a provisioned worktree as its working
+	// directory, with TRAU_APP_PORT and PORT set to the port the hub allocated for
+	// that tree, and must serve the app on that port on localhost. The hub starts
+	// it at first need and supervises it until the tree is removed, so browser
+	// verify drives the worktree's own app rather than whatever the registered
+	// checkout is serving. Empty means no app is served per worktree and the
+	// browser gate keeps its configured APP_URL/APP_URLS.
+	AppStartCmd string
+
+	// WorktreePortBase is the lowest port the hub hands a worktree app. Each tree
+	// gets the lowest free port at or above it that no other live worktree app
+	// holds, so concurrent lanes serve their apps side by side.
+	WorktreePortBase int
+
 	// UsageWindow enables the HUD's provider rate-limit window probe (claude OAuth
 	// usage, codex app-server, kimi balance). On by default; every probe is
 	// metadata-only and fails closed to token/cost totals, so it is safe to leave
@@ -611,6 +625,7 @@ func Defaults() Config {
 		Worktrees:              false,
 		WorktreeCopy:           DefaultWorktreeCopy,
 		WorktreeParallel:       DefaultWorktreeParallel,
+		WorktreePortBase:       DefaultWorktreePortBase,
 		ServeBind:              "127.0.0.1",
 		ServePort:              8728,
 		ServeToken:             "",
@@ -1147,6 +1162,8 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	// non-empty default would otherwise make unreachable.
 	strAllowEmpty("WORKTREE_COPY", &c.WorktreeCopy)
 	num("WORKTREE_PARALLEL", &c.WorktreeParallel)
+	str("APP_START_CMD", &c.AppStartCmd)
+	num("WORKTREE_PORT_BASE", &c.WorktreePortBase)
 	if v, src := get("LESSONS"); v != "" {
 		c.Lessons = v == "1"
 		sources["LESSONS"] = src.name
@@ -1579,6 +1596,25 @@ const DefaultWorktreesDirLabel = "<TRAU_HOME>/worktrees"
 // DefaultWorktreeParallel is the WORKTREE_PARALLEL default: enough lanes for a
 // queue to make real headway without a single repo saturating a provider's quota.
 const DefaultWorktreeParallel = 4
+
+// DefaultWorktreePortBase is the WORKTREE_PORT_BASE default: high enough to clear
+// the ports a dev machine's own servers habitually sit on, low enough to stay well
+// inside the unprivileged range.
+const DefaultWorktreePortBase = 4300
+
+// WorktreePortFloor is the lowest port a worktree app may be given. A base below
+// it — an unset or nonsensical value in a repo's ini — reads as the default rather
+// than sending the hub probing privileged ports.
+const WorktreePortFloor = 1024
+
+// AppPortBase is where this repo's worktree app ports start, WORKTREE_PORT_BASE
+// clamped to the unprivileged range.
+func (c Config) AppPortBase() int {
+	if c.WorktreePortBase < WorktreePortFloor {
+		return DefaultWorktreePortBase
+	}
+	return c.WorktreePortBase
+}
 
 // WorktreeLanes is how many runs this repo may have in flight at once. Only
 // worktrees make concurrency safe — every other repo shares one checkout — so a
@@ -2175,6 +2211,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "WORKTREE_SETUP_CMD", Group: sectionWorktrees, WebEditable: true, Advanced: true, Description: "Shell command run with a freshly provisioned worktree as its working directory, after the copy step (e.g. npm ci). A non-zero exit parks the run and keeps the tree for inspection"},
 		{Key: "WORKTREE_COPY", Group: sectionWorktrees, WebEditable: true, Advanced: true, Default: DefaultWorktreeCopy, Description: "Comma-separated globs of gitignored files copied from the registered root into a fresh worktree; tracked content arrives with the checkout. Empty = copy nothing beyond trau's own files"},
 		{Key: "WORKTREE_PARALLEL", Group: sectionWorktrees, Kind: "int", WebEditable: true, Default: strconv.Itoa(DefaultWorktreeParallel), Description: "How many queued runs a repo may have in flight at once, each in its own worktree. Meaningful only with WORKTREES=1 — without a tree per ticket the cap stays 1. N lanes multiply provider quota, CPU and disk, and any shared dev database or port is WORKTREE_SETUP_CMD's to separate"},
+		{Key: "APP_START_CMD", Group: sectionWorktrees, WebEditable: true, Description: "Shell command that serves the app from inside a worktree, run with the tree as its working directory and TRAU_APP_PORT/PORT set to the port allocated for it (e.g. npm run dev -- --port $PORT). The hub starts it at first need and keeps it up until the tree is removed, so browser verify drives the branch under test instead of your own dev server. Empty = no app is served per worktree"},
+		{Key: "WORKTREE_PORT_BASE", Group: sectionWorktrees, Kind: "int", WebEditable: true, Default: strconv.Itoa(DefaultWorktreePortBase), Description: "Lowest port a worktree app may be given. Each tree takes the lowest free port at or above it that no other live worktree app holds, so concurrent lanes serve side by side"},
 		{Key: "RUNS_DIR", Group: sectionPaths, Default: ".trau/runs", Description: "Directory for run artifacts"},
 		{Key: "SERVE_BIND", Group: sectionHub, Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
 		{Key: "SERVE_PORT", Group: sectionHub, Kind: "int", Default: "8728", Description: "Port for `trau serve`"},
@@ -2896,6 +2934,10 @@ func keyValue(cfg Config, key string) string {
 		return cfg.WorktreeCopy
 	case "WORKTREE_PARALLEL":
 		return strconv.Itoa(cfg.WorktreeParallel)
+	case "APP_START_CMD":
+		return cfg.AppStartCmd
+	case "WORKTREE_PORT_BASE":
+		return strconv.Itoa(cfg.WorktreePortBase)
 	case "TEAM_SYNC":
 		if cfg.TeamSync {
 			return "1"

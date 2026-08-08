@@ -19,6 +19,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -61,6 +62,7 @@ type Server struct {
 	sup              Supervisor
 	term             terminalLauncher
 	sessionExists    func(sessionID string) bool
+	alive            func(pid int) bool
 	goos             string
 	drain            *drainer
 	syncer           *syncer
@@ -95,6 +97,10 @@ type Server struct {
 	pathBinaries     func() []string
 	updates          *update.Checker
 	attachFetch      singleflight.Group
+	appStart         singleflight.Group
+	appPortMu        sync.Mutex
+	appPortHeld      map[int]bool
+	appReadyWait     time.Duration
 	team             *teamSyncer
 	pushSend         pushSender
 }
@@ -130,6 +136,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		sup:              newOSSupervisor(),
 		term:             osascriptLauncher{},
 		sessionExists:    agent.SessionExists,
+		alive:            proc.Alive,
 		goos:             runtime.GOOS,
 		drainCtx:         context.Background(),
 		newWriter:        defaultWriter,
@@ -142,6 +149,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		skillsCache:      map[string]skillsCacheEntry{},
 		executable:       os.Executable,
 		reloadPoll:       drainPoll,
+		appReadyWait:     appReadyTimeout,
 		runBuild:         runShellCommand,
 		probeVersion:     update.ProbeVersion,
 		probePreflight:   update.ProbePreflight,
@@ -404,6 +412,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/app-urls", s.handleAppURLs)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/app-urls/{id}", s.handleAppURL)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees", s.handleWorktrees)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees/app", s.handleWorktreeApp)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/worktrees/{id}", s.handleWorktree)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/workspaces", s.handleRepoWorkspaces)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer", s.handleSteerNotes)
