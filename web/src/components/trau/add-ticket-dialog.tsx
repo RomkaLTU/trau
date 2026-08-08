@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, ChevronRight, Plus, Search, X } from 'lucide-react'
 
@@ -191,11 +191,13 @@ function TrackerRow({
 function TrackerPicker({
   repo,
   queued,
+  fieldRef,
   onClose,
   onQueue,
 }: {
   repo: string
   queued: QueueItem[]
+  fieldRef: RefObject<HTMLInputElement | null>
   onClose: () => void
   onQueue: (res: QueueResponse) => void
 }) {
@@ -235,6 +237,7 @@ function TrackerPicker({
           aria-hidden="true"
         />
         <Input
+          ref={fieldRef}
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           placeholder="Search tracker tickets…"
@@ -383,10 +386,12 @@ function SubItemRows({
 // epic, so the shape of the form is the answer.
 function InternalTicketForm({
   repo,
+  fieldRef,
   onClose,
   onQueue,
 }: {
   repo: string
+  fieldRef: RefObject<HTMLInputElement | null>
   onClose: () => void
   onQueue: (res: QueueResponse) => void
 }) {
@@ -445,6 +450,7 @@ function InternalTicketForm({
         </div>
         <Input
           id="internal-ticket-title"
+          ref={fieldRef}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="e.g. Fix flaky CI step"
@@ -522,12 +528,16 @@ export function AddTicketDialog({
   onQueue: (res: QueueResponse) => void
 }) {
   const [source, setSource] = useState<AddSource>('tracker')
+  const fieldRef = useRef<HTMLInputElement | null>(null)
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent
         aria-describedby={undefined}
-        onOpenAutoFocus={(e) => e.preventDefault()}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          fieldRef.current?.focus()
+        }}
         className="gap-0 overflow-hidden border-border bg-popover p-0 shadow-xl sm:max-w-2xl"
       >
         <div className="flex items-center gap-3 border-b border-border px-4 py-2.5">
@@ -570,12 +580,14 @@ export function AddTicketDialog({
             <TrackerPicker
               repo={repo}
               queued={queued}
+              fieldRef={fieldRef}
               onClose={() => onOpenChange(false)}
               onQueue={onQueue}
             />
           ) : (
             <InternalTicketForm
               repo={repo}
+              fieldRef={fieldRef}
               onClose={() => onOpenChange(false)}
               onQueue={onQueue}
             />

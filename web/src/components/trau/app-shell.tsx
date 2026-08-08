@@ -22,11 +22,23 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="relative min-h-screen">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:rounded-md focus:border focus:border-border focus:bg-popover focus:px-3 focus:py-2 focus:font-mono focus:text-sm focus:text-foreground focus:shadow-lg"
+      >
+        Skip to content
+      </a>
       <Sidebar
         onOpenPalette={() => setPalette(true)}
         onOpenSwitcher={() => setSwitcher(true)}
       />
-      <main className="relative z-[1] ml-60 min-h-screen">{children}</main>
+      <main
+        id="main"
+        tabIndex={-1}
+        className="relative z-[1] ml-60 min-h-screen"
+      >
+        {children}
+      </main>
       <CommandPalette open={dialog === 'palette'} onOpenChange={setPalette} />
       <RepoSwitcherDialog
         open={dialog === 'switcher'}
