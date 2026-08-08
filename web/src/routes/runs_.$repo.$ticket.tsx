@@ -27,11 +27,9 @@ import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import { steerSettled } from '@/lib/steer'
 import {
-  removeWorktree,
   renderRunVideo,
   runDetailQueryOptions,
   runProofsQueryOptions,
-  startWorktreeApp,
   type Anomaly,
   type PhaseCost,
   type Proof,
@@ -41,6 +39,17 @@ import {
   type Verdict,
   type Worktree,
 } from '@/lib/rundetail'
+import {
+  appControlBlocked,
+  controlWorktreeApp,
+  removeWorktree,
+} from '@/lib/worktrees'
+import {
+  AppStateBadge,
+  AppURLLink,
+  WorktreeAppControls,
+  WorktreeAppLogView,
+} from '@/components/trau/worktree-app'
 
 export const Route = createFileRoute('/runs_/$repo/$ticket')({
   component: RunDetailPage,
@@ -204,11 +213,6 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <p className="font-sans text-sm leading-relaxed text-muted-foreground">{children}</p>
 }
 
-const APP_PILL: Record<string, { state: RunState; label: string }> = {
-  starting: { state: 'verify', label: 'app starting' },
-  failed: { state: 'fail', label: 'app failed' },
-}
-
 /**
  * The app the run's own worktree serves, beside the PR link. A running app is the
  * link QA follows — that port is this branch, not whatever the shared checkout is
@@ -226,36 +230,31 @@ function WorktreeAppLink({
 }) {
   const queryClient = useQueryClient()
   const mutation = useMutation({
-    mutationFn: () => startWorktreeApp(repo, worktree?.ticket ?? ticket),
-    onSuccess: () =>
+    mutationFn: () => controlWorktreeApp(repo, worktree?.ticket ?? ticket, 'start'),
+    onSettled: () =>
       queryClient.invalidateQueries({ queryKey: ['run', repo, ticket] }),
   })
 
-  if (!worktree || worktree.state !== 'active') {
+  if (!worktree || worktree.state !== 'active' || !worktree.serving) {
     return null
   }
   if (worktree.app_state === 'running' && worktree.app_url) {
-    return (
-      <Button asChild size="sm" variant="outline" className="font-mono">
-        <a href={worktree.app_url} target="_blank" rel="noreferrer">
-          <ExternalLink className="size-3.5" aria-hidden="true" />
-          app :{worktree.port}
-        </a>
-      </Button>
-    )
+    return <AppURLLink worktree={worktree} />
   }
-  if (!worktree.serving) {
-    return null
-  }
-  const pill = worktree.app_state ? APP_PILL[worktree.app_state] : undefined
+  const blocked = appControlBlocked(worktree)
   return (
     <span className="inline-flex items-center gap-2">
-      {pill && <StatusPill state={pill.state} label={pill.label} />}
+      <AppStateBadge worktree={worktree} />
       <Button
         size="sm"
         variant="outline"
         className="font-mono"
-        disabled={mutation.isPending || worktree.app_state === 'starting'}
+        title={blocked || undefined}
+        disabled={
+          mutation.isPending ||
+          blocked !== '' ||
+          worktree.app_state === 'starting'
+        }
         onClick={() => mutation.mutate()}
       >
         {mutation.isPending ? (
@@ -312,6 +311,9 @@ function WorktreeCard({
   return (
     <TerminalCard title="worktree" className="lg:col-span-2">
       <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <AppStateBadge worktree={worktree} />
+        </div>
         <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 font-mono text-sm">
           <dt className="text-muted-foreground">path</dt>
           <dd className="break-all text-foreground">{worktree.path}</dd>
@@ -325,13 +327,23 @@ function WorktreeCard({
           <dd className="text-foreground">{worktree.state}</dd>
           {worktree.port ? (
             <>
-              <dt className="text-muted-foreground">app</dt>
-              <dd className="text-foreground">
-                {worktree.app_state} on port {worktree.port}
-              </dd>
+              <dt className="text-muted-foreground">port</dt>
+              <dd className="text-foreground tabular-nums">{worktree.port}</dd>
             </>
           ) : null}
         </dl>
+        {standing && worktree.serving && (
+          <>
+            <WorktreeAppControls
+              repo={repo}
+              worktree={worktree}
+              onSettled={() =>
+                queryClient.invalidateQueries({ queryKey: ['run', repo, ticket] })
+              }
+            />
+            <WorktreeAppLogView repo={repo} ticket={worktree.ticket} />
+          </>
+        )}
         {note && <Empty>{note}</Empty>}
         {standing && (
           <div className="flex items-center gap-3">

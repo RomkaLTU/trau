@@ -54,6 +54,10 @@ type WorktreeView struct {
 	AppPID       int    `json:"app_pid,omitempty"`
 	AppStartedAt string `json:"app_started_at,omitempty"`
 	Serving      bool   `json:"serving"`
+	// Busy names the loop working in this tree right now, empty when none is. It is
+	// why the app controls are refused rather than merely that they are: a QA person
+	// looking at a greyed-out Restart is owed the reason.
+	Busy string `json:"busy,omitempty"`
 }
 
 // handleWorktrees lists (GET) or records (POST) the repo's per-ticket worktrees.
@@ -81,9 +85,10 @@ func (s *Server) listWorktrees(w http.ResponseWriter, repo registry.Repo) {
 		return
 	}
 	serving := repoServesApp(repo.Root)
+	held := s.worktreeHolders(repo.Root, rows)
 	views := make([]WorktreeView, 0, len(rows))
 	for _, row := range rows {
-		views = append(views, worktreeView(row, serving))
+		views = append(views, worktreeView(row, serving, held[row.Ticket]))
 	}
 	writeJSON(w, http.StatusOK, views)
 }
@@ -122,7 +127,7 @@ func (s *Server) recordWorktree(w http.ResponseWriter, r *http.Request, repo reg
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "record worktree: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, worktreeView(row, repoServesApp(repo.Root)))
+	writeJSON(w, http.StatusOK, worktreeView(row, repoServesApp(repo.Root), s.worktreeBusyReason(repo.Root, row.Ticket)))
 }
 
 // handleWorktree reads (GET) or removes (DELETE) a single worktree row. DELETE is
@@ -150,7 +155,7 @@ func (s *Server) handleWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, worktreeView(row, repoServesApp(repo.Root)))
+		writeJSON(w, http.StatusOK, worktreeView(row, repoServesApp(repo.Root), s.worktreeBusyReason(repo.Root, row.Ticket)))
 	case http.MethodDelete:
 		s.deleteWorktree(w, repo, row)
 	default:
@@ -166,7 +171,7 @@ func (s *Server) deleteWorktree(w http.ResponseWriter, repo registry.Repo, row h
 		})
 		return
 	}
-	s.stopWorktreeApp(repo.Root, row)
+	s.stopWorktreeAppFor(repo.Root, row.Ticket)
 	if err := s.removeWorktreeTree(repo, row.Path); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -176,7 +181,7 @@ func (s *Server) deleteWorktree(w http.ResponseWriter, repo registry.Repo, row h
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "settle worktree: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, worktreeView(settled, repoServesApp(repo.Root)))
+	writeJSON(w, http.StatusOK, worktreeView(settled, repoServesApp(repo.Root), ""))
 }
 
 // settleWorktree is what every hub-side settle calls: the ticket finished, so its
@@ -191,7 +196,7 @@ func (s *Server) settleWorktree(repo registry.Repo, ticket string) {
 	if !exists || row.State != hubstore.WorktreeActive {
 		return
 	}
-	s.stopWorktreeApp(repo.Root, row)
+	s.stopWorktreeAppFor(repo.Root, row.Ticket)
 	if err := s.removeWorktreeTree(repo, row.Path); err != nil {
 		logger.Verbosef("settle worktree %s: %v", ticket, err)
 		return
@@ -281,7 +286,7 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func worktreeView(row hubstore.Worktree, serving bool) WorktreeView {
+func worktreeView(row hubstore.Worktree, serving bool, busy string) WorktreeView {
 	return WorktreeView{
 		ID:           row.ID,
 		Repo:         filepath.Base(row.Repo),
@@ -296,7 +301,82 @@ func worktreeView(row hubstore.Worktree, serving bool) WorktreeView {
 		AppPID:       row.App.PID,
 		AppStartedAt: row.App.StartedAt,
 		Serving:      serving,
+		Busy:         busy,
 	}
+}
+
+// worktreeHolders maps the repo's active worktree tickets to the loop working in
+// each. A loop on a tree's own ticket is the plain case. A loop whose ticket has no
+// tree of its own is an epic's sub-issue — those share the epic's tree (one lane,
+// one tree), and the hub cannot tell which epic from presence alone — so it is
+// taken to hold every active tree in the repo rather than none: a control refused
+// with a reason costs a QA person a sentence, while one allowed under a live run
+// costs them the run.
+//
+// Idle and parked loops hold nothing. Parked is precisely when the app controls
+// matter: the run has stopped on its tree and is waiting for someone to look at it.
+func (s *Server) worktreeHolders(root string, rows []hubstore.Worktree) map[string]string {
+	held := map[string]string{}
+	own := map[string]bool{}
+	for _, row := range rows {
+		if row.State == hubstore.WorktreeActive {
+			own[row.Ticket] = true
+		}
+	}
+	cleaned := filepath.Clean(root)
+	for _, e := range s.liveInstances() {
+		if filepath.Clean(e.RepoRoot) != cleaned || !instanceHoldsTree(e) {
+			continue
+		}
+		reason := instanceHoldReason(e)
+		if own[e.Ticket] {
+			held[e.Ticket] = reason
+			continue
+		}
+		for ticket := range own {
+			held[ticket] = reason
+		}
+	}
+	return held
+}
+
+// worktreeBusyReason is worktreeHolders for one ticket, for the handlers that hold
+// a ticket rather than the repo's rows.
+func (s *Server) worktreeBusyReason(root, ticket string) string {
+	rows, err := s.stores.Worktrees().List(root)
+	if err != nil {
+		logger.Verbosef("read the worktrees of %s: %v", root, err)
+		return ""
+	}
+	return s.worktreeHolders(root, rows)[ticket]
+}
+
+// instanceHoldsTree reports whether a live loop is working in its tree right now.
+// A legacy entry that reports no state at all is taken to be working, since the
+// alternative is treating an unknown as free.
+func instanceHoldsTree(e registry.Entry) bool {
+	switch e.SessionState {
+	case registry.StateWorking, registry.StateStopping, registry.StateTakeover, "":
+		return true
+	default:
+		return false
+	}
+}
+
+// instanceHoldReason says which loop holds the tree and what it is doing, in the
+// words the button's tooltip shows.
+func instanceHoldReason(e registry.Entry) string {
+	who := strings.TrimSpace(e.Ticket)
+	if who == "" {
+		who = "a run"
+	}
+	if e.SessionState == registry.StateTakeover {
+		return who + " is taken over in a terminal — end it before touching this tree's app"
+	}
+	if phase := strings.TrimSpace(e.Phase); phase != "" {
+		return who + " is mid-" + phase + " in this tree — stop the run before touching its app"
+	}
+	return who + " is running in this tree — stop the run before touching its app"
 }
 
 // repoServesApp reports whether the repo has an APP_START_CMD for its worktrees to

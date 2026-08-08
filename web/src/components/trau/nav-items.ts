@@ -2,6 +2,7 @@ import {
   DollarSign,
   FlaskConical,
   FolderPlus,
+  GitBranch,
   Globe,
   Inbox,
   LayoutDashboard,
@@ -102,6 +103,7 @@ export const NAV_GROUPS: NavGroup[] = [
 /** Pages the palette and in-page links reach, but the sidebar deliberately doesn't list. */
 export const UNLISTED_ITEMS: NavItem[] = [
   { label: 'App URLs', icon: Globe, to: '/app-urls', requiresProject: true },
+  { label: 'Worktrees', icon: GitBranch, to: '/worktrees', requiresProject: true },
 ]
 
 export interface GTarget {

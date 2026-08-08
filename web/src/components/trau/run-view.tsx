@@ -207,6 +207,24 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyphClass: "text-warn",
         text: ev.msg || "browser verify skipped on a UI slice",
       };
+    case "app_started":
+      return {
+        glyph: "✓",
+        glyphClass: "text-teal",
+        text: ev.msg || "the worktree app came up",
+      };
+    case "app_stopped":
+      return {
+        glyph: "●",
+        glyphClass: "text-muted-foreground",
+        text: ev.msg || "the worktree app was stopped",
+      };
+    case "app_failed":
+      return {
+        glyph: "✗",
+        glyphClass: "text-fail",
+        text: ev.msg || "the worktree app never came up",
+      };
     case "qa_roster":
       return {
         glyph: "●",

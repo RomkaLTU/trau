@@ -148,7 +148,7 @@ func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunD
 		d.Removed = true
 	}
 	if row, ok, err := s.stores.Worktrees().ByTicket(repo.Root, ticket); err == nil && ok {
-		view := worktreeView(row, repoServesApp(repo.Root))
+		view := worktreeView(row, repoServesApp(repo.Root), s.worktreeBusyReason(repo.Root, row.Ticket))
 		d.Worktree = &view
 	} else if err != nil {
 		logger.Verbosef("worktree row %s/%s: %v", repo.Name, ticket, err)
