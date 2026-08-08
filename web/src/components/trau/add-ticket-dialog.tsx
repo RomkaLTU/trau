@@ -10,6 +10,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { MarkdownEditor } from '@/components/markdown-editor'
+import { useRovingGroup, type RovingItemProps } from '@/lib/use-roving-group'
 import { cn } from '@/lib/utils'
 import {
   addTickets,
@@ -35,6 +36,8 @@ const EMPTY_TEXT: Record<PickerEmpty, string> = {
 
 type AddSource = 'tracker' | 'internal'
 
+const SOURCES: readonly AddSource[] = ['tracker', 'internal']
+
 const SOURCE_TAG: Record<AddSource, string> = {
   tracker: 'tracker · synced',
   internal: 'trau only',
@@ -46,10 +49,12 @@ const fieldClass =
 function SourceTab({
   active,
   onClick,
+  item,
   children,
 }: {
   active: boolean
   onClick: () => void
+  item: RovingItemProps
   children: string
 }) {
   return (
@@ -57,6 +62,7 @@ function SourceTab({
       type="button"
       role="tab"
       aria-selected={active}
+      {...item}
       onClick={onClick}
       className={cn(
         '-mb-px border-b-2 px-1 pb-2 font-mono text-xs transition-colors',
@@ -192,12 +198,14 @@ function TrackerPicker({
   repo,
   queued,
   fieldRef,
+  takeFocus,
   onClose,
   onQueue,
 }: {
   repo: string
   queued: QueueItem[]
   fieldRef: RefObject<HTMLInputElement | null>
+  takeFocus: boolean
   onClose: () => void
   onQueue: (res: QueueResponse) => void
 }) {
@@ -242,7 +250,7 @@ function TrackerPicker({
           onChange={(e) => setTerm(e.target.value)}
           placeholder="Search tracker tickets…"
           aria-label="Search tracker tickets"
-          autoFocus
+          autoFocus={takeFocus}
           className="h-auto py-1.5 pl-9 pr-2.5 font-mono text-sm placeholder:text-muted-foreground/60"
         />
       </div>
@@ -387,11 +395,13 @@ function SubItemRows({
 function InternalTicketForm({
   repo,
   fieldRef,
+  takeFocus,
   onClose,
   onQueue,
 }: {
   repo: string
   fieldRef: RefObject<HTMLInputElement | null>
+  takeFocus: boolean
   onClose: () => void
   onQueue: (res: QueueResponse) => void
 }) {
@@ -454,7 +464,7 @@ function InternalTicketForm({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="e.g. Fix flaky CI step"
-          autoFocus
+          autoFocus={takeFocus}
           className={fieldClass}
         />
       </div>
@@ -529,6 +539,19 @@ export function AddTicketDialog({
 }) {
   const [source, setSource] = useState<AddSource>('tracker')
   const fieldRef = useRef<HTMLInputElement | null>(null)
+  // A tab reached by arrow keeps its focus, per WAI-APG: the panel behind it is a
+  // Tab away. Only opening the dialog, or clicking a tab, hands focus to the
+  // panel's first field.
+  const [keyed, setKeyed] = useState(false)
+  const pickSource = (next: AddSource, byKey: boolean) => {
+    setKeyed(byKey)
+    setSource(next)
+  }
+  const roving = useRovingGroup({
+    keys: SOURCES,
+    selected: source,
+    onSelect: (key) => pickSource(key as AddSource, true),
+  })
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -557,16 +580,19 @@ export function AddTicketDialog({
           className="flex items-center gap-5 border-b border-border px-4 pt-3"
           role="tablist"
           aria-label="Ticket source"
+          {...roving.groupProps}
         >
           <SourceTab
             active={source === 'tracker'}
-            onClick={() => setSource('tracker')}
+            item={roving.itemProps('tracker')}
+            onClick={() => pickSource('tracker', false)}
           >
             From tracker
           </SourceTab>
           <SourceTab
             active={source === 'internal'}
-            onClick={() => setSource('internal')}
+            item={roving.itemProps('internal')}
+            onClick={() => pickSource('internal', false)}
           >
             Internal ticket
           </SourceTab>
@@ -581,6 +607,7 @@ export function AddTicketDialog({
               repo={repo}
               queued={queued}
               fieldRef={fieldRef}
+              takeFocus={!keyed}
               onClose={() => onOpenChange(false)}
               onQueue={onQueue}
             />
@@ -588,6 +615,7 @@ export function AddTicketDialog({
             <InternalTicketForm
               repo={repo}
               fieldRef={fieldRef}
+              takeFocus={!keyed}
               onClose={() => onOpenChange(false)}
               onQueue={onQueue}
             />

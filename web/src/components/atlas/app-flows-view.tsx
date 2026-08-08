@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 
 import type { AppFlows } from '@/lib/atlas'
 import { flowToGraph } from '@/lib/atlas-graph'
+import { useRovingGroup } from '@/lib/use-roving-group'
 import { cn } from '@/lib/utils'
 
 import { GraphCanvas } from './graph-canvas'
@@ -20,6 +21,12 @@ export function AppFlowsView({ doc }: { doc: AppFlows }) {
     [active],
   )
 
+  const roving = useRovingGroup({
+    keys: doc.flows.map((flow) => flow.id),
+    selected: active?.id ?? null,
+    onSelect: setFlowId,
+  })
+
   if (!active) {
     return (
       <p className="font-mono text-sm text-muted-foreground">
@@ -30,7 +37,12 @@ export function AppFlowsView({ doc }: { doc: AppFlows }) {
 
   return (
     <div className="flex flex-1 flex-col gap-3">
-      <div role="tablist" aria-label="Flows" className="flex flex-wrap gap-1.5">
+      <div
+        role="tablist"
+        aria-label="Flows"
+        {...roving.groupProps}
+        className="flex flex-wrap gap-1.5"
+      >
         {doc.flows.map((flow) => {
           const selected = flow.id === active.id
           return (
@@ -39,6 +51,7 @@ export function AppFlowsView({ doc }: { doc: AppFlows }) {
               type="button"
               role="tab"
               aria-selected={selected}
+              {...roving.itemProps(flow.id)}
               onClick={() => setFlowId(flow.id)}
               className={cn(
                 'rounded-md border px-3 py-1 font-mono text-xs transition-colors',

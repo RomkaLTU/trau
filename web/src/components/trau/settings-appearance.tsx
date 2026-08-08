@@ -27,6 +27,7 @@ import {
   type ThemeSummary,
 } from '@/lib/palette'
 import { refreshPalettes } from '@/lib/theme'
+import { useRovingGroup, type RovingItemProps } from '@/lib/use-roving-group'
 import { shadowNote } from '@/lib/settings'
 import {
   asThemeDocument,
@@ -101,6 +102,17 @@ export function ThemePicker({
 
   const themes = data?.themes ?? []
   const active = data?.active ?? item.value
+  // A write in flight leaves the cards reachable but inert, so the arrow that
+  // started it keeps its focus instead of being dropped by a disabled button.
+  const pick = (slug: string) => {
+    if (mutation.isPending) return
+    mutation.mutate({ slug, layer: target })
+  }
+  const roving = useRovingGroup({
+    keys: themes.map((summary) => summary.slug),
+    selected: active,
+    onSelect: pick,
+  })
   const shadow = shadowNote(item.layer, target)
   const banner =
     written && shadow
@@ -220,6 +232,7 @@ export function ThemePicker({
           className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3"
           role="radiogroup"
           aria-label="Theme"
+          {...roving.groupProps}
         >
           {themes.map((summary) => (
             <ThemeCard
@@ -231,7 +244,8 @@ export function ThemePicker({
                 mutation.isPending && mutation.variables?.slug === summary.slug
               }
               disabled={mutation.isPending}
-              onPick={() => mutation.mutate({ slug: summary.slug, layer: target })}
+              item={roving.itemProps(summary.slug)}
+              onPick={() => pick(summary.slug)}
               onDuplicate={() => openEditor(summary.slug, `${summary.name} copy`)}
               onDelete={
                 summary.origin === 'local' ? () => setRemoving(summary) : undefined
@@ -271,6 +285,7 @@ function ThemeCard({
   active,
   pending,
   disabled,
+  item,
   onPick,
   onDuplicate,
   onDelete,
@@ -280,6 +295,7 @@ function ThemeCard({
   active: boolean
   pending: boolean
   disabled: boolean
+  item: RovingItemProps
   onPick: () => void
   onDuplicate: () => void
   onDelete?: () => void
@@ -306,8 +322,9 @@ function ThemeCard({
         type="button"
         role="radio"
         aria-checked={active}
+        aria-disabled={disabled || undefined}
+        {...item}
         onClick={onPick}
-        disabled={disabled}
         title={`Use the ${theme.name} theme`}
         className={cn(
           'flex flex-col gap-2.5 text-left',

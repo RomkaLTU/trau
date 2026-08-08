@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 
+import { useRovingGroup } from '@/lib/use-roving-group'
 import { cn } from '@/lib/utils'
 import type { ConfigKey, ConfigScope } from '@/lib/config'
 import {
@@ -45,11 +46,22 @@ export function PhaseMatrix({
   const editingCfg = editingKey ? byKey.get(editingKey) : undefined
   const editingBelongsHere = editingCfg?.key.startsWith(`${activeProvider}_`)
 
+  const pick = (p: string) => {
+    setProvider(p)
+    onCancel()
+  }
+  const roving = useRovingGroup({
+    keys: model.providers,
+    selected: activeProvider,
+    onSelect: pick,
+  })
+
   return (
     <div className="flex flex-col gap-3">
       <div
         role="tablist"
         aria-label="Provider"
+        {...roving.groupProps}
         className="inline-flex w-fit items-center rounded-md border border-border bg-input p-0.5"
       >
         {model.providers.map((p) => (
@@ -58,10 +70,8 @@ export function PhaseMatrix({
             type="button"
             role="tab"
             aria-selected={activeProvider === p}
-            onClick={() => {
-              setProvider(p)
-              onCancel()
-            }}
+            {...roving.itemProps(p)}
+            onClick={() => pick(p)}
             className={cn(
               'rounded px-3 py-1 font-mono text-xs lowercase transition-colors',
               activeProvider === p
