@@ -27,6 +27,7 @@ import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import { steerSettled } from '@/lib/steer'
 import {
+  removeWorktree,
   renderRunVideo,
   runDetailQueryOptions,
   runProofsQueryOptions,
@@ -37,6 +38,7 @@ import {
   type Rubric,
   type StepDuration,
   type Verdict,
+  type Worktree,
 } from '@/lib/rundetail'
 
 export const Route = createFileRoute('/runs_/$repo/$ticket')({
@@ -186,6 +188,8 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
           )}
         </TerminalCard>
 
+        <WorktreeCard repo={repo} ticket={run.ticket} worktree={run.worktree} />
+
         <TerminalCard title="comments" className="lg:col-span-2">
           <CommentComposer repo={repo} ticket={run.ticket} />
         </TerminalCard>
@@ -196,6 +200,86 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="font-sans text-sm leading-relaxed text-muted-foreground">{children}</p>
+}
+
+/**
+ * The per-ticket worktree this run works in, shown only for repos that have
+ * worktrees on — a shared-checkout run has no tree and no card. Remove is offered
+ * while the tree is still standing; the hub refuses it while a run is live, and that
+ * refusal is what the error line says.
+ */
+function WorktreeCard({
+  repo,
+  ticket,
+  worktree,
+}: {
+  repo: string
+  ticket: string
+  worktree?: Worktree
+}) {
+  const queryClient = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: () => removeWorktree(repo, worktree?.id ?? 0),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['run', repo, ticket] }),
+  })
+
+  if (!worktree) {
+    return null
+  }
+  const standing = worktree.state === 'active'
+  const note =
+    worktree.state === 'settled'
+      ? 'Removed — this ticket settled and gave its tree up.'
+      : worktree.state === 'orphaned'
+        ? 'Gone — the directory vanished without a settle, so there is nothing left to remove.'
+        : ''
+
+  return (
+    <TerminalCard title="worktree" className="lg:col-span-2">
+      <div className="flex flex-col gap-3">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 font-mono text-sm">
+          <dt className="text-muted-foreground">path</dt>
+          <dd className="break-all text-foreground">{worktree.path}</dd>
+          {worktree.branch && (
+            <>
+              <dt className="text-muted-foreground">branch</dt>
+              <dd className="break-all text-foreground">{worktree.branch}</dd>
+            </>
+          )}
+          <dt className="text-muted-foreground">state</dt>
+          <dd className="text-foreground">{worktree.state}</dd>
+        </dl>
+        {note && <Empty>{note}</Empty>}
+        {standing && (
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              variant="outline"
+              className="font-mono"
+              disabled={mutation.isPending}
+              onClick={() => mutation.mutate()}
+            >
+              {mutation.isPending && (
+                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+              )}
+              Remove worktree
+            </Button>
+            <span className="font-mono text-[0.7rem] text-muted-foreground">
+              takes the tree off disk; the run history stays
+            </span>
+          </div>
+        )}
+        {mutation.isError && (
+          <p className="font-mono text-[0.7rem] text-fail">
+            {mutation.error instanceof Error
+              ? mutation.error.message
+              : 'remove failed'}
+          </p>
+        )}
+      </div>
+    </TerminalCard>
+  )
 }
 
 function RubricView({ rubric, present }: { rubric?: Rubric; present: boolean }) {

@@ -649,6 +649,37 @@ KIMI_MODEL=
 # side-by-side review.
 # GRILL_CHALLENGE_ROUNDS=2
 
+# --- worktrees ---
+# With WORKTREES=1 every run works in its own git worktree instead of sharing the
+# registered checkout: the tree is provisioned when the ticket starts, the whole
+# pipeline runs there, and it is removed when the ticket settles (merge, reset,
+# requeue, purge). The practical effect is that your own checkout is left alone —
+# a dirty working tree no longer blocks a run and is never stashed. Default 0.
+# A folder repo ignores the key: a folder has no repository at its root for git to
+# add a worktree to. See docs/adr/0044-worktree-isolated-runs.md.
+# WORKTREES=0
+
+# Where the trees live: <WORKTREES_DIR>/<repo-name>/<ticket-id>. Defaults to
+# <TRAU_HOME>/worktrees (i.e. ~/.trau/worktrees). It must NOT sit inside a
+# registered repo or a folder repo — a tree there would be part of the very
+# checkout it exists to stay out of, and every tree's .git file would read as
+# another repository.
+# WORKTREES_DIR=
+
+# Shell command run with a freshly provisioned worktree as its working directory,
+# after the copy step below and before the run touches the tree — the install a new
+# tree needs before it can build. Runs under `sh -c`. A non-zero exit parks the run
+# Faulted with the command's output kept as a run artifact, and the tree is left in
+# place so that output can be acted on. Empty = nothing runs.
+# WORKTREE_SETUP_CMD=npm ci
+
+# Comma-separated globs, relative to the registered root, copied into a fresh
+# worktree. Only files git IGNORES at the root qualify — tracked content arrives
+# with the checkout — and a glob matching nothing is skipped silently. Copied
+# unconditionally regardless of this key: .trau.ini, .trau/ (minus RUNS_DIR),
+# .gitconfig.repo, and .agents/ when untracked. Set it empty to copy nothing else.
+# WORKTREE_COPY=.env,.env.*
+
 # --- artifacts ---
 # Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
 # to ./runs (relative to the working directory). Point it at a stable path if you

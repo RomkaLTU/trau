@@ -20,6 +20,7 @@ export const SECTION_ORDER = [
   'Appearance',
   'TUI & notifications',
   'Time logging',
+  'Worktrees',
   'Paths & misc',
 ] as const
 
@@ -46,6 +47,8 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
     'The theme both surfaces draw from. This UI restyles as soon as you pick one; the terminal UI picks it up on its next launch.',
   'TUI & notifications': 'Terminal UI and desktop notifications.',
   'Time logging': 'Billable time capture and export.',
+  Worktrees:
+    'Run each ticket in its own git worktree so your checkout is never touched. Off by default.',
   'Paths & misc': 'Filesystem locations trau reads and writes.',
   [OTHER_SECTION]: 'Keys the catalog did not place in a known section.',
 }

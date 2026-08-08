@@ -73,6 +73,7 @@ func (s *Server) resetTicket(root, id string) error {
 	}); err != nil {
 		return fmt.Errorf("reset %s: %w", id, err)
 	}
+	s.settleWorktreeAt(root, id)
 	return nil
 }
 

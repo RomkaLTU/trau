@@ -947,6 +947,27 @@ type Pipeline struct {
 	// RepoRoot; read it through workRoot, never directly.
 	WorkTree string
 
+	// Worktrees turns on per-ticket worktree isolation (config WORKTREES): every
+	// ticket gets its own tree under WorktreesDir, works there, and has it removed
+	// when it settles. The user's checkout is then never inspected, stashed or
+	// reset — that is the whole point (ADR 0044). A Folder repo ignores it.
+	Worktrees bool
+	// WorktreesDir is the already-resolved worktrees root (config WorktreesRoot),
+	// under which trees live at <dir>/<repo-name>/<ticket-id>.
+	WorktreesDir string
+	// WorktreeSetupCmd and WorktreeCopy are WORKTREE_SETUP_CMD and the parsed
+	// WORKTREE_COPY globs, applied only when a tree is created fresh.
+	WorktreeSetupCmd string
+	WorktreeCopy     []string
+	// ReportWorktree and SettleWorktree tell the hub a tree was created/adopted and
+	// that a ticket's tree is finished with. Both are optional: the hub reconciles
+	// its own rows at boot, so a dropped report costs a record, never a run.
+	ReportWorktree func(ctx context.Context, ticket, path, branch string) error
+	SettleWorktree func(ctx context.Context, ticket, path string) error
+	// worktreeNoticed keeps the "WORKTREES=1 ignored on a folder repo" notice to
+	// one line per session rather than one per ticket.
+	worktreeNoticed bool
+
 	TimelogEnabled      bool
 	TimelogStorage      string
 	TimelogOutputFormat string
@@ -1024,6 +1045,12 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		p.logf("  ↻ %s was delivered but reopened in the tracker — clearing the merged checkpoint to rebuild", id)
 		p.resetLocal(ctx, id)
 		from = ""
+	}
+	// The tree comes first: from here on every git command, agent phase and
+	// tracked-file lookup has to act in this ticket's own worktree rather than the
+	// shared checkout. A no-op unless WORKTREES=1.
+	if err := p.prepareWorktree(ctx, id); err != nil {
+		return err
 	}
 	if err := p.reconcileDeliveredBranch(ctx, id, from); err != nil {
 		if errors.Is(err, ErrAlreadyDone) {
@@ -1540,6 +1567,15 @@ func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	if err := p.assertDeliverable(ctx); err != nil {
 		return err
 	}
+	if p.worktreesOn() {
+		// Every ticket gets its own tree, so there is no shared checkout to clean:
+		// the pre-run dirtiness logic scopes to the worktree, which does not exist
+		// until a ticket is picked. The user's checkout is left exactly as it is —
+		// never stashed, never reset — and only the base tip is refreshed so the
+		// tree the pick provisions starts current.
+		p.fetchBaseTip(ctx)
+		return nil
+	}
 	dirty, err := p.Git.StatusPorcelain(ctx)
 	if err != nil {
 		return fmt.Errorf("ensure clean base: git status: %w", err)
@@ -1696,6 +1732,9 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	defer cancel()
 
 	branch := p.featureBranch(ctx, id)
+	// The tree goes before the branch: git refuses to delete a branch a worktree
+	// still has checked out.
+	p.settleTicketWorktree(ctx, id)
 	for _, a := range p.attempts(id) {
 		_ = p.baseCheckout(ctx, a, true)
 		if branch != "" && branch != p.Base {
@@ -1758,6 +1797,9 @@ func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
 	defer cancel()
 
 	branch := p.featureBranch(ctx, id)
+	// The tree goes before the branch: git refuses to delete a branch a worktree
+	// still has checked out.
+	p.settleTicketWorktree(ctx, id)
 
 	var errs []error
 	for _, a := range p.attempts(id) {

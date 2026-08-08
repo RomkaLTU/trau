@@ -32,6 +32,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/forge"
 	"github.com/RomkaLTU/trau/internal/prompts"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/theme"
 )
 
@@ -339,6 +340,32 @@ type Config struct {
 	// off; it engages only where GitHub's stacked-PRs preview answers.
 	EpicStackedPRs bool
 
+	// Worktrees isolates every run in its own git worktree instead of sharing the
+	// registered checkout: a tree is provisioned per ticket under WorktreesRoot, the
+	// run works there, and the tree is removed when the ticket settles. Off by
+	// default. A Folder repo ignores it — a folder has no repository at its root to
+	// add a worktree to (ADR 0044).
+	Worktrees bool
+
+	// WorktreesDir is the directory per-ticket worktrees are created under, one
+	// level per repo: <dir>/<repo-name>/<ticket-id>. Empty means <TRAU_HOME>/worktrees;
+	// read it through WorktreesRoot, never directly. It must never sit inside a
+	// registered repo, whose checkout the trees exist to stay out of.
+	WorktreesDir string
+
+	// WorktreeSetupCmd runs under `sh -c` with the fresh worktree as its working
+	// directory, after the copy step and before the run touches the tree — the
+	// `npm ci` a new tree needs before it can build. Empty means nothing runs. A
+	// non-zero exit parks the run Faulted with the command's output kept as an
+	// artifact, and the tree is left in place for inspection.
+	WorktreeSetupCmd string
+
+	// WorktreeCopy holds comma-separated globs, relative to the registered root,
+	// copied into a freshly provisioned worktree. Only files git ignores at the root
+	// qualify — tracked content arrives with the checkout — and a glob that matches
+	// nothing is skipped silently. Read it through WorktreeCopyGlobs.
+	WorktreeCopy string
+
 	// UsageWindow enables the HUD's provider rate-limit window probe (claude OAuth
 	// usage, codex app-server, kimi balance). On by default; every probe is
 	// metadata-only and fails closed to token/cost totals, so it is safe to leave
@@ -573,6 +600,8 @@ func Defaults() Config {
 		TimelogOutputFormat:    "default",
 		TimelogEstimator:       "heuristic",
 		RunsDir:                ".trau/runs",
+		Worktrees:              false,
+		WorktreeCopy:           DefaultWorktreeCopy,
 		ServeBind:              "127.0.0.1",
 		ServePort:              8728,
 		ServeToken:             "",
@@ -1099,6 +1128,15 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.EpicStackedPRs = v == "1"
 		sources["EPIC_STACKED_PRS"] = src.name
 	}
+	if v, src := get("WORKTREES"); v != "" {
+		c.Worktrees = v == "1"
+		sources["WORKTREES"] = src.name
+	}
+	str("WORKTREES_DIR", &c.WorktreesDir)
+	str("WORKTREE_SETUP_CMD", &c.WorktreeSetupCmd)
+	// Empty is a meaningful value here: it turns the copy step off, which the
+	// non-empty default would otherwise make unreachable.
+	strAllowEmpty("WORKTREE_COPY", &c.WorktreeCopy)
 	if v, src := get("LESSONS"); v != "" {
 		c.Lessons = v == "1"
 		sources["LESSONS"] = src.name
@@ -1520,6 +1558,41 @@ func (c Config) ResultDir() string {
 	return filepath.Join(c.WorkTree, c.RunsDir)
 }
 
+// DefaultWorktreeCopy is the WORKTREE_COPY default: the dotenv pair a fresh tree
+// cannot run without and git never carries, because it ignores it.
+const DefaultWorktreeCopy = ".env,.env.*"
+
+// DefaultWorktreesDirLabel is how the settings catalog names the WORKTREES_DIR
+// default, which resolves per machine and so cannot be spelled as a literal path.
+const DefaultWorktreesDirLabel = "<TRAU_HOME>/worktrees"
+
+// WorktreesRoot is the directory per-ticket worktrees are created under:
+// WORKTREES_DIR when set, else <TRAU_HOME>/worktrees. Empty only when no trau
+// home is resolvable at all, which callers read as "worktrees cannot be used
+// here" rather than as a relative path.
+func (c Config) WorktreesRoot() string {
+	if dir := strings.TrimSpace(c.WorktreesDir); dir != "" {
+		return dir
+	}
+	home := registry.Home()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "worktrees")
+}
+
+// WorktreeCopyGlobs splits WORKTREE_COPY into its globs, dropping blanks so a
+// trailing comma or an all-blank value means "copy nothing".
+func (c Config) WorktreeCopyGlobs() []string {
+	globs := []string{}
+	for _, g := range strings.Split(c.WorktreeCopy, ",") {
+		if g = strings.TrimSpace(g); g != "" {
+			globs = append(globs, g)
+		}
+	}
+	return globs
+}
+
 // ResolveWorkTree turns the --worktree flag into the absolute path a run works
 // in; empty means the registered root. The tree must already exist — trau never
 // provisions one — and be a tree git can act in, so a typo fails at startup
@@ -1542,6 +1615,28 @@ func ResolveWorkTree(flagWorkTree string) (string, error) {
 	}
 	if _, err := os.Stat(filepath.Join(abs, ".git")); err != nil {
 		return "", fmt.Errorf("--worktree %s: not a git working tree (no .git); create it with `git worktree add`", abs)
+	}
+	return abs, nil
+}
+
+// ResolveRunWorkTree resolves --worktree for a run. With WORKTREES=1 the flag
+// names the tree trau provisions for itself, so a path that is not there yet is
+// not an error: it resolves to empty and the run's own provisioning step creates
+// the tree at exactly that path, having computed it from the same configuration.
+// A tree already standing there resolves as usual, so a resume works in it from
+// the first git command. Without WORKTREES=1 the flag keeps its operator meaning
+// and the tree must already exist (ResolveWorkTree).
+func ResolveRunWorkTree(flagWorkTree string, worktrees bool) (string, error) {
+	flagWorkTree = strings.TrimSpace(flagWorkTree)
+	if !worktrees || flagWorkTree == "" {
+		return ResolveWorkTree(flagWorkTree)
+	}
+	abs, err := filepath.Abs(flagWorkTree)
+	if err != nil {
+		return "", fmt.Errorf("resolve --worktree %q: %w", flagWorkTree, err)
+	}
+	if _, err := os.Stat(filepath.Join(abs, ".git")); err != nil {
+		return "", nil
 	}
 	return abs, nil
 }
@@ -1919,6 +2014,7 @@ const (
 	sectionAppear    = "Appearance"
 	sectionTUI       = "TUI & notifications"
 	sectionTimeLog   = "Time logging"
+	sectionWorktrees = "Worktrees"
 	sectionPaths     = "Paths & misc"
 )
 
@@ -1928,7 +2024,7 @@ var configSections = []string{
 	sectionTracker, sectionGit, sectionCI, sectionProviders, sectionRouting,
 	sectionPipeline, sectionVerify, sectionCost, sectionGrilling, sectionSkills,
 	sectionTeam, sectionAgent, sectionHub, sectionRetention, sectionAppear,
-	sectionTUI, sectionTimeLog, sectionPaths,
+	sectionTUI, sectionTimeLog, sectionWorktrees, sectionPaths,
 }
 
 // ConfigSections returns the canonical catalog Section order shared by the web
@@ -2050,6 +2146,10 @@ func KnownKeys() []KeyMeta {
 		{Key: "TIMELOG_STORAGE", Group: sectionTimeLog, WebEditable: true, Default: "repo", Description: "Time-log location: repo (<repo>/.trau/time/) | user (~/.trau/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
 		{Key: "TIMELOG_OUTPUT_FORMAT", Group: sectionTimeLog, WebEditable: true, Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
 		{Key: "TIMELOG_ESTIMATOR", Group: sectionTimeLog, WebEditable: true, Default: "heuristic", Description: "Per-ticket effort estimate: heuristic (deterministic table) | agent (cheap agent call)", Options: []string{"heuristic", "agent"}},
+		{Key: "WORKTREES", Group: sectionWorktrees, WebEditable: true, Default: "0", Description: "Every run works in its own git worktree, provisioned per ticket and removed when the ticket settles, instead of sharing the registered checkout — a dirty checkout no longer blocks or gets stashed (1 = yes, 0 = no)", Bool: true},
+		{Key: "WORKTREES_DIR", Group: sectionWorktrees, WebEditable: true, Default: DefaultWorktreesDirLabel, Description: "Directory per-ticket worktrees are created under, as <dir>/<repo>/<ticket>. It must not sit inside a registered repo or a folder repo"},
+		{Key: "WORKTREE_SETUP_CMD", Group: sectionWorktrees, WebEditable: true, Advanced: true, Description: "Shell command run with a freshly provisioned worktree as its working directory, after the copy step (e.g. npm ci). A non-zero exit parks the run and keeps the tree for inspection"},
+		{Key: "WORKTREE_COPY", Group: sectionWorktrees, WebEditable: true, Advanced: true, Default: DefaultWorktreeCopy, Description: "Comma-separated globs of gitignored files copied from the registered root into a fresh worktree; tracked content arrives with the checkout. Empty = copy nothing beyond trau's own files"},
 		{Key: "RUNS_DIR", Group: sectionPaths, Default: ".trau/runs", Description: "Directory for run artifacts"},
 		{Key: "SERVE_BIND", Group: sectionHub, Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
 		{Key: "SERVE_PORT", Group: sectionHub, Kind: "int", Default: "8728", Description: "Port for `trau serve`"},
@@ -2758,6 +2858,17 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "WORKTREES":
+		if cfg.Worktrees {
+			return "1"
+		}
+		return "0"
+	case "WORKTREES_DIR":
+		return cfg.WorktreesDir
+	case "WORKTREE_SETUP_CMD":
+		return cfg.WorktreeSetupCmd
+	case "WORKTREE_COPY":
+		return cfg.WorktreeCopy
 	case "TEAM_SYNC":
 		if cfg.TeamSync {
 			return "1"
