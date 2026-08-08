@@ -49,14 +49,19 @@ const NAVIGATION: Shortcut[] = G_TARGETS.map((target) => ({
 }))
 
 // Every roving list is walked the same way, so the walk is declared once per
-// surface and only the row's own actions are spelled out beside it.
-function rowWalk(where: string, open: string): Shortcut[] {
-  return [
+// surface and only the row's own actions are spelled out beside it. A surface
+// whose rows are a bare link has nothing for Tab to reach, so it drops that step.
+function rowWalk(where: string, open: string, stepIn = true): Shortcut[] {
+  const walk: Shortcut[] = [
     { keys: ['↓'], alt: ['j'], label: 'Next row', group: 'Lists', where },
     { keys: ['↑'], alt: ['k'], label: 'Previous row', group: 'Lists', where },
     { keys: ['Home'], label: 'First row', group: 'Lists', where },
     { keys: ['End'], label: 'Last row', group: 'Lists', where },
     { keys: ['Enter'], label: open, group: 'Lists', where },
+  ]
+  if (!stepIn) return walk
+  return [
+    ...walk,
     {
       keys: ['Tab'],
       label: "Step into the row's own actions",
@@ -108,6 +113,7 @@ const LISTS: Shortcut[] = [
     group: 'Lists',
     where: 'Loop',
   },
+  ...rowWalk('Runs', 'Open the run', false),
   {
     keys: ['j'],
     label: 'Next ticket',

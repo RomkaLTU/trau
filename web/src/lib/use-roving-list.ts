@@ -159,9 +159,11 @@ export function useRovingList({
 
     // Below here is the row's own: Enter on a control inside it is that control's.
     if (target !== row) return
-    if (activatesRow(stroke)) {
+    // A row that is itself a link is opened by the browser, so Enter is claimed
+    // only where the caller has an activation of its own.
+    if (onActivate && activatesRow(stroke)) {
       event.preventDefault()
-      onActivate?.(rowId(row))
+      onActivate(rowId(row))
     }
   }
 

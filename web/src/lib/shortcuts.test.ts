@@ -116,6 +116,20 @@ describe('SHORTCUTS', () => {
     ])
   })
 
+  it('registers the runs walk, which has no row actions to step into', () => {
+    const runs = SHORTCUTS.filter((shortcut) => shortcut.where === 'Runs')
+    expect(runs.map((shortcut) => shortcut.keys[0])).toEqual([
+      '↓',
+      '↑',
+      'Home',
+      'End',
+      'Enter',
+    ])
+    expect(runs[0].alt).toEqual(['j'])
+    expect(runs[1].alt).toEqual(['k'])
+    expect(runs[4].label).toBe('Open the run')
+  })
+
   it('registers the drawer walk beside the inbox one', () => {
     const drawer = SHORTCUTS.filter(
       (shortcut) => shortcut.where === 'Ticket drawer',
