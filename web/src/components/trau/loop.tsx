@@ -1,4 +1,10 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import {
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -70,9 +76,12 @@ import {
   statusWarning,
 } from "@/lib/add-by-id";
 import { configQueryOptions } from "@/lib/config";
+import { drawerKeyAction } from "@/lib/drawer-keys";
 import { addAllLabel, eligibleQueryOptions, planAddAll } from "@/lib/eligible";
 import { syncedAgo, useNow } from "@/lib/elapsed";
 import { pendingHandback } from "@/lib/handback";
+import { readKeyStroke } from "@/lib/keys";
+import { loopRowAction, type LoopRowAction } from "@/lib/loop-row-keys";
 import { IssueFetchError, issueQueryOptions } from "@/lib/issues";
 import {
   instancesQueryOptions,
@@ -123,10 +132,12 @@ import {
   type QueueResponse,
 } from "@/lib/queue";
 import {
+  removableFromQueue,
   removeFromQueueTitle,
   removeFromQueueWarning,
   REMOVE_FROM_QUEUE_LABEL,
 } from "@/lib/queue-remove";
+import { activatesRow, nextIndex, prevIndex } from "@/lib/roving-list";
 import {
   pauseKind,
   runSteps,
@@ -149,8 +160,33 @@ import {
   type Timeline,
   type TimelineTicket,
 } from "@/lib/timeline";
+import {
+  rovingRowIds,
+  useRovingList,
+  type RovingList,
+  type RovingRowProps,
+} from "@/lib/use-roving-list";
 
 const NO_OVERRIDE = "default";
+
+// ControlProps is what a row hands every control inside it, so the list keeps one
+// Tab stop per row and Tab steps through the controls from there.
+type ControlProps = { tabIndex: number };
+
+// rowKeyHandler answers the row's single-key actions while the row itself is the
+// focused thing; a control inside it keeps every key of its own, and an action the
+// row hasn't got is simply swallowed rather than left to scroll the page.
+function rowKeyHandler(
+  actions: Partial<Record<LoopRowAction, (() => void) | undefined>>,
+) {
+  return (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.target !== event.currentTarget) return;
+    const action = loopRowAction(readKeyStroke(event.nativeEvent));
+    if (action === null) return;
+    event.preventDefault();
+    actions[action]?.();
+  };
+}
 
 function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -328,14 +364,17 @@ function TicketIdButton({
   id,
   onPeek,
   className,
+  tabIndex,
 }: {
   id: string;
   onPeek: (id: string) => void;
   className?: string;
+  tabIndex?: number;
 }) {
   return (
     <button
       type="button"
+      tabIndex={tabIndex}
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -441,6 +480,8 @@ function QueueBuilderRow({
   busy,
   batch,
   selected,
+  rowProps,
+  controlProps,
   onSelect,
   onToggle,
   onMove,
@@ -457,6 +498,8 @@ function QueueBuilderRow({
   busy: boolean;
   batch: string;
   selected: boolean;
+  rowProps: RovingRowProps;
+  controlProps: ControlProps;
   onSelect: () => void;
   onToggle: () => void;
   onMove: (dir: -1 | 1) => void;
@@ -476,13 +519,30 @@ function QueueBuilderRow({
       ? "Run remaining sub-issues, then stop"
       : "Run only this item";
 
+  // Each key is the button beside it, refusal included: a key does nothing exactly
+  // where the button it stands for is disabled or absent.
+  const onKeyDown = rowKeyHandler({
+    select: batchSelectable(item) ? onSelect : undefined,
+    moveUp: index > 0 && !busy ? () => onMove(-1) : undefined,
+    moveDown: index < count - 1 && !busy ? () => onMove(1) : undefined,
+    run: runnable && !item.blocked && !busy ? onRun : undefined,
+    remove:
+      removableFromQueue(item) && !busy ? () => onRemove(item.id) : undefined,
+  });
+
   return (
-    <li className="border-b border-border/60 last:border-0">
+    <li
+      {...rowProps}
+      onKeyDown={onKeyDown}
+      aria-label={`Open ${item.id}`}
+      className="border-b border-border/60 last:border-0"
+    >
       <div className="flex items-center gap-3 px-3 py-2.5">
         {batchSelectable(item) ? (
           <button
             type="button"
             role="checkbox"
+            {...controlProps}
             aria-checked={selected}
             aria-label={`Select ${item.id} for a batch`}
             onClick={onSelect}
@@ -506,6 +566,7 @@ function QueueBuilderRow({
         {isEpic ? (
           <button
             type="button"
+            {...controlProps}
             onClick={onToggle}
             aria-expanded={expanded}
             aria-label={expanded ? `Collapse ${item.id}` : `Expand ${item.id}`}
@@ -525,6 +586,7 @@ function QueueBuilderRow({
           id={item.id}
           onPeek={onPeek}
           className="text-sm text-primary"
+          tabIndex={controlProps.tabIndex}
         />
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
           {item.title || "—"}
@@ -547,6 +609,7 @@ function QueueBuilderRow({
             <span title={runHint} className="flex">
               <button
                 type="button"
+                {...controlProps}
                 onClick={onRun}
                 disabled={item.blocked || busy}
                 aria-label={`Run ${item.id} now`}
@@ -558,6 +621,7 @@ function QueueBuilderRow({
           )}
           <button
             type="button"
+            {...controlProps}
             onClick={() => onMove(-1)}
             disabled={index === 0 || busy}
             aria-label={`Move ${item.id} up`}
@@ -567,6 +631,7 @@ function QueueBuilderRow({
           </button>
           <button
             type="button"
+            {...controlProps}
             onClick={() => onMove(1)}
             disabled={index === count - 1 || busy}
             aria-label={`Move ${item.id} down`}
@@ -580,6 +645,7 @@ function QueueBuilderRow({
             stopping={stopping}
             onRemove={onRemove}
             onStop={onStop}
+            tabIndex={controlProps.tabIndex}
           />
         </div>
       </div>
@@ -597,6 +663,7 @@ function QueueBuilderRow({
                   id={sub.id}
                   onPeek={onPeek}
                   className="text-xs text-primary/80"
+                  tabIndex={controlProps.tabIndex}
                 />
                 <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
                   {sub.title}
@@ -920,10 +987,12 @@ function BatchCard({
 function LaunchQueueCard({
   repo,
   freshness,
+  rows,
   onPeek,
 }: {
   repo: string;
   freshness?: RepoFreshness;
+  rows: RovingList;
   onPeek: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -1588,6 +1657,8 @@ function LaunchQueueCard({
                       busy={busy}
                       batch={batchName(batches, item.batch ?? "")}
                       selected={picked.includes(item.id)}
+                      rowProps={rows.rowProps(item.id, `queued/${item.id}`)}
+                      controlProps={rows.controlProps}
                       onSelect={() => toggleSelect(item.id)}
                       onToggle={() => toggleExpand(item.id)}
                       onMove={(dir) => move.mutate({ id: item.id, dir })}
@@ -1722,6 +1793,7 @@ function LaunchQueueCard({
           settled={builder.settled}
           itemsById={itemsById}
           busy={busy}
+          rows={rows}
           onRemove={askRemove}
           onPeek={onPeek}
         />
@@ -1813,6 +1885,8 @@ function SettledRow({
   ticket,
   item,
   busy,
+  rowProps,
+  controlProps,
   onRemove,
   onPeek,
 }: {
@@ -1820,10 +1894,36 @@ function SettledRow({
   ticket: TimelineTicket;
   item?: QueueItem;
   busy: boolean;
+  rowProps: RovingRowProps;
+  controlProps: ControlProps;
   onRemove: (id: string) => void;
   onPeek: (id: string) => void;
 }) {
   const pill = ticketPill(ticket);
+  const runLink = useRef<HTMLAnchorElement | null>(null);
+  const keys = rowKeyHandler({
+    remove:
+      item && removableFromQueue(item) && !busy
+        ? () => onRemove(item.id)
+        : undefined,
+  });
+
+  // A settled row's Enter goes where the row itself goes — the run it produced —
+  // so only a row with no run of its own falls through to the ticket drawer.
+  function onKeyDown(event: ReactKeyboardEvent<HTMLLIElement>) {
+    if (
+      event.target === event.currentTarget &&
+      runLink.current &&
+      activatesRow(readKeyStroke(event.nativeEvent))
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      runLink.current.click();
+      return;
+    }
+    keys(event);
+  }
+
   const head = (
     <div className="flex items-center gap-3">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -1832,6 +1932,7 @@ function SettledRow({
           id={ticket.id}
           onPeek={onPeek}
           className="text-sm text-primary"
+          tabIndex={controlProps.tabIndex}
         />
         {ticket.title ? (
           <span className="min-w-0 truncate font-sans text-sm text-foreground">
@@ -1848,8 +1949,10 @@ function SettledRow({
   ) : null;
   const body = ticket.hasRun ? (
     <Link
+      ref={runLink}
       to="/runs/$repo/$ticket"
       params={{ repo, ticket: ticket.id }}
+      {...controlProps}
       className="flex min-w-0 flex-1 flex-col gap-1.5 px-4 py-2.5 transition-colors hover:bg-secondary/40"
     >
       {head}
@@ -1863,7 +1966,12 @@ function SettledRow({
   );
 
   return (
-    <li className="flex items-center border-b border-border/60 last:border-0">
+    <li
+      {...rowProps}
+      onKeyDown={onKeyDown}
+      aria-label={ticket.hasRun ? `Open run ${ticket.id}` : `Open ${ticket.id}`}
+      className="flex items-center border-b border-border/60 last:border-0"
+    >
       {body}
       {item ? (
         <span className="flex pr-3">
@@ -1871,6 +1979,7 @@ function SettledRow({
             item={item}
             disabled={busy}
             onRemove={onRemove}
+            tabIndex={controlProps.tabIndex}
           />
         </span>
       ) : null}
@@ -1883,6 +1992,7 @@ function FinishedSection({
   settled,
   itemsById,
   busy,
+  rows,
   onRemove,
   onPeek,
 }: {
@@ -1890,6 +2000,7 @@ function FinishedSection({
   settled: TimelineTicket[];
   itemsById: Map<string, QueueItem>;
   busy: boolean;
+  rows: RovingList;
   onRemove: (id: string) => void;
   onPeek: (id: string) => void;
 }) {
@@ -1948,6 +2059,8 @@ function FinishedSection({
                   ticket={ticket}
                   item={itemsById.get(ticket.id)}
                   busy={busy}
+                  rowProps={rows.rowProps(ticket.id, `finished/${ticket.id}`)}
+                  controlProps={rows.controlProps}
                   onRemove={onRemove}
                   onPeek={onPeek}
                 />
@@ -2210,16 +2323,19 @@ function RemainingAction({
   id,
   first,
   busy,
+  tabIndex,
   onRunNext,
 }: {
   id: string;
   first?: boolean;
   busy: boolean;
+  tabIndex?: number;
   onRunNext: (id: string) => void;
 }) {
   return (
     <button
       type="button"
+      tabIndex={tabIndex}
       onClick={() => onRunNext(id)}
       disabled={busy || first}
       title="Run next"
@@ -2236,6 +2352,8 @@ function PendingTicketRow({
   item,
   first,
   busy,
+  rowProps,
+  controlProps,
   onPeek,
   onRunNext,
   onRemove,
@@ -2244,18 +2362,36 @@ function PendingTicketRow({
   item?: QueueItem;
   first?: boolean;
   busy: boolean;
+  rowProps: RovingRowProps;
+  controlProps: ControlProps;
   onPeek: (id: string) => void;
   onRunNext?: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
   const pill = ticketPill(ticket);
+  // A remaining row's Run is Run next: it moves the ticket to the front of the
+  // queue, which is the only run a drain in flight has to give.
+  const onKeyDown = rowKeyHandler({
+    run: onRunNext && !busy && !first ? () => onRunNext(ticket.id) : undefined,
+    remove:
+      item && removableFromQueue(item) && !busy
+        ? () => onRemove(item.id)
+        : undefined,
+  });
+
   return (
-    <li className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0">
+    <li
+      {...rowProps}
+      onKeyDown={onKeyDown}
+      aria-label={`Open ${ticket.id}`}
+      className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0"
+    >
       {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
       <TicketIdButton
         id={ticket.id}
         onPeek={onPeek}
         className="text-sm text-primary"
+        tabIndex={controlProps.tabIndex}
       />
       <span className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground">
         {ticket.title || "—"}
@@ -2269,11 +2405,17 @@ function PendingTicketRow({
           id={ticket.id}
           first={first}
           busy={busy}
+          tabIndex={controlProps.tabIndex}
           onRunNext={onRunNext}
         />
       ) : null}
       {item ? (
-        <RemoveFromQueueButton item={item} disabled={busy} onRemove={onRemove} />
+        <RemoveFromQueueButton
+          item={item}
+          disabled={busy}
+          onRemove={onRemove}
+          tabIndex={controlProps.tabIndex}
+        />
       ) : null}
     </li>
   );
@@ -2284,6 +2426,8 @@ function PendingEpicGroup({
   item,
   first,
   busy,
+  rowProps,
+  controlProps,
   onPeek,
   onRunNext,
   onRemove,
@@ -2292,13 +2436,28 @@ function PendingEpicGroup({
   item?: QueueItem;
   first?: boolean;
   busy: boolean;
+  rowProps: RovingRowProps;
+  controlProps: ControlProps;
   onPeek: (id: string) => void;
   onRunNext?: (id: string) => void;
   onRemove: (id: string) => void;
 }) {
   const paused = item?.status === "paused";
+  const onKeyDown = rowKeyHandler({
+    run: onRunNext && !busy && !first ? () => onRunNext(entry.id) : undefined,
+    remove:
+      item && removableFromQueue(item) && !busy
+        ? () => onRemove(item.id)
+        : undefined,
+  });
+
   return (
-    <li className="border-b border-border/60 last:border-0">
+    <li
+      {...rowProps}
+      onKeyDown={onKeyDown}
+      aria-label={`Open ${entry.id}`}
+      className="border-b border-border/60 last:border-0"
+    >
       <div
         className={cn(
           "flex items-center gap-3 px-4 py-2.5",
@@ -2307,7 +2466,12 @@ function PendingEpicGroup({
       >
         <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm text-info">
           <span aria-hidden="true">◆</span>
-          <TicketIdButton id={entry.id} onPeek={onPeek} className="text-info" />
+          <TicketIdButton
+            id={entry.id}
+            onPeek={onPeek}
+            className="text-info"
+            tabIndex={controlProps.tabIndex}
+          />
         </span>
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
           {entry.title || "—"}
@@ -2327,6 +2491,7 @@ function PendingEpicGroup({
             id={entry.id}
             first={first}
             busy={busy}
+            tabIndex={controlProps.tabIndex}
             onRunNext={onRunNext}
           />
         ) : null}
@@ -2335,6 +2500,7 @@ function PendingEpicGroup({
             item={item}
             disabled={busy}
             onRemove={onRemove}
+            tabIndex={controlProps.tabIndex}
           />
         ) : null}
       </div>
@@ -2351,6 +2517,7 @@ function PendingEpicGroup({
                   id={child.id}
                   onPeek={onPeek}
                   className="text-xs text-primary/80"
+                  tabIndex={controlProps.tabIndex}
                 />
                 <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
                   {child.title || "—"}
@@ -2389,6 +2556,7 @@ function RunningQueueView({
   instance,
   takeover,
   halt,
+  rows,
   onStop,
   stopping,
   stopError,
@@ -2400,6 +2568,7 @@ function RunningQueueView({
   instance?: Instance;
   takeover?: Instance;
   halt: LoopHalt | null;
+  rows: RovingList;
   onStop: () => void;
   stopping: boolean;
   stopError: unknown;
@@ -2549,6 +2718,11 @@ function RunningQueueView({
                           item={itemsById.get(entry.id)}
                           first={index === 0}
                           busy={rowBusy}
+                          rowProps={rows.rowProps(
+                            entry.id,
+                            `remaining/${entry.id}`,
+                          )}
+                          controlProps={rows.controlProps}
                           onPeek={onPeek}
                           onRunNext={askRunNext}
                           onRemove={askRemove}
@@ -2560,6 +2734,11 @@ function RunningQueueView({
                           item={itemsById.get(entry.ticket.id)}
                           first={index === 0}
                           busy={rowBusy}
+                          rowProps={rows.rowProps(
+                            entry.ticket.id,
+                            `remaining/${entry.ticket.id}`,
+                          )}
+                          controlProps={rows.controlProps}
                           onPeek={onPeek}
                           onRunNext={askRunNext}
                           onRemove={askRemove}
@@ -2612,6 +2791,11 @@ function RunningQueueView({
                         entry={entry}
                         item={itemsById.get(entry.id)}
                         busy={rowBusy}
+                        rowProps={rows.rowProps(
+                          entry.id,
+                          `outside/${entry.id}`,
+                        )}
+                        controlProps={rows.controlProps}
                         onPeek={onPeek}
                         onRemove={askRemove}
                       />
@@ -2621,6 +2805,11 @@ function RunningQueueView({
                         ticket={entry.ticket}
                         item={itemsById.get(entry.ticket.id)}
                         busy={rowBusy}
+                        rowProps={rows.rowProps(
+                          entry.ticket.id,
+                          `outside/${entry.ticket.id}`,
+                        )}
+                        controlProps={rows.controlProps}
                         onPeek={onPeek}
                         onRemove={askRemove}
                       />
@@ -2641,6 +2830,7 @@ function RunningQueueView({
               settled={timeline.finished}
               itemsById={itemsById}
               busy={rowBusy}
+              rows={rows}
               onRemove={askRemove}
               onPeek={onPeek}
             />
@@ -3108,6 +3298,39 @@ export function Loop() {
   );
   const onPeek = (id: string) => void setPeek(id);
 
+  // Every row on the page — the builder's queue, the remaining tickets, the
+  // finished ones — is one keyboard list with a single Tab stop over all of it.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const rows = useRovingList({ container: listRef, onActivate: onPeek });
+
+  // The row the drawer is reading, kept past the close so Escape lands on it — j/k
+  // walk the list, so it is rarely the row the drawer opened from.
+  const lastPeek = useRef<string | null>(null);
+  useEffect(() => {
+    if (peek !== null) lastPeek.current = peek;
+  }, [peek]);
+
+  // Replace rather than push: a walk of twenty tickets is one Back, not twenty.
+  useEffect(() => {
+    if (peek === null) return;
+    function onKeyDown(e: KeyboardEvent) {
+      const action = drawerKeyAction(readKeyStroke(e));
+      if (action === null) return;
+      const ids = rovingRowIds(listRef.current);
+      const at = ids.indexOf(peek!);
+      if (at === -1) return;
+      const to =
+        action === "next"
+          ? nextIndex(at, ids.length)
+          : prevIndex(at, ids.length);
+      if (to === null || ids[to] === peek) return;
+      e.preventDefault();
+      void setPeek(ids[to], { history: "replace" });
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [peek, setPeek]);
+
   const { view, timeline, halt } = projectLoopState({
     queue: queue.data,
     runs: runs.data?.runs ?? [],
@@ -3147,6 +3370,16 @@ export function Loop() {
         if (!open) void setPeek(null);
       }}
       onSelectIssue={onPeek}
+      onCloseAutoFocus={(event) => {
+        // The Sheet is controlled and has no trigger, so Radix has nothing of its
+        // own to restore to and would drop focus on <body>. Land on the last-viewed
+        // ticket's row, or — for a ticket reached from inside the drawer, a parent
+        // or a blocker with no row here — on the row the Tab stop still sits on.
+        event.preventDefault();
+        const id = lastPeek.current;
+        if (id !== null && rows.focusRow(id)) return;
+        rows.focusTabStop();
+      }}
     />
   );
 
@@ -3162,7 +3395,7 @@ export function Loop() {
   if (view === "running" && queue.data && timeline) {
     return (
       <>
-        <div className="flex flex-col gap-6">
+        <div ref={listRef} {...rows.listProps} className="flex flex-col gap-6">
           <RunningQueueView
             repo={repo}
             queue={queue.data}
@@ -3170,6 +3403,7 @@ export function Loop() {
             instance={liveInstance}
             takeover={takeoverInstance}
             halt={halt}
+            rows={rows}
             onStop={() => stop.mutate()}
             stopping={stop.isPending || queue.data.stopping}
             stopError={stop.error}
@@ -3183,7 +3417,7 @@ export function Loop() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div ref={listRef} {...rows.listProps} className="flex flex-col gap-6">
       <LoopBanner
         repo={repo}
         takeover={takeoverInstance}
@@ -3194,6 +3428,7 @@ export function Loop() {
       <LaunchQueueCard
         repo={repo}
         freshness={repos.find((r) => r.name === repo)?.freshness}
+        rows={rows}
         onPeek={onPeek}
       />
       {babysitter}
