@@ -481,3 +481,163 @@ func TestProjectTrackerReportsSyncedIssuesPerRepo(t *testing.T) {
 		}
 	}
 }
+
+// postResync fires the force-resync recovery path and hands back the response
+// with the body it decoded on success.
+func postResync(t *testing.T, ts *httptest.Server, repo string) (*http.Response, SyncResponse, string) {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/resync", nil)
+	body := readBody(t, res)
+	var out SyncResponse
+	if res.StatusCode == http.StatusOK {
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("decode resync response: %v", err)
+		}
+	}
+	return res, out, body
+}
+
+// A provider flipped to internal outside the hub's own settings writes leaves the
+// mirror behind, and no reader resolves to pull it again — so force-resync runs
+// the same guarded drop the switch hook does and says so, rather than refusing the
+// only path that could reach those rows.
+func TestForceResyncOnAnInternalRepoDropsTheStaleMirror(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	root := switchRepo(t, home, "acme", "TRACKER_PROVIDER=internal\n")
+	seedJiraMirror(t, home, root)
+	seedQueueHistory(t, home, root, "ACME-55", "jira", queue.StatusDone)
+	internal := mintInternal(t, home, root, "Hub-only work")
+	store := testStoresAt(t, home).Issues()
+	if err := store.RecordError(root, "no tracker credentials", "config"); err != nil {
+		t.Fatalf("seed sync error: %v", err)
+	}
+
+	ts := switchServer(t, home, nil)
+	res, out, body := postResync(t, ts, "acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("resync = %d (%s), want 200", res.StatusCode, body)
+	}
+	if out.Cleared != 3 || out.Provider != "internal" || out.Issues != 0 {
+		t.Fatalf("resync body = %+v, want 3 mirrored issues cleared on the internal provider and no pull", out)
+	}
+
+	stored, err := store.List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got := identifiers(stored); len(got) != 1 || got[0] != internal {
+		t.Fatalf("store holds %v, want only the internal issue %s", got, internal)
+	}
+	if n := commentCount(t, home, root); n != 0 {
+		t.Errorf("comments = %d, want 0 — the mirror's comments cascade with it", n)
+	}
+
+	state, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if state.Cursor != "" {
+		t.Errorf("cursor = %q, want empty so a switch back re-pulls everything", state.Cursor)
+	}
+	if state.LastError != "" {
+		t.Errorf("last error = %q, want cleared — nothing will ever sync it away", state.LastError)
+	}
+
+	// ACME-55 only ever existed in the queue, and ACME-42 has just been dropped —
+	// the sequence still has to clear both.
+	if next := mintInternal(t, home, root, "After the recovery"); next != "ACME-56" {
+		t.Fatalf("next internal id = %s, want ACME-56 — past every id the mirror and queue history held", next)
+	}
+}
+
+// The busy guard is the same refusal wherever the drop is asked for: live tracker
+// work in the queue is held under an identifier the drop would retire, so the
+// recovery is refused with the blocking id named and nothing is dropped.
+func TestForceResyncOnAnInternalRepoRefusedWhileQueueHoldsTrackerWork(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	root := switchRepo(t, home, "acme", "TRACKER_PROVIDER=internal\n")
+	seedJiraMirror(t, home, root)
+	seedQueueHistory(t, home, root, "ACME-2", "jira", queue.StatusPending)
+
+	ts := switchServer(t, home, nil)
+	res, _, body := postResync(t, ts, "acme")
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("resync = %d (%s), want 409", res.StatusCode, body)
+	}
+	var refusal struct {
+		Reason  string                 `json:"reason"`
+		Blocked []TrackerSwitchBlocker `json:"blocked"`
+	}
+	if err := json.Unmarshal([]byte(body), &refusal); err != nil {
+		t.Fatalf("decode refusal: %v", err)
+	}
+	if refusal.Reason != "queue_busy" || len(refusal.Blocked) != 1 || refusal.Blocked[0].ID != "ACME-2" {
+		t.Fatalf("refusal = %+v, want a structured queue_busy naming ACME-2", refusal)
+	}
+
+	stored, err := testStoresAt(t, home).Issues().List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(stored) != 3 {
+		t.Errorf("store holds %v, want the mirror untouched", identifiers(stored))
+	}
+}
+
+// A repo that never mirrored anything has nothing stale to reach, so the recovery
+// path succeeds having done nothing — it is not an error to ask.
+func TestForceResyncOnAnInternalRepoWithoutMirrorIsANoOp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	root := switchRepo(t, home, "acme", "TRACKER_PROVIDER=internal\n")
+	internal := mintInternal(t, home, root, "Hub-only work")
+
+	ts := switchServer(t, home, nil)
+	res, out, body := postResync(t, ts, "acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("resync = %d (%s), want 200", res.StatusCode, body)
+	}
+	if out.Cleared != 0 || out.Provider != "internal" {
+		t.Fatalf("resync body = %+v, want a no-op on the internal provider", out)
+	}
+
+	stored, err := testStoresAt(t, home).Issues().List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got := identifiers(stored); len(got) != 1 || got[0] != internal {
+		t.Fatalf("store holds %v, want the internal issue %s untouched", got, internal)
+	}
+	if next := mintInternal(t, home, root, "After the no-op"); next != "ACME-2" {
+		t.Errorf("next internal id = %s, want ACME-2 — a no-op moves no sequence", next)
+	}
+}
+
+// A repo that still has a tracker resyncs the way it always did: the mirror is
+// dropped and re-pulled clean, not cleared.
+func TestForceResyncOnAnExternalRepoStillRePulls(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	root := switchRepo(t, home, "acme", switchJiraINI)
+	seedJiraMirror(t, home, root)
+
+	fake := &fakeReader{synced: []tracker.SyncedIssue{syncedIssue("ACME-1")}}
+	ts := switchServer(t, home, fake)
+	res, out, body := postResync(t, ts, "acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("resync = %d (%s), want 200", res.StatusCode, body)
+	}
+	if out.Cleared != 0 || out.Issues != 1 || out.Provider != "jira" {
+		t.Fatalf("resync body = %+v, want a clean re-pull of one Jira issue", out)
+	}
+
+	stored, err := testStoresAt(t, home).Issues().List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if got := identifiers(stored); len(got) != 1 || got[0] != "ACME-1" {
+		t.Fatalf("store holds %v, want only the re-pulled ACME-1", got)
+	}
+}

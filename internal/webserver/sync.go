@@ -18,13 +18,15 @@ import (
 // SyncResponse is the JSON body of POST /repos/{repo}/sync: what the pull wrote to
 // the local issue store and when, so a caller sees exactly what changed. Removed
 // counts the issues the manual sweep tombstoned; it is zero on every path that
-// does not sweep.
+// does not sweep. Cleared counts the stale mirrored issues a force-resync dropped
+// from a repo whose provider is now internal, and is zero everywhere else.
 type SyncResponse struct {
 	Repo     string `json:"repo"`
 	Provider string `json:"provider"`
 	Issues   int    `json:"issues"`
 	Comments int    `json:"comments"`
 	Removed  int    `json:"removed"`
+	Cleared  int    `json:"cleared"`
 	SyncedAt string `json:"syncedAt"`
 }
 
@@ -99,7 +101,8 @@ func writeSyncErr(w http.ResponseWriter, err error) {
 // counts. It takes the same per-repo claim as handleSync, so a resync asked for
 // while a sync is in flight coalesces with 202 rather than dropping the store
 // under a running pull. Unknown repos 404, a repo without direct tracker
-// credentials 422 (with the store left untouched), and a tracker error 502.
+// credentials 422 (with the store left untouched), a repo whose queue still holds
+// the tracker work its stale mirror would retire 409, and a tracker error 502.
 func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -118,14 +121,26 @@ func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.forceResync(r.Context(), repo)
 	s.syncer.settleManual(repo.Root, err)
 	if err != nil {
-		if readerConfigErr(err) {
-			writeReaderErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "resync failed: " + err.Error()})
+		writeResyncErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// writeResyncErr maps a failed force-resync onto its response. A mirror drop the
+// busy guard refused answers exactly as the settings writes that switch a repo to
+// the internal tracker do, so a client reads one shape for that refusal wherever
+// it asked for the drop.
+func writeResyncErr(w http.ResponseWriter, err error) {
+	var busy *trackerSwitchBusy
+	switch {
+	case errors.As(err, &busy):
+		writeInternalDropErr(w, err)
+	case readerConfigErr(err):
+		writeReaderErr(w, err)
+	default:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "resync failed: " + err.Error()})
+	}
 }
 
 // forceResync re-resolves the repo's tracker binding from current config, then
@@ -136,10 +151,15 @@ func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 // so a wrong project key left by an old config is replaced rather than reused for
 // the clean re-pull. Internal issues are preserved. The binding is re-resolved
 // before anything is dropped, so a repo whose reader cannot resolve one is refused
-// with the store intact rather than emptied with nothing to re-pull it.
+// with the store intact rather than emptied with nothing to re-pull it. The one
+// exception is a repo whose config now names the internal tracker: there is no
+// tracker left to re-pull from, so the resync clears the stale mirror instead.
 func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
 	res, err := s.resolveReader(repo)
 	if err != nil {
+		if res.provider == internalProvider && res.explicit && errors.Is(err, tracker.ErrReaderUnavailable) {
+			return s.clearInternalMirror(repo)
+		}
 		return SyncResponse{}, err
 	}
 	store := s.stores.Issues()
@@ -152,6 +172,32 @@ func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncRespo
 		return SyncResponse{}, err
 	}
 	return s.syncRepo(ctx, repo)
+}
+
+// clearInternalMirror is force-resync on a repo pointed at the internal tracker:
+// no reader resolves, so there is nothing to pull and the recovery is the guarded
+// drop the hub's own switch to internal runs (ADR 0042) — busy guard, identifier
+// sequence lifted clear of every id the mirror spoke for, mirror dropped. It is
+// the way back from a provider flipped outside the hub's two settings writes (a
+// hand-edited .trau.ini, the user layer), which leaves the mirror behind as rows
+// no sync will refresh, no editor will touch and no sweep will reconcile away. A
+// repo carrying no mirror is a clean no-op. The stamped sync error goes with the
+// mirror, so a repo pinned at sync-failed by the tracker it no longer uses reads
+// healthy again.
+func (s *Server) clearInternalMirror(repo registry.Repo) (SyncResponse, error) {
+	cleared, err := s.dropInternalMirrors([]string{repo.Root})
+	if err != nil {
+		return SyncResponse{}, err
+	}
+	if err := s.stores.Issues().ClearError(repo.Root); err != nil {
+		logger.Verbosef("resync %s: clear stale sync error: %v", repo.Root, err)
+	}
+	return SyncResponse{
+		Repo:     repo.Name,
+		Provider: internalProvider,
+		Cleared:  cleared,
+		SyncedAt: nowStamp(),
+	}, nil
 }
 
 // reconcileRepo diffs the repo's Project identifier set against the store and

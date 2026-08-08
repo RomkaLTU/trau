@@ -9,25 +9,10 @@ import (
 	"github.com/RomkaLTU/trau/internal/queue"
 )
 
-// HasSynced reports whether the repo still holds issues an external tracker owns.
-// A repo that never mirrored anything needs no migration on the switch to the
-// internal tracker (ADR 0042), only the key write.
-func (s *Issues) HasSynced(repo string) (bool, error) {
-	var one int
-	err := s.db.QueryRow(
-		`SELECT 1 FROM issues WHERE repo = ? AND source <> ? LIMIT 1`, repo, SourceInternal,
-	).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
 // CountSynced counts the issues the repo holds on an external tracker's behalf —
-// exactly the rows a switch to the internal tracker drops.
+// exactly the rows a switch to the internal tracker drops. A repo that never
+// mirrored anything counts zero and needs no migration (ADR 0042), only the key
+// write.
 func (s *Issues) CountSynced(repo string) (int, error) {
 	var n int
 	err := s.db.QueryRow(
