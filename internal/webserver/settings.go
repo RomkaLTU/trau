@@ -61,6 +61,11 @@ type ConfigResponse struct {
 	Layers    []string        `json:"layers"`
 	Providers []string        `json:"providers"`
 	Keys      []ConfigKeyView `json:"keys"`
+	// SyncedIssues is how many issues the repo still mirrors from an external
+	// tracker — the rows pointing TRACKER_PROVIDER at the internal tracker would
+	// drop, so the settings surface can say so before it writes. The global scope
+	// owns no issues and always reports zero.
+	SyncedIssues int `json:"synced_issues"`
 }
 
 // ConfigWriteRequest is the body of a settings edit: the key, its new value, and
@@ -178,7 +183,18 @@ func (s *Server) getConfig(w http.ResponseWriter, repo registry.Repo) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load config: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, ConfigResponse{Repo: repo.Name, Layers: configWriteLayers, Providers: agent.DefaultRegistry().Names(), Keys: views})
+	synced, err := s.stores.Issues().CountSynced(repo.Root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "count synced issues: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ConfigResponse{
+		Repo:         repo.Name,
+		Layers:       configWriteLayers,
+		Providers:    agent.DefaultRegistry().Names(),
+		Keys:         views,
+		SyncedIssues: synced,
+	})
 }
 
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry.Repo) {

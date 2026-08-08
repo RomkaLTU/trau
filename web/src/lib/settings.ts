@@ -289,6 +289,28 @@ export function visibleKeys(keys: ConfigKey[]): ConfigKey[] {
 
 export const TRACKER_PROVIDER_KEY = 'TRACKER_PROVIDER'
 export const DEFAULT_TRACKER = 'linear'
+export const INTERNAL_TRACKER = 'internal'
+
+// Pointing a repo at the internal tracker drops the mirror it holds for the
+// tracker it is leaving, so the save is worth confirming — but only while there
+// is a mirror to lose.
+export function confirmsInternalSwitch(
+  item: ConfigKey,
+  draft: string,
+  syncedIssues: number,
+): boolean {
+  if (item.key !== TRACKER_PROVIDER_KEY) return false
+  if (draft.trim().toLowerCase() !== INTERNAL_TRACKER) return false
+  return syncedIssues > 0
+}
+
+export function internalSwitchWarning(
+  syncedIssues: number,
+  provider: string,
+): string {
+  const issues = syncedIssues === 1 ? '1 synced issue' : `${syncedIssues} synced issues`
+  return `This removes ${issues} from the hub backlog. History stays in ${provider}; switching back re-imports them.`
+}
 
 // The tracker the TRACKER_PROVIDER dropdown itself shows — the key value, not
 // the provider the loop falls back to — so the fields on screen always belong

@@ -377,3 +377,45 @@ func TestSwitchBackReimportsTheWholeProject(t *testing.T) {
 		t.Errorf("internal %s = %+v (found=%v err=%v), want the re-import to have left it alone", minted, kept, found, err)
 	}
 }
+
+// The settings surface has to be able to say how many issues the switch would
+// take with it, so the config payload carries the repo's mirrored count — it
+// leaves out the hub's own issues, and falls to zero once the mirror is gone.
+func TestConfigReportsSyncedIssueCount(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	root := switchRepo(t, home, "acme", switchJiraINI)
+	seedJiraMirror(t, home, root)
+	mintInternal(t, home, root, "Hub-only work")
+
+	ts := switchServer(t, home, nil)
+	before, _ := getConfig(t, ts, "acme")
+	if before.SyncedIssues != 3 {
+		t.Fatalf("synced_issues = %d, want the 3 mirrored tickets and not the internal one", before.SyncedIssues)
+	}
+
+	res := putConfig(t, ts, "acme", ConfigWriteRequest{Key: "TRACKER_PROVIDER", Value: "internal", Layer: "project"})
+	if body := readBody(t, res); res.StatusCode != http.StatusOK {
+		t.Fatalf("put config = %d (%s)", res.StatusCode, body)
+	}
+
+	after, _ := getConfig(t, ts, "acme")
+	if after.SyncedIssues != 0 {
+		t.Errorf("synced_issues = %d after the switch, want 0", after.SyncedIssues)
+	}
+}
+
+// A repo that never mirrored anything reports nothing to lose, so the surface
+// saves the switch without asking.
+func TestConfigReportsNoSyncedIssuesForAHubOnlyRepo(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	root := switchRepo(t, home, "acme", "TRACKER_PROVIDER=internal\n")
+	mintInternal(t, home, root, "Hub-only work")
+
+	ts := switchServer(t, home, nil)
+	got, _ := getConfig(t, ts, "acme")
+	if got.SyncedIssues != 0 {
+		t.Errorf("synced_issues = %d, want 0", got.SyncedIssues)
+	}
+}
