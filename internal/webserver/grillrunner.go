@@ -261,19 +261,23 @@ func grillChildEnv() []string {
 
 // grillEndpoint names the MCP surface one turn's child talks to: the session's own
 // tools (ask_user, ask_round, finish_session) for an interviewer turn, or a single
-// challenger's submit_decision surface during the second-opinion draft phase. Every
-// provider config writer builds its URL from here, so the two surfaces differ by the
-// path alone.
+// panel member's submit_decision surface during the second-opinion phases — the draft
+// phase at round 0, one challenge round per round after it. Every provider config
+// writer builds its URL from here, so the surfaces differ by the path alone.
 type grillEndpoint struct {
 	sid    int64
 	member string
+	round  int
 }
 
 func (e grillEndpoint) path() string {
 	if e.member == "" {
 		return fmt.Sprintf("%s/grill/%d/mcp", APIPrefix, e.sid)
 	}
-	return fmt.Sprintf("%s/grill/%d/mcp/%s", APIPrefix, e.sid, url.PathEscape(e.member))
+	if e.round < 1 {
+		return fmt.Sprintf("%s/grill/%d/mcp/%s", APIPrefix, e.sid, url.PathEscape(e.member))
+	}
+	return fmt.Sprintf("%s/grill/%d/mcp/%s/%d", APIPrefix, e.sid, url.PathEscape(e.member), e.round)
 }
 
 // slug names the per-endpoint scratch a provider needs on disk. A challenger draft

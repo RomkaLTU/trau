@@ -126,6 +126,12 @@ type Config struct {
 	// filters them to what the picked interviewer leaves valid and the user edits
 	// the selection before starting.
 	GrillChallengers []string
+	// GrillChallengeRounds bounds the challenge rounds a second-opinion interview
+	// runs after every panel member has drafted: each round every member either
+	// endorses one proposal or revises its own with a challenge note, and unanimity
+	// settles the session on a single consensus proposal. Zero skips the rounds, so
+	// the drafts go straight to the side-by-side review.
+	GrillChallengeRounds int
 
 	ClaudeConfig          string
 	ClaudeBin             string
@@ -585,6 +591,7 @@ func Defaults() Config {
 		GrillRetention:         50,
 		AttachmentsCacheMB:     1024,
 		GrillPregrillMax:       5,
+		GrillChallengeRounds:   2,
 		MaxTicketUSD:           0,
 		MaxTicketTokens:        0,
 		MaxDailyUSD:            0,
@@ -1163,6 +1170,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("GRILL_RETENTION", &c.GrillRetention)
 	num("ATTACHMENTS_CACHE_MB", &c.AttachmentsCacheMB)
 	num("GRILL_PREGRILL_MAX", &c.GrillPregrillMax)
+	num("GRILL_CHALLENGE_ROUNDS", &c.GrillChallengeRounds)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
@@ -1930,6 +1938,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "GRILL_PROVIDER", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Provider for the hub's grilling agent (claude, codex, kimi); empty means claude", Options: providerOptions},
 		{Key: "GRILL_MODEL", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Claude model for the hub's grilling agent; empty falls back to CLAUDE_MODEL"},
 		{Key: "GRILL_CHALLENGERS", Group: sectionGrilling, WebEditable: true, Description: "Default second-opinion providers prefilled when starting an interview"},
+		{Key: "GRILL_CHALLENGE_ROUNDS", Group: sectionGrilling, Kind: "int", WebEditable: true, Default: "2", Description: "Challenge rounds a second-opinion interview runs to converge on one consensus proposal; 0 goes straight to the side-by-side review"},
 		{Key: "CLAUDE_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Claude reasoning effort for the non-phase agents — grill sessions and the hub helper; pipeline phases run on their own fixed per-phase defaults"},
 		{Key: "CLAUDE_DISALLOWED_TOOLS", Group: sectionProviders, Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
 		{Key: "CODEX_BIN", Group: sectionProviders, Advanced: true, Default: "codex", Description: "Codex binary"},
@@ -2784,6 +2793,9 @@ func keyValue(cfg Config, key string) string {
 		return intValue(cfg.AttachmentsCacheMB)
 	case "GRILL_PREGRILL_MAX":
 		return intValue(cfg.GrillPregrillMax)
+	// Zero rounds is a real setting — the drafts-only flow — not an unset key.
+	case "GRILL_CHALLENGE_ROUNDS":
+		return strconv.Itoa(cfg.GrillChallengeRounds)
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":

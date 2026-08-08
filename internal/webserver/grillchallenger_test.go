@@ -217,14 +217,16 @@ func TestGrillChooseProposal(t *testing.T) {
 	}
 }
 
-// The draft phase is what ends a second-opinion session: each challenger is spawned
-// against its own submit_decision endpoint, the panel is told a draft is running, and
-// the session only reaches finished once every challenger is accounted for — with the
-// surviving proposals left for the user to choose between. The challenger's own
-// submit_decision call is TestGrillChooseProposal's ground, so its proposal is already
-// on the record here and this reads the phase around it.
+// The draft phase is what ends a second-opinion session with GRILL_CHALLENGE_ROUNDS=0:
+// each challenger is spawned against its own submit_decision endpoint, the panel is
+// told a draft is running, and the session only reaches finished once every challenger
+// is accounted for — with the surviving proposals left for the user to choose between,
+// and no challenge round in between. The challenger's own submit_decision call is
+// TestGrillChooseProposal's ground, so its proposal is already on the record here and
+// this reads the phase around it.
 func TestGrillChallengerDraftsFinishTheSession(t *testing.T) {
 	r, store, repo, stubDir := newGrillRunnerTest(t, grillStubScript)
+	appendGrillRunnerConfig(t, repo, "GRILL_CHALLENGE_ROUNDS=0\n")
 	sess, err := store.Create(hubstore.NewGrillSession{
 		Repo:        repo.Root,
 		IssueID:     "COD-7",

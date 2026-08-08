@@ -246,12 +246,24 @@ An Inbox item for an issue that does not exist yet — an authoring Interview wi
 _Avoid_: new issue (that's the entry action), authoring session (the mechanism, not the item), placeholder issue
 
 **Second opinion**:
-The Inbox option where one or two Challenger providers draft and contest an Interview's proposed outcome before review. The Interview itself is unchanged — one interviewer, one conversation with the user — but when it proposes its outcome the Challengers each draft their own from the same transcript, and the session finishes with every proposal side by side for the user to pick one, edit it, and apply. Chosen when the Interview is started and locked for its lifetime; no second opinions is an ordinary solo Interview.
-_Avoid_: panel, debate, consensus mode
+The Inbox option where one or two Challenger providers draft and contest an Interview's proposed outcome before review. The Interview itself is unchanged — one interviewer, one conversation with the user — but when it proposes its outcome the Challengers each draft their own from the same transcript, the Panel then argues it out over Challenge rounds, and the session settles on a Consensus proposal or finishes with every proposal side by side for the user to pick one, edit it, and apply. Chosen when the Interview is started and locked for its lifetime; no second opinions is an ordinary solo Interview.
+_Avoid_: debate, consensus mode; do not call the option itself the Panel — that is who takes part in it
 
 **Challenger**:
-A provider added to an Interview to draft and contest outcomes. It never talks to the user and never asks a question: it reads the finished transcript, decides the outcome for itself, and submits exactly one decision. A Challenger that fails is dropped with a note, and an Interview whose Challengers all fail settles on the interviewer's own proposal.
-_Avoid_: panel member, reviewer
+A provider added to an Interview to draft and contest outcomes. It never talks to the user and never asks a question: it reads the finished transcript, decides the outcome for itself, and submits exactly one decision per phase. A Challenger that fails is dropped with a note, and an Interview whose Challengers all fail settles on the interviewer's own proposal.
+_Avoid_: panel member (that is the whole set, interviewer included), reviewer
+
+**Panel**:
+Everybody deciding a Second opinion's outcome: the interviewer's own provider and its Challengers. Every member decides against the same contract, and in a Challenge round every member runs as a fresh headless turn — the interviewer's interactive conversation is never resumed for one — so the interviewer is a member of the contest its proposal opened, not its chair.
+_Avoid_: jury, committee, participants (the members are Panel members)
+
+**Challenge round**:
+One bounded pass in which every remaining Panel member reads the competing proposals and the Challenge notes so far, then either endorses one proposal or revises its own. `GRILL_CHALLENGE_ROUNDS` bounds how many run; unanimity ends them early, and zero skips them entirely. A member that fails a round is dropped and the round is settled over the rest.
+_Avoid_: debate round, iteration, contest round
+
+**Consensus proposal**:
+The single outcome a Panel converged on when every remaining member endorsed the same proposal. It is written as the session's ordinary outcome, so review and Apply are exactly a solo session's, and it carries a Disagreement summary — the mechanical record of the opening split, the endorsements and revisions per round, and the Challenge notes. A Panel that never converges produces no Consensus proposal and falls back to the side-by-side review.
+_Avoid_: merged outcome, agreed proposal, winner
 
 **Start over** (an Interview):
 Abandon the current Interview and immediately begin a fresh one on the same Inbox item, in one deliberate click — the old thread settles as abandoned and is never shown again. Touches only the session; the issue, its labels, and anything already applied are untouched.

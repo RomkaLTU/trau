@@ -1,6 +1,8 @@
 package webserver
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/attachfile"
@@ -119,25 +121,13 @@ func grillResearchIdeaPrompt(r prompts.Renderer, question string, autoAccept boo
 	})
 }
 
-// grillChallengerInput is what one second-opinion draft is decided from: the issue the
-// session is about, where its outcome would be written if the user approves it, and
-// the whole interview transcript the interviewer's own proposal came out of.
-type grillChallengerInput struct {
-	repo        string
-	issueID     string
-	title       string
-	description string
-	destination string
-	transcript  string
-}
-
 // grillChallengerPrompt is the draft-phase prompt: it hands a challenger the finished
 // interview and asks it to decide the outcome for itself. It is hardcoded here beside
 // the other grilling prompts rather than carried in the prompt catalog, because it has
 // to state the submit_decision contract verbatim — a challenger that drifts from
 // finish_session's disposition rules drafts a proposal the review cannot place beside
 // the interviewer's.
-func grillChallengerPrompt(in grillChallengerInput) string {
+func grillChallengerPrompt(in grillPanelContext) string {
 	var b strings.Builder
 	b.WriteString(`You are giving a second opinion on a triage interview that has just finished.
 
@@ -147,6 +137,14 @@ same material, what the outcome should be. The user will read your decision besi
 other proposals and pick one.
 
 `)
+	grillWritePanelContext(&b, in)
+	b.WriteString(grillChallengerRules)
+	return b.String()
+}
+
+// grillWritePanelContext writes the material every panel prompt opens on: the issue,
+// where an approved decision would be written, and the interview it came out of.
+func grillWritePanelContext(b *strings.Builder, in grillPanelContext) {
 	b.WriteString("Repository: " + in.repo + "\n")
 	if id := strings.TrimSpace(in.issueID); id != "" {
 		b.WriteString("Issue: " + id + "\n")
@@ -169,8 +167,6 @@ other proposals and pick one.
 	} else {
 		b.WriteString("(the interview recorded no questions or answers)\n")
 	}
-	b.WriteString(grillChallengerRules)
-	return b.String()
 }
 
 // grillChallengerRules restates finish_session's dispositions and their required
@@ -201,6 +197,121 @@ summary is required on every disposition: state the clarifications the interview
 and why they lead to the outcome you chose. Disagreeing with the direction the interview
 took is a legitimate second opinion — say so in the summary and decide accordingly.
 Nothing is written to the tracker until the user approves.
+`
+
+// grillChallengeMemberPrompt names the member a shared round brief is spawned for.
+// Every member reads the same proposals and the same notes; only the seat differs, and
+// a member that does not know its own seat cannot tell its proposal from the ones it
+// is being asked to weigh.
+func grillChallengeMemberPrompt(member, shared string) string {
+	return "You are the panel member \"" + member + "\". The proposal labelled " + member +
+		" below is your own.\n\n" + shared
+}
+
+// grillChallengePrompt is the challenge-round prompt: it hands every panel member the
+// same interview, the proposals each member currently stands behind, and every
+// challenge note raised so far, then asks for one verdict — endorse a proposal, or
+// revise with a note saying what it disputes. It states the submit_decision contract
+// verbatim for the same reason the draft prompt does: a member that drifts from the
+// dispositions writes a revision the review cannot place beside the others.
+func grillChallengePrompt(
+	in grillPanelContext,
+	proposals []GrillProposalView,
+	notes []grillChallengeNote,
+	round, rounds int,
+) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `This is challenge round %d of %d on a triage interview that has already finished.
+
+Every member of this panel drafted an outcome from the same interview. You now see all of
+them. Either adopt the one you judge best, or stand your ground with a revision of your
+own and say what you dispute. The panel settles the session itself when every member
+endorses the same proposal; otherwise the user reviews the surviving proposals side by
+side.
+
+`, round, rounds)
+	grillWritePanelContext(&b, in)
+	b.WriteString("\nThe proposals on the table:\n")
+	for _, p := range proposals {
+		grillWriteProposal(&b, p)
+	}
+	if len(notes) > 0 {
+		b.WriteString("\nChallenge notes raised so far:\n")
+		for _, n := range notes {
+			fmt.Fprintf(&b, "  - %s, round %d: %s\n", n.provider, n.round, strings.TrimSpace(n.note))
+		}
+	}
+	b.WriteString(grillChallengeRules)
+	return b.String()
+}
+
+// grillChallengeNote is one challenge note as a later round reads it back.
+type grillChallengeNote struct {
+	provider string
+	round    int
+	note     string
+}
+
+// grillWriteProposal renders one proposal as a member reads it: the disposition and
+// the fields that disposition decides with, in full. A member endorsing a proposal
+// adopts it as written, so nothing here is abbreviated.
+func grillWriteProposal(b *strings.Builder, p GrillProposalView) {
+	var o grillOutcome
+	if json.Unmarshal(p.Outcome, &o) != nil {
+		return
+	}
+	fmt.Fprintf(b, "\n--- Proposal by %s — disposition %q\n", p.Provider, o.Disposition)
+	fmt.Fprintf(b, "Summary: %s\n", strings.TrimSpace(o.Summary))
+	if title := strings.TrimSpace(o.Title); title != "" {
+		fmt.Fprintf(b, "Title: %s\n", title)
+	}
+	if desc := strings.TrimSpace(o.ProposedDescription); desc != "" {
+		fmt.Fprintf(b, "Proposed description:\n%s\n", desc)
+	}
+	if findings := strings.TrimSpace(o.Findings); findings != "" {
+		fmt.Fprintf(b, "Findings:\n%s\n", findings)
+	}
+	for i, sub := range o.SubIssues {
+		fmt.Fprintf(b, "Sub-issue %d: %s\n%s\n", i+1, strings.TrimSpace(sub.Title), strings.TrimSpace(sub.Description))
+	}
+}
+
+// grillChallengeRules states the round's own contract on top of the dispositions every
+// panel decision shares. Keep it in step with grillMemberDecisionSchema.
+const grillChallengeRules = `
+You have the repository checked out at your working directory. Read whatever code you
+need to judge the proposals; do not ask the user anything — they are not there, and you
+have no tool that reaches them.
+
+Submit exactly one call to the submit_decision tool, then end your turn. It takes one of
+two shapes:
+
+- Endorse: pass endorse with the provider name of the proposal you adopt as-is, and
+  nothing else. Endorsing your own proposal is how you stand by it unchanged.
+- Revise: pass a complete decision of your own — the same fields a first draft takes —
+  plus challenge_note saying what you dispute in the proposals you did not endorse. A
+  revision keeps you behind your own proposal.
+
+Endorse when the difference no longer matters to the work. Hold your ground when it does:
+converging on a proposal you believe is wrong is worse than the user reading both.
+
+The dispositions a revision decides with are:
+
+- "rewrite" — replace the issue description. Requires proposed_description: the full
+  replacement body.
+- "split" — the issue is epic-shaped. Requires proposed_description framing the epic goal
+  and a non-empty sub_issues breakdown, each entry a thin vertical slice that is
+  end-to-end and independently verifiable on its own. A layer ("schema", "backend",
+  "UI") is not a slice.
+- "needs_split" — too large to slice confidently; flag it for splitting and nothing more.
+- "create" — author a brand-new issue. Requires title and proposed_description; add a
+  sub_issues breakdown to file it as an epic instead of a single issue.
+- "research" — what this session produced is a report, not an issue body. Requires title
+  and findings, the complete Markdown report.
+- "no_change" — nothing needs writing.
+
+summary is required on a revision: state what you changed and why. Nothing is written to
+the tracker until the user approves.
 `
 
 func grillIssueData(in grillPromptInput) prompts.GrillIssueData {
