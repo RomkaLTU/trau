@@ -34,6 +34,17 @@ vi.mock('@/components/trau/active-repo', () => ({
 
 notifyManager.setScheduler((cb) => cb())
 
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {}
+}
+if (!globalThis.ResizeObserver) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver
+}
+
 const mockFetch = vi.mocked(apiFetch)
 
 // serve answers the projects list with one three-member project, and the hint
@@ -109,6 +120,35 @@ function listbox() {
   return document.body.querySelector('[role="listbox"]')
 }
 
+function options(): HTMLElement[] {
+  return [...document.body.querySelectorAll<HTMLElement>('[cmdk-item=""]')]
+}
+
+function pick(name: string) {
+  const option = options().find((el) =>
+    (el.getAttribute('data-value') ?? '').endsWith(`/${name}`),
+  )
+  if (!option) throw new Error(`no option for ${name}`)
+  act(() => option.click())
+}
+
+function highlighted(): string | null {
+  const selected = options().filter(
+    (el) => el.getAttribute('aria-selected') === 'true',
+  )
+  expect(selected).toHaveLength(1)
+  return selected[0].getAttribute('data-value')
+}
+
+function key(name: string) {
+  const input = document.body.querySelector('input') as HTMLInputElement
+  act(() => {
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: name, bubbles: true }),
+    )
+  })
+}
+
 afterEach(() => {
   act(() => root?.unmount())
   root = undefined
@@ -140,7 +180,27 @@ describe('StartIn', () => {
     expect(started).toEqual([])
     expect(listbox()).not.toBeNull()
 
-    click('image-service')
+    pick('image-service')
     expect(started).toEqual(['image-service'])
+  })
+
+  it('walks the members with the arrows and starts the highlighted one', async () => {
+    serve(['api', 'image-service', 'web'], 'image-service')
+    const started = renderStartIn()
+    await act(async () => {})
+
+    click('Add to queue')
+    await act(async () => {})
+
+    key('ArrowDown')
+    expect(highlighted()).toBe('/repos/image-service')
+    key('ArrowDown')
+    expect(highlighted()).toBe('/repos/web')
+    key('ArrowUp')
+    expect(highlighted()).toBe('/repos/image-service')
+    key('Enter')
+
+    expect(started).toEqual(['image-service'])
+    expect(listbox()).toBeNull()
   })
 })
