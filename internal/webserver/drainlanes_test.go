@@ -205,11 +205,25 @@ func TestLanesNeverRunTheSameTicketTwice(t *testing.T) {
 	}
 }
 
-// TestALiveEpicHoldsEveryLane keeps this slice conservative: an epic drives several
-// tickets from one process, so it holds the whole repo however wide the cap is —
-// the epic-lane slice is what lifts that.
-func TestALiveEpicHoldsEveryLane(t *testing.T) {
-	s, fake, root := laneServer(t, "4")
+// sharedLaneServer is a repo without worktrees whose lane cap is widened through
+// the seam the drain reads it by. A shared checkout really gets one lane, which is
+// what makes its epic holds invisible from the outside — the holds themselves are
+// the invariant these tests pin, and they must survive any later widening.
+func sharedLaneServer(t *testing.T, lanes int) (*Server, *fakeSupervisor, string) {
+	t.Helper()
+	s, fake, root := drainServer(t, "acme")
+	s.drain.laneCap = func(string) int { return lanes }
+	live := map[int]bool{}
+	s.drain.alive = func(pid int) bool { return live[pid] }
+	fake.onSpawn = func(pid int) { live[pid] = true }
+	return s, fake, root
+}
+
+// TestALiveEpicHoldsEveryLaneOnASharedCheckout is the shared-checkout invariant: an
+// epic drives several tickets through one checkout, so nothing else may run in the
+// repo while it does. Only a repo whose runs each get their own worktree lifts it.
+func TestALiveEpicHoldsEveryLaneOnASharedCheckout(t *testing.T) {
+	s, fake, root := sharedLaneServer(t, 4)
 	seedQueue(t, s, root, true,
 		queue.Item{Kind: queue.KindEpic, ID: "COD-9"}, queue.Item{ID: "COD-1"})
 
@@ -231,10 +245,11 @@ func TestALiveEpicHoldsEveryLane(t *testing.T) {
 	}
 }
 
-// TestAQueuedEpicWaitsForEveryLane is the same rule from the other side: an epic
-// next in run order does not start beside the ticket lanes already in flight.
-func TestAQueuedEpicWaitsForEveryLane(t *testing.T) {
-	s, fake, root := laneServer(t, "4")
+// TestAQueuedEpicWaitsForEveryLaneOnASharedCheckout is the same rule from the other
+// side: an epic next in run order does not start beside the ticket lanes already in
+// flight in the checkout it would have to share with them.
+func TestAQueuedEpicWaitsForEveryLaneOnASharedCheckout(t *testing.T) {
+	s, fake, root := sharedLaneServer(t, 4)
 	seedQueue(t, s, root, true,
 		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 4242},
 		queue.Item{Kind: queue.KindEpic, ID: "COD-9"},

@@ -129,6 +129,16 @@ make the next `worktree add` refuse the path.
 A give-up does **not** give up its tree. It settles the queue row, but the tree is
 what a human needs to read afterwards.
 
+An **Epic takes one tree for the whole epic**, keyed by the epic id rather than by
+each sub-issue. Its children are serial by construction — one process, each child
+building on the epic branch — and the release merges that same branch, so the first
+child provisions the tree, every later child and the finalize adopt it, and it
+settles with the epic rather than with any child. A hand-off keeps it until the epic
+PR lands, since that is the tree the human's merge is about. The merge happening in
+that tree, and not in the registered checkout, is what lets a releasing epic hold
+only its own lane: a repo without worktrees still freezes whole, because there the
+release really does own the checkout every other run would share.
+
 ## Consequences
 
 - With `WORKTREES=1`, a dirty checkout neither blocks a run nor gets stashed. The
