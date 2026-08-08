@@ -108,7 +108,7 @@ rest of the surface expects, and whether each repo can be drained at all.
 | `list_repos` | The repos this hub serves: name, absolute path, and whether its queue can be drained. |
 | `create_ticket` | Files a ticket in the hub's own issue store, ready-labelled so the loop will pick it up. |
 | `enqueue` | Registers a ticket or epic for execution, at the back of the queue or the front. |
-| `start_queue` | Arms the drain: pending items run one at a time, halting or skipping on a fault. |
+| `start_queue` | Arms the drain: pending items run in order — up to `WORKTREE_PARALLEL` at once with worktrees, one at a time otherwise — halting or skipping on a fault. |
 | `pause_queue` | Stops the drain after the running item exits, leaving every row queued. |
 
 ### Read

@@ -49,11 +49,15 @@ export function RemoveFromQueueButton({
 // whole wait — off the same stopping flag the queue-level button uses.
 export function StopRunButton({
   id,
+  running = 1,
   stopping,
   onStop,
   tabIndex,
 }: {
   id: string
+  // running is how many lanes the repo has in flight, so the confirm says what a
+  // Stop actually ends once a queue drains more than one at a time.
+  running?: number
   stopping: boolean
   onStop: () => void
   tabIndex?: number
@@ -78,7 +82,7 @@ export function StopRunButton({
         </button>
       }
       title={stopRunTitle(id)}
-      description={stopRunWarning(id)}
+      description={stopRunWarning(id, running)}
       confirmLabel={STOP_RUN_LABEL}
       destructive
       onConfirm={onStop}

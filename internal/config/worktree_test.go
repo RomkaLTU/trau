@@ -226,6 +226,74 @@ func TestWorktreeDefaults(t *testing.T) {
 	}
 }
 
+// TestWorktreeLanes covers WORKTREE_PARALLEL end to end: it loads and reports
+// itself like every other key, it caps concurrency only where worktrees isolate
+// the trees, and anything below one lane reads as the serial drain.
+func TestWorktreeLanes(t *testing.T) {
+	if got := Defaults().WorktreeParallel; got != DefaultWorktreeParallel {
+		t.Fatalf("default WorktreeParallel = %d, want %d", got, DefaultWorktreeParallel)
+	}
+	if got := Defaults().WorktreeLanes(); got != 1 {
+		t.Errorf("WorktreeLanes() without worktrees = %d, want 1", got)
+	}
+
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	if err := os.WriteFile(local, []byte("WORKTREES=1\nWORKTREE_PARALLEL=6\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorktreeParallel != 6 {
+		t.Errorf("WorktreeParallel = %d, want 6", cfg.WorktreeParallel)
+	}
+	if got := cfg.WorktreeLanes(); got != 6 {
+		t.Errorf("WorktreeLanes() = %d, want 6", got)
+	}
+	if got := keyValue(cfg, "WORKTREE_PARALLEL"); got != "6" {
+		t.Errorf("keyValue(WORKTREE_PARALLEL) = %q, want 6", got)
+	}
+
+	serial := filepath.Join(t.TempDir(), "trau.ini")
+	if err := os.WriteFile(serial, []byte("WORKTREE_PARALLEL=6\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	shared, err := LoadLayered("", "", serial, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := shared.WorktreeLanes(); got != 1 {
+		t.Errorf("WorktreeLanes() without WORKTREES = %d, want 1 — a shared checkout runs one at a time", got)
+	}
+
+	zero := filepath.Join(t.TempDir(), "trau.ini")
+	if err := os.WriteFile(zero, []byte("WORKTREES=1\nWORKTREE_PARALLEL=0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	off, err := LoadLayered("", "", zero, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := off.WorktreeLanes(); got != 1 {
+		t.Errorf("WorktreeLanes() for 0 = %d, want 1", got)
+	}
+
+	var meta KeyMeta
+	for _, m := range KnownKeys() {
+		if m.Key == "WORKTREE_PARALLEL" {
+			meta = m
+		}
+	}
+	if meta.Key == "" {
+		t.Fatal("WORKTREE_PARALLEL missing from the settings catalog")
+	}
+	if meta.Group != sectionWorktrees || meta.Kind != "int" || !meta.WebEditable || meta.Default != "4" {
+		t.Errorf("WORKTREE_PARALLEL meta = %+v, want a web-editable int in the worktrees section defaulting to 4", meta)
+	}
+}
+
 // TestWorktreeCopyCanBeSwitchedOff: the default is non-empty, so an empty value
 // has to reach the config or "copy nothing else" would be unreachable.
 func TestWorktreeCopyCanBeSwitchedOff(t *testing.T) {

@@ -82,6 +82,11 @@ export interface Timeline {
   // finished is the Finished bucket: the settled tickets the drain will never
   // launch again, so it never swallows work still in the run order.
   finished: TimelineTicket[]
+  // lanes is every ticket in flight, the one the live instance reports first. A
+  // single-lane repo has at most one; a WORKTREE_PARALLEL repo has up to that many.
+  lanes: TimelineTicket[]
+  // running is lanes[0], kept for the header, the tab title and the drain step —
+  // the places that name one run rather than list them.
   running?: TimelineTicket
   finalize?: FinalizeEntry
   pending: PendingEntry[]
@@ -361,6 +366,7 @@ export function buildTimeline(
   instance?: Instance,
   drainingSince?: string,
   batch?: string,
+  instances: Instance[] = [],
 ): Timeline {
   const scope = batch ? items.filter((it) => it.batch === batch) : items
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
@@ -406,13 +412,26 @@ export function buildTimeline(
   const queued = runOrder(leaves, byId)
   const finished = settled.filter((t) => !queued.has(t.id))
 
-  const running =
-    tickets.find((t) => t.status === 'running' && t.id === instance?.ticket) ??
-    tickets.find((t) => t.status === 'running')
+  // Every lane in flight, not just the first. The one the page's instance reports
+  // leads, so the header and tab title keep naming the run the hub is watching, and
+  // the rest qualify only on a live loop of their own: a queue row left marked
+  // running by a dead child, or a stale non-terminal run record, is a snapshot the
+  // remaining list still has to show rather than a second lane.
+  const inFlight = tickets.filter((t) => t.status === 'running')
+  const lead =
+    inFlight.find((t) => t.id === instance?.ticket) ?? inFlight[0]
+  const lanes = lead
+    ? [
+        lead,
+        ...inFlight.filter(
+          (t) => t !== lead && instances.some((i) => i.ticket === t.id),
+        ),
+      ]
+    : []
 
   const remains = (t: TimelineTicket | undefined): t is TimelineTicket =>
     t !== undefined &&
-    t !== running &&
+    !lanes.includes(t) &&
     (queued.has(t.id) || !isSettled(t.status))
 
   return {
@@ -420,7 +439,8 @@ export function buildTimeline(
     done: tickets.filter((t) => t.status === 'done').length,
     settled,
     finished,
-    running,
+    lanes,
+    running: lanes[0],
     finalize,
     pending: group(scope, byId, remains),
     outside: batch

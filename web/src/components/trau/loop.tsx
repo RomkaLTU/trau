@@ -89,6 +89,7 @@ import {
   type RepoFreshness,
 } from "@/lib/instances";
 import {
+  instanceFor,
   isTakeover,
   projectLoopState,
   repoInstance,
@@ -115,6 +116,7 @@ import {
   queueLive,
   queueQueryOptions,
   queueRunnable,
+  laneLabel,
   QUEUE_NOT_RUNNABLE,
   releaseGateLabel,
   requeueIssue,
@@ -2111,6 +2113,7 @@ function RunningRow({
   ticket,
   item,
   instance,
+  lanes,
   now,
   stopping,
   onStop,
@@ -2120,6 +2123,7 @@ function RunningRow({
   ticket: TimelineTicket;
   item?: QueueItem;
   instance?: Instance;
+  lanes: number;
   now: number;
   stopping: boolean;
   onStop: () => void;
@@ -2147,6 +2151,7 @@ function RunningRow({
           <span className="ml-auto flex">
             <StopRunButton
               id={ticket.id}
+              running={lanes}
               stopping={stopping}
               onStop={onStop}
             />
@@ -2554,6 +2559,7 @@ function RunningQueueView({
   queue,
   timeline,
   instance,
+  instances,
   takeover,
   halt,
   rows,
@@ -2566,6 +2572,7 @@ function RunningQueueView({
   queue: QueueResponse;
   timeline: Timeline;
   instance?: Instance;
+  instances: Instance[];
   takeover?: Instance;
   halt: LoopHalt | null;
   rows: RovingList;
@@ -2602,12 +2609,10 @@ function RunningQueueView({
   const removeTarget = removeId ? itemsById.get(removeId) : undefined;
   const rowBusy = promote.isPending || remove.isPending;
 
-  // The running row's queue entry is the epic when the drain is working one of
-  // its sub-issues, since that is the row a removal drops.
+  // A row's queue entry is the epic when the drain is working one of its
+  // sub-issues, since that is the row a removal drops.
   const running = timeline.running;
-  const runningItem = running
-    ? itemsById.get(running.epicId ?? running.id)
-    : undefined;
+  const lanes = laneLabel(queue, timeline.lanes.length);
   const batch = batchName(queue.batches, queue.draining_batch ?? "");
   // The releasing epic's own finalize is the one run the gate lets through, so
   // the wait reads as a wait only while nothing is in flight.
@@ -2653,18 +2658,31 @@ function RunningQueueView({
           </div>
 
           <section className="flex flex-col gap-2">
-            <Eyebrow glyph="active">RUNNING</Eyebrow>
-            {timeline.running ? (
-              <RunningRow
-                repo={repo}
-                ticket={timeline.running}
-                item={runningItem}
-                instance={instance}
-                now={now}
-                stopping={stopping}
-                onStop={onStop}
-                onPeek={onPeek}
-              />
+            <div className="flex items-center justify-between gap-3">
+              <Eyebrow glyph="active">RUNNING</Eyebrow>
+              {lanes ? (
+                <span className="font-mono text-xs text-muted-foreground">
+                  {lanes}
+                </span>
+              ) : null}
+            </div>
+            {timeline.lanes.length > 0 ? (
+              <div className="flex flex-col gap-2">
+                {timeline.lanes.map((ticket) => (
+                  <RunningRow
+                    key={ticket.id}
+                    repo={repo}
+                    ticket={ticket}
+                    item={itemsById.get(ticket.epicId ?? ticket.id)}
+                    instance={instanceFor(instances, ticket.id)}
+                    lanes={timeline.lanes.length}
+                    now={now}
+                    stopping={stopping}
+                    onStop={onStop}
+                    onPeek={onPeek}
+                  />
+                ))}
+              </div>
             ) : timeline.finalize ? (
               <FinalizeRow
                 finalize={timeline.finalize}
@@ -2754,8 +2772,8 @@ function RunningQueueView({
                 ) : null}
                 <p className="font-sans text-xs leading-relaxed text-muted-foreground">
                   Remaining tickets run top to bottom — Run next moves one to the
-                  front for when the current run finishes, and Remove takes one
-                  out of the loop for good.
+                  front for when a lane frees up, and Remove takes one out of the
+                  loop for good.
                 </p>
               </>
             ) : (
@@ -3331,10 +3349,14 @@ export function Loop() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [peek, setPeek]);
 
+  const repoInstances = (instData?.instances ?? []).filter(
+    (i) => i.repo === repo,
+  );
   const { view, timeline, halt } = projectLoopState({
     queue: queue.data,
     runs: runs.data?.runs ?? [],
     instance: liveInstance,
+    instances: repoInstances,
   });
   const drainingBatch = batchName(
     queue.data?.batches,
@@ -3401,6 +3423,7 @@ export function Loop() {
             queue={queue.data}
             timeline={timeline}
             instance={liveInstance}
+            instances={repoInstances}
             takeover={takeoverInstance}
             halt={halt}
             rows={rows}

@@ -73,7 +73,7 @@ func TestDrainNamesTheGateThatHoldsASpawn(t *testing.T) {
 		},
 		{
 			name:  "a loop already running in the repo",
-			setup: func(_ *testing.T, s *Server, _ string) { s.drain.repoLive = func(string) bool { return true } },
+			setup: func(_ *testing.T, s *Server, _ string) { s.drain.busyPIDs = func(string) []int { return []int{4242} } },
 			gate:  holdRepoBusy,
 			want:  "a loop is already running in this repo",
 		},
@@ -166,7 +166,7 @@ func TestSpawnFailureHoldsWithoutLeakingPaths(t *testing.T) {
 func TestDrainHoldEpisodeIsAnnouncedOnce(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
 	seedQueue(t, s, root, true, queue.Item{ID: "COD-1"})
-	s.drain.repoLive = func(string) bool { return true }
+	s.drain.busyPIDs = func(string) []int { return []int{4242} }
 
 	for range 3 {
 		if act, _ := s.drain.tick(root); act != drainWait {
@@ -177,7 +177,7 @@ func TestDrainHoldEpisodeIsAnnouncedOnce(t *testing.T) {
 		t.Fatalf("spawn-held events = %d after three ticks, want one for the episode", len(msgs))
 	}
 
-	s.drain.repoLive = func(string) bool { return false }
+	s.drain.busyPIDs = func(string) []int { return nil }
 	s.requestSelfReload(root)
 	if act, _ := s.drain.tick(root); act != drainWait {
 		t.Fatal("want the self-reload gate to hold the spawn once the repo frees up")
@@ -237,7 +237,7 @@ func TestQueueReportsAnArmedQueueNothingIsDraining(t *testing.T) {
 		t.Errorf("event msg = %q, want it to name the %q gate", msgs[0], holdStalled)
 	}
 
-	s.drain.repoLive = func(string) bool { return true }
+	s.drain.busyPIDs = func(string) []int { return []int{4242} }
 	if _, err := s.drain.tick(root); err != nil {
 		t.Fatalf("tick: %v", err)
 	}

@@ -680,6 +680,21 @@ KIMI_MODEL=
 # .gitconfig.repo, and .agents/ when untracked. Set it empty to copy nothing else.
 # WORKTREE_COPY=.env,.env.*
 
+# How many queued runs this repo may have in flight at once, each in its own
+# worktree, branch and PR. Default 4. Meaningful only with WORKTREES=1 — without a
+# tree per ticket the runs would share one checkout, so a repo without worktrees
+# keeps an effective cap of 1, and 1 reproduces the serial drain exactly. An epic
+# still runs on its own: it drives several tickets from one process and holds the
+# whole repo while it does.
+# N lanes multiply what one repo consumes: N concurrent agent sessions against the
+# provider's quota and rate limits, N builds and test suites competing for CPU, and
+# N checkouts on disk. Anything the trees SHARE is the repo's own to separate —
+# a dev database, a fixed dev-server port, a cache directory — and WORKTREE_SETUP_CMD
+# is where that separation belongs (the same collision PANEL_PARALLEL warns about,
+# one process wider). Lower the cap, or set it to 1, when the setup command cannot
+# give each tree its own.
+# WORKTREE_PARALLEL=4
+
 # --- artifacts ---
 # Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
 # to ./runs (relative to the working directory). Point it at a stable path if you

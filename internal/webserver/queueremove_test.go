@@ -116,7 +116,7 @@ func TestWipeEpicCoversOnlyTheInFlightChild(t *testing.T) {
 // checkpoint dropped and nothing else.
 func TestWipeKeepsTheBranchWhileTheRepoIsLive(t *testing.T) {
 	s, fake, root, _ := stopServer(t, "acme")
-	s.drain.repoLive = func(string) bool { return true }
+	s.drain.busyPIDs = func(string) []int { return []int{4242} }
 	seedRunPhase(t, s, root, "COD-1", state.Built)
 
 	s.wipeRemovedRun(root, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})

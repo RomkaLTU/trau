@@ -39,6 +39,9 @@ export interface LoopStateInput {
   queue?: QueueResponse
   runs: Run[]
   instance?: Instance
+  // instances is every live loop in the repo. A repo draining several lanes has
+  // one per lane, and only a lane with a loop of its own counts as in flight.
+  instances?: Instance[]
 }
 
 export interface LoopState {
@@ -59,6 +62,17 @@ export function repoInstance(
     scoped.find((i) => toSessionState(i.session_state) === 'takeover') ??
     scoped[0]
   )
+}
+
+// instanceFor picks the live loop working one ticket, which is what a running row
+// needs once a repo drains several lanes at once: repoInstance speaks for the page
+// and would hand every row the same instance, so only the first would ever show
+// live phase and activity.
+export function instanceFor(
+  instances: Instance[],
+  ticket: string,
+): Instance | undefined {
+  return instances.find((i) => i.ticket === ticket)
 }
 
 export function isTakeover(instance?: Instance): boolean {
@@ -148,6 +162,7 @@ export function projectLoopState({
   queue,
   runs,
   instance,
+  instances,
 }: LoopStateInput): LoopState {
   const items = queue?.items ?? []
   const timeline = queue
@@ -157,6 +172,7 @@ export function projectLoopState({
         instance,
         queue.draining_since,
         queue.draining_batch,
+        instances,
       )
     : null
   return {

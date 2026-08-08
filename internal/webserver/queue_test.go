@@ -777,7 +777,7 @@ func runOneServer(t *testing.T) (*Server, *fakeSupervisor, string, *httptest.Ser
 	s.home = t.TempDir()
 	fake := &fakeSupervisor{}
 	s.sup = fake
-	s.drain.repoLive = func(string) bool { return false }
+	s.drain.busyPIDs = func(string) []int { return nil }
 	s.drain.alive = func(int) bool { return true }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -920,7 +920,18 @@ func TestQueueRunItemGuards(t *testing.T) {
 			reason: "draining",
 		},
 		{
-			name: "another item running",
+			name: "the item itself is already running",
+			setup: func(t *testing.T, s *Server, root string) {
+				seedQueue(t, s, root, false,
+					queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusRunning, PID: 4242},
+				)
+			},
+			id:     "COD-1",
+			status: http.StatusConflict,
+			reason: "COD-1 is already running",
+		},
+		{
+			name: "another item fills the repo's only lane",
 			setup: func(t *testing.T, s *Server, root string) {
 				seedQueue(t, s, root, false,
 					queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusRunning, PID: 4242},
@@ -929,12 +940,12 @@ func TestQueueRunItemGuards(t *testing.T) {
 			},
 			id:     "COD-2",
 			status: http.StatusConflict,
-			reason: "COD-1 is already running",
+			reason: "a loop is already running in this repo",
 		},
 		{
 			name: "live instance in the repo",
 			setup: func(t *testing.T, s *Server, root string) {
-				s.drain.repoLive = func(string) bool { return true }
+				s.drain.busyPIDs = func(string) []int { return []int{4242} }
 				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
 			},
 			id:     "COD-1",

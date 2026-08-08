@@ -63,9 +63,14 @@ export interface QueueResponse {
   // releasing_epic names the epic whose release holds the queue: while it is set
   // the hub starts no new run in the repo. Absent when nothing gates it.
   releasing_epic?: string
-  // held reports a drain that is armed and starting nothing anyway, with
-  // held_reason naming the gate it stopped at and held_since when the wait began.
+  // lanes is how many runs the repo may have in flight at once — WORKTREE_PARALLEL
+  // where worktrees isolate the trees, 1 everywhere else.
+  lanes?: number
+  // held reports a drain that is armed and starting nothing anyway, with held_gate
+  // naming the gate in the hub's hold vocabulary, held_reason spelling it out and
+  // held_since saying when the wait began.
   held?: boolean
+  held_gate?: string
   held_reason?: string
   held_since?: string
   batches?: QueueBatch[]
@@ -482,12 +487,23 @@ export function releaseGateLabel(queue?: QueueResponse): string {
 }
 
 // spawnHoldReason says why an armed drain is starting nothing: a blocker no
-// queued item can clear, a repo already running a loop, a pending self-reload, a
-// release, or a drain loop that stopped ticking at all. Empty when the drain is
-// not holding, so a queue between children still reads as idle rather than stuck.
+// queued item can clear, a repo already running a loop, every run lane busy, a
+// pending self-reload, a release, or a drain loop that stopped ticking at all.
+// Empty when the drain is not holding, so a queue between children still reads as
+// idle rather than stuck.
 export function spawnHoldReason(queue?: QueueResponse): string {
   if (!queue?.held) return ''
   return queue.held_reason || 'the hub is holding the next spawn'
+}
+
+// laneLabel says how wide a repo's drain is when it runs more than one ticket at
+// once, so the loop header reads as N concurrent lanes rather than as one run the
+// page happens to be listing several times. Empty for a single-lane repo, which is
+// every repo without worktrees and the state the page has always shown.
+export function laneLabel(queue?: QueueResponse, running = 0): string {
+  const lanes = queue?.lanes ?? 1
+  if (lanes < 2) return ''
+  return `${running}/${lanes} lanes`
 }
 
 // queueTerminal reports whether an item has already settled: the drain only
