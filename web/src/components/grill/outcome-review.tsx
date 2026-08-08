@@ -53,6 +53,7 @@ import {
   type GrillApplyStep,
   type GrillAppliedOutcome,
   type GrillDestination,
+  type GrillDisagreement,
   type GrillMessage,
   type GrillMode,
   type GrillSession,
@@ -143,6 +144,18 @@ export function ProposalChoice({
               {proposal.provider || "unknown provider"}
             </span>
             <OutcomeProposal outcome={proposal.outcome} />
+            {proposal.challengeNotes.length > 0 && (
+              <div className="flex flex-col gap-1 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2">
+                <span className="text-xs text-muted-foreground">
+                  What it disputes
+                </span>
+                {proposal.challengeNotes.map((note, i) => (
+                  <p key={i} className="whitespace-pre-wrap text-xs">
+                    {note}
+                  </p>
+                ))}
+              </div>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -166,6 +179,59 @@ export function ProposalChoice({
         <p className="text-xs text-destructive">{choose.error.message}</p>
       )}
     </div>
+  );
+}
+
+// DisagreementSummary is how a consensus proposal shows its own history: the panel's
+// opening split, then each challenge round's endorsements and revisions, so a single
+// agreed outcome does not read as one nobody argued about. The hub assembles it from
+// the rounds it recorded — no model wrote it.
+export function DisagreementSummary({
+  summary,
+}: {
+  summary: GrillDisagreement;
+}) {
+  const split = summary.initial
+    .map((i) => `${i.provider} → ${dispositionLabel(i.disposition)}`)
+    .join(", ");
+
+  return (
+    <details className="rounded-md border bg-card px-3 py-2 text-sm">
+      <summary className="cursor-pointer text-xs text-muted-foreground">
+        Panel consensus
+        {summary.winner ? ` on ${summary.winner}'s proposal` : ""} —{" "}
+        {summary.rounds.length === 1
+          ? "1 challenge round"
+          : `${summary.rounds.length} challenge rounds`}
+      </summary>
+      <div className="mt-2 flex flex-col gap-2 text-xs">
+        {split !== "" && (
+          <p>
+            <span className="text-muted-foreground">Opening split: </span>
+            {split}
+          </p>
+        )}
+        {summary.rounds.map((round) => (
+          <div key={round.round} className="flex flex-col gap-0.5">
+            <span className="text-muted-foreground">Round {round.round}</span>
+            {round.turns.map((turn, i) => (
+              <p key={i} className="whitespace-pre-wrap">
+                <span className="font-mono">{turn.provider}</span>{" "}
+                {turn.endorse
+                  ? `endorsed ${turn.endorse}`
+                  : `revised to ${dispositionLabel(turn.disposition ?? "")}`}
+                {turn.note ? ` — ${turn.note}` : ""}
+              </p>
+            ))}
+          </div>
+        ))}
+        {summary.notes.map((note, i) => (
+          <p key={i} className="text-amber-600 dark:text-amber-500">
+            {note}
+          </p>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -412,6 +478,10 @@ export function OutcomeReview({
           Review before applying
         </span>
       </div>
+
+      {outcome.disagreement && (
+        <DisagreementSummary summary={outcome.disagreement} />
+      )}
 
       {isRewrite ? (
         <RewriteBody

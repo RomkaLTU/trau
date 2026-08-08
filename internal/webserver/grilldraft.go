@@ -3,6 +3,7 @@ package webserver
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -14,11 +15,12 @@ import (
 )
 
 // runDrafts is the second-opinion phase: once the interviewer has proposed, every
-// challenger drafts its own outcome from the same transcript, concurrently, and the
-// session finishes when all of them have submitted or failed. It holds the session's
-// one turn slot for the whole phase, so nothing else can spawn a child against the
-// session while the drafts run. Challenger runs are one-shot — nothing chains them, so
-// no session id is recorded and each phase starts fresh.
+// challenger drafts its own outcome from the same transcript, concurrently, then the
+// panel argues it out over bounded challenge rounds, and the session finishes on the
+// consensus those rounds reached or on the side-by-side review they did not. It holds
+// the session's one turn slot for the whole phase, so nothing else can spawn a child
+// against the session while it runs. Panel runs are one-shot — nothing chains them, so
+// no session id is recorded and every turn starts fresh.
 func (r *grillRunner) runDrafts(sess hubstore.GrillSession) {
 	ctx, cancel, ok := r.begin(sess.ID)
 	if !ok {
@@ -49,7 +51,7 @@ func (r *grillRunner) runDrafts(sess hubstore.GrillSession) {
 		}()
 	}
 	wg.Wait()
-	r.finishDrafts(sess)
+	r.finishPanel(sess, r.runChallengeRounds(ctx, sess, repo, cfg))
 }
 
 // draftOne runs a single challenger to completion. The spawn is the same headless
@@ -90,7 +92,7 @@ func (r *grillRunner) draftOne(
 	out, runErr := r.spawnGrill(ctx, spec, func([]byte) {})
 	_, resultErr := adapter.parseResult(out.stdout)
 
-	drafted := r.srv.grillProposedBySession(sess.ID, member)
+	drafted := r.srv.grillSubmittedInSession(sess.ID, member, 0)
 	r.srv.publishGrillActivity(sess.ID, grillToolResult(grillDraftActivityID(member), drafted))
 	if drafted {
 		return
@@ -123,81 +125,177 @@ func grillDraftFailure(adapter grillAdapter, out grillOutput, runErr error, resu
 	return "the run ended without submitting a decision"
 }
 
-// finishDrafts closes the phase. With a challenger draft in hand the session finishes
-// for a side-by-side review; with none it degrades to the solo flow — the interviewer's
-// proposal becomes the canonical outcome — and the notes above it say who was lost.
-func (r *grillRunner) finishDrafts(sess hubstore.GrillSession) {
-	// A stop or an abandon lands while the drafts run and settles the session by the
+// finishPanel closes the phase. A consensus the challenge rounds reached is written as
+// the session's canonical outcome, with the disagreement summary rolled into its
+// payload, and the review then reads exactly as a solo one. Without a consensus the
+// session finishes holding every proposal for the side-by-side review — except with a
+// single proposal left, which degrades to the solo flow the way a session whose
+// challengers all failed always has.
+func (r *grillRunner) finishPanel(sess hubstore.GrillSession, contest grillChallengeResult) {
+	// A stop or an abandon lands while the phase runs and settles the session by the
 	// user's own hand. Whatever the phase collected is theirs to keep, but the phase
 	// does not get to decide a session they have already put down.
 	if latest, found, err := r.srv.stores.Grill().Session(sess.ID); err != nil || !found || latest.State != hubstore.GrillRunning {
 		return
 	}
-	msgs, err := r.srv.stores.Grill().Messages(sess.ID, 0)
+	cycle, err := r.srv.grillPanelMessages(sess)
 	if err != nil {
 		r.settle(sess.ID, hubstore.GrillParked, "could not read the session's proposals: "+err.Error())
 		return
 	}
-	if grillDecided(msgs) {
+	if grillDecided(cycle) {
 		return
 	}
-	proposals := grillProposalViews(msgs)
+	proposals := grillCurrentProposals(cycle)
 	if len(proposals) == 0 {
 		r.settle(sess.ID, hubstore.GrillParked, grillNoOutcomeReason)
 		return
 	}
-	if len(proposals) == 1 {
-		outcome, _, err := r.srv.stores.Grill().AppendMessage(sess.ID, hubstore.NewGrillMessage{
-			Role:    hubstore.GrillRoleAgent,
-			Kind:    hubstore.GrillKindOutcome,
-			Payload: string(proposals[0].Outcome),
-		})
-		if err != nil {
-			logger.Verbosef("grill %d: promote the sole proposal: %v", sess.ID, err)
-		} else {
-			r.srv.publishGrillMessage(outcome)
-		}
+	if consensus, ok := grillConsensusProposal(proposals, contest); ok {
+		r.settleConsensus(sess, cycle, consensus, contest)
 	}
 	finished, err := r.srv.stores.Grill().Transition(sess.ID, hubstore.GrillFinished, "")
 	if err != nil {
-		logger.Verbosef("grill %d: finish after drafts: %v", sess.ID, err)
+		logger.Verbosef("grill %d: finish the panel: %v", sess.ID, err)
 		return
 	}
 	r.srv.publishGrillState(finished)
 }
 
-// grillProposedBySession reports whether provider's draft has landed, read fresh off
-// the store: the proposal arrives over the member's own MCP call, not through anything
-// the draft run hands back.
-func (s *Server) grillProposedBySession(sid int64, provider string) bool {
+// grillConsensusProposal picks the proposal the session settles on: the one the
+// challenge rounds converged on, or the only one left when the panel came down to a
+// single proposal. Anything else goes to the user side by side.
+func grillConsensusProposal(proposals []GrillProposalView, contest grillChallengeResult) (GrillProposalView, bool) {
+	if len(proposals) == 1 {
+		return proposals[0], true
+	}
+	i := slices.IndexFunc(proposals, func(p GrillProposalView) bool { return p.Provider == contest.winner })
+	if contest.winner == "" || i < 0 {
+		return GrillProposalView{}, false
+	}
+	return proposals[i], true
+}
+
+// settleConsensus writes the winning proposal as the session's canonical outcome. A
+// panel that actually contested the decision carries its disagreement summary into
+// that payload; a sole surviving proposal is promoted verbatim, exactly as a session
+// whose challengers all failed always has been.
+func (r *grillRunner) settleConsensus(
+	sess hubstore.GrillSession,
+	cycle []hubstore.GrillMessage,
+	consensus GrillProposalView,
+	contest grillChallengeResult,
+) {
+	payload := string(consensus.Outcome)
+	if contest.contested() {
+		summary := grillDisagreementSummary(grillPanelTurns(cycle), consensus.Provider, contest.notes)
+		merged, err := grillConsensusPayload(consensus.Outcome, summary)
+		if err != nil {
+			logger.Verbosef("grill %d: attach the disagreement summary: %v", sess.ID, err)
+		} else {
+			payload = merged
+		}
+	}
+	outcome, _, err := r.srv.stores.Grill().AppendMessage(sess.ID, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleAgent,
+		Kind:    hubstore.GrillKindOutcome,
+		Payload: payload,
+	})
+	if err != nil {
+		logger.Verbosef("grill %d: promote the consensus proposal: %v", sess.ID, err)
+		return
+	}
+	r.srv.publishGrillMessage(outcome)
+}
+
+// grillSubmittedInSession reports whether provider has taken its turn in round, read
+// fresh off the store: a panel turn arrives over the member's own MCP call, not
+// through anything its run hands back.
+func (s *Server) grillSubmittedInSession(sid int64, provider string, round int) bool {
 	msgs, err := s.stores.Grill().Messages(sid, 0)
 	if err != nil {
 		return false
 	}
-	return grillProposedBy(msgs, provider)
+	return grillSubmittedIn(grillActiveCycle(msgs), provider, round)
 }
 
-// grillChallengerBrief composes the prompt every challenger drafts from. All of them
-// read the same brief: they are giving independent opinions on one interview, so
-// nothing about it is per-member.
-func (s *Server) grillChallengerBrief(repo registry.Repo, cfg config.Config, sess hubstore.GrillSession) string {
+// grillPanelMessages reads the session's active panel cycle — everything after the
+// latest reopen, which is what this phase's proposals and rounds belong to.
+func (s *Server) grillPanelMessages(sess hubstore.GrillSession) ([]hubstore.GrillMessage, error) {
+	msgs, err := s.stores.Grill().Messages(sess.ID, 0)
+	if err != nil {
+		return nil, err
+	}
+	return grillPanelCycle(sess, msgs), nil
+}
+
+// grillPanelContext is the material every panel prompt is built from: the issue the
+// session is about, where its outcome would be written if the user approves it, and
+// the whole interview transcript the proposals came out of. It is read once per phase
+// — rendering the transcript is the expensive part — and shared by every member.
+type grillPanelContext struct {
+	repo        string
+	issueID     string
+	title       string
+	description string
+	destination string
+	transcript  string
+}
+
+func (s *Server) grillPanelContext(repo registry.Repo, cfg config.Config, sess hubstore.GrillSession) grillPanelContext {
 	title, description := "", ""
 	if id := strings.TrimSpace(sess.IssueID); id != "" {
 		if iss, found, err := s.stores.Issues().Get(repo.Root, id); err == nil && found {
 			title, description = iss.Title, iss.Description
 		}
 	}
-	prompt := grillChallengerPrompt(grillChallengerInput{
+	return grillPanelContext{
 		repo:        repo.Name,
 		issueID:     sess.IssueID,
 		title:       title,
 		description: description,
 		destination: grillOutcomeDestination(sess, cfg.EffectiveTrackerProvider()),
 		transcript:  s.grillTranscript(sess.ID),
-	})
+	}
+}
+
+// grillChallengerBrief composes the prompt every challenger drafts from. All of them
+// read the same brief: they are giving independent opinions on one interview, so
+// nothing about it is per-member.
+func (s *Server) grillChallengerBrief(repo registry.Repo, cfg config.Config, sess hubstore.GrillSession) string {
+	return s.grillPanelPrompt(sess, grillChallengerPrompt(s.grillPanelContext(repo, cfg, sess)))
+}
+
+// grillChallengeBrief composes the shared body of one challenge round: the same
+// interview, the proposals every member currently stands behind, and every challenge
+// note the rounds have raised. Only the seat differs per member, which the spawn
+// prepends.
+func (s *Server) grillChallengeBrief(
+	sess hubstore.GrillSession,
+	base grillPanelContext,
+	cycle []hubstore.GrillMessage,
+	round, rounds int,
+) string {
+	prompt := grillChallengePrompt(base, grillCurrentProposals(cycle), grillChallengeNotes(cycle), round, rounds)
+	return s.grillPanelPrompt(sess, prompt)
+}
+
+func grillChallengeNotes(cycle []hubstore.GrillMessage) []grillChallengeNote {
+	out := []grillChallengeNote{}
+	for _, t := range grillPanelTurns(cycle) {
+		if note := strings.TrimSpace(t.ChallengeNote); note != "" {
+			out = append(out, grillChallengeNote{provider: t.Provider, round: t.Round, note: note})
+		}
+	}
+	return out
+}
+
+// grillPanelPrompt scrubs a composed panel prompt the way every grilling prompt is
+// scrubbed before it reaches a child.
+func (s *Server) grillPanelPrompt(sess hubstore.GrillSession, prompt string) string {
 	prompt, scrubbed := sanitize.PromptText(prompt)
 	if scrubbed {
-		logger.Printf("grill %d: challenger brief contained a raw NUL byte — replaced with its visible escape", sess.ID)
+		logger.Printf("grill %d: panel brief contained a raw NUL byte — replaced with its visible escape", sess.ID)
 	}
 	return prompt
 }

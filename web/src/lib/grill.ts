@@ -272,6 +272,38 @@ export interface OutcomePayload {
   labels?: string[]
   sub_issues?: SubIssueProposal[]
   summary: string
+  // disagreement rides on a consensus outcome alone: the mechanical record of how the
+  // second-opinion panel got from its opening split to the single proposal below.
+  disagreement?: GrillDisagreement
+}
+
+// GrillDisagreement is the panel's own history of the decision: each member's opening
+// disposition, then every challenge round's endorsements and revisions, plus the notes
+// for what no member's turn could record — a member that dropped out mid-round.
+export interface GrillDisagreement {
+  winner: string
+  initial: GrillDisposition[]
+  rounds: GrillDisagreementRound[]
+  notes: string[]
+}
+
+export interface GrillDisposition {
+  provider: string
+  disposition: string
+}
+
+export interface GrillDisagreementRound {
+  round: number
+  turns: GrillDisagreementTurn[]
+}
+
+// GrillDisagreementTurn is one member's move in one round: the proposal it endorsed,
+// or the disposition it revised to and the note saying what it disputes.
+export interface GrillDisagreementTurn {
+  provider: string
+  endorse?: string
+  disposition?: string
+  note?: string
 }
 
 // The issue labels that qualify an issue for grilling (grilling-prd.md inbox).
@@ -909,34 +941,96 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
       : undefined,
     sub_issues: Array.isArray(p.sub_issues) ? p.sub_issues.map(parseSubIssue) : undefined,
     summary: typeof p.summary === 'string' ? p.summary : '',
+    disagreement: parseDisagreement(p.disagreement),
   }
 }
 
-// SessionProposal is one participant's draft outcome in a second-opinion session,
-// carrying the message id the choose call names it by.
+function parseDisagreement(raw: unknown): GrillDisagreement | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined
+  const d = raw as Partial<GrillDisagreement>
+  return {
+    winner: typeof d.winner === 'string' ? d.winner : '',
+    initial: Array.isArray(d.initial) ? d.initial.filter(isRecord).map((i) => ({
+      provider: typeof i.provider === 'string' ? i.provider : '',
+      disposition: typeof i.disposition === 'string' ? i.disposition : '',
+    })) : [],
+    rounds: Array.isArray(d.rounds) ? d.rounds.filter(isRecord).map((r) => ({
+      round: Number.isInteger(r.round) ? (r.round as number) : 0,
+      turns: Array.isArray(r.turns) ? r.turns.filter(isRecord).map((t) => ({
+        provider: typeof t.provider === 'string' ? t.provider : '',
+        endorse: typeof t.endorse === 'string' ? t.endorse : undefined,
+        disposition: typeof t.disposition === 'string' ? t.disposition : undefined,
+        note: typeof t.note === 'string' ? t.note : undefined,
+      })) : [],
+    })) : [],
+    notes: Array.isArray(d.notes) ? d.notes.filter((n): n is string => typeof n === 'string') : [],
+  }
+}
+
+function isRecord(raw: unknown): raw is Record<string, unknown> {
+  return raw !== null && typeof raw === 'object'
+}
+
+// SessionProposal is the proposal one panel member currently stands behind, carrying
+// the message id the choose call names it by and every challenge note that member
+// raised while the rounds ran.
 export interface SessionProposal {
   id: string
   provider: string
   round: number
   outcome: OutcomePayload
+  challengeNotes: string[]
 }
 
-// sessionProposals reads a conversation's proposals in the order they landed. The
-// interviewer's is first, since it is what opened the draft phase.
+// sessionProposals reads the proposal each panel member currently stands behind — its
+// latest revision — in the order the members first proposed, so the interviewer's is
+// first. An endorsement carries no proposal of its own; it moves a member's vote, not
+// its draft, so it never replaces the proposal the review shows.
 export function sessionProposals(messages: GrillMessage[]): SessionProposal[] {
   const out: SessionProposal[] = []
   for (const msg of messages) {
     if (msg.kind !== 'proposal') continue
-    const p = (msg.payload ?? {}) as { provider?: unknown; round?: unknown; outcome?: unknown }
+    const p = (msg.payload ?? {}) as {
+      provider?: unknown
+      round?: unknown
+      outcome?: unknown
+      challenge_note?: unknown
+    }
+    const provider = typeof p.provider === 'string' ? p.provider : ''
+    const at = out.findIndex((c) => c.provider === provider)
+    if (typeof p.challenge_note === 'string' && p.challenge_note !== '' && at >= 0)
+      out[at].challengeNotes.push(p.challenge_note)
     if (p.outcome === null || typeof p.outcome !== 'object') continue
-    out.push({
+    const proposal: SessionProposal = {
       id: msg.id,
-      provider: typeof p.provider === 'string' ? p.provider : '',
+      provider,
       round: Number.isInteger(p.round) ? (p.round as number) : 0,
       outcome: outcomePayload({ ...msg, payload: p.outcome }),
-    })
+      challengeNotes: at >= 0 ? out[at].challengeNotes : [],
+    }
+    if (at >= 0) out[at] = proposal
+    else out.push(proposal)
   }
   return out
+}
+
+// activeGrillCycle narrows a conversation to the panel cycle running now. A finished
+// second-opinion session that takes a follow-up answer reopens and runs the whole
+// cycle again — drafts and challenge rounds — so the rows the earlier cycles left
+// behind stay in the thread as history and decide nothing. The boundary is the latest
+// user answer that follows a proposal or an outcome, which is the answer that reopened
+// the session.
+export function activeGrillCycle(messages: GrillMessage[]): GrillMessage[] {
+  let start = 0
+  let proposed = false
+  messages.forEach((msg, i) => {
+    if (msg.kind === 'proposal' || msg.kind === 'outcome') proposed = true
+    else if (proposed && msg.role === 'user' && msg.kind === 'answer') {
+      start = i
+      proposed = false
+    }
+  })
+  return messages.slice(start)
 }
 
 // chooseGrillProposal promotes one proposal to the session's canonical outcome. The

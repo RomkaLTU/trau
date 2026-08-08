@@ -31,6 +31,7 @@ import {
   resumeGrill,
   roundAnswers,
   roundQuestions,
+  activeGrillCycle,
   sessionProposals,
   stopGrill,
   type GrillActivity,
@@ -150,15 +151,21 @@ export function GrillConversation({
   const given = asked && round ? roundAnswers(asked) : [];
   const roundOpen = round !== null && given.length < round.length;
   const question = asked && !round ? questionPayload(asked) : null;
-  const outcomeMsg = latestOutcome(messages);
+  // A second-opinion session runs a whole cycle per reopen, so its review reads the
+  // active cycle alone: a re-run that did not converge must not show the consensus an
+  // earlier cycle settled.
+  const cycle = session.challengers?.length
+    ? activeGrillCycle(messages)
+    : messages;
+  const outcomeMsg = latestOutcome(cycle);
   const proposal = outcomeMsg ? outcomePayload(outcomeMsg) : null;
   const reviewing =
     outcomeMsg !== null &&
     (session.state === "finished" || session.state === "applied");
-  // A second-opinion session finishes holding every participant's draft and no
+  // A panel that never converged finishes holding every member's proposal and no
   // decision: the user picks one first, and that pick is what mints the outcome the
   // ordinary review then rides.
-  const proposals = sessionProposals(messages);
+  const proposals = sessionProposals(cycle);
   const choosing =
     outcomeMsg === null && session.state === "finished" && proposals.length > 1;
   // An applied report has nothing left to decide, so the document stands alone.

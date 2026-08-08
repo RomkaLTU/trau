@@ -205,12 +205,16 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	outcome, ok := latestGrillOutcome(msgs)
+	// A panel session runs a whole cycle per reopen, so what it applies is the active
+	// cycle's decision: a re-run that ended in a side-by-side review must not apply the
+	// consensus an earlier cycle settled.
+	cycle := grillPanelCycle(sess, msgs)
+	outcome, ok := latestGrillOutcome(cycle)
 	if !ok {
 		// A second-opinion session holds proposals until the user picks one, so nothing
 		// is applicable yet — which is a different instruction from having no proposal.
 		reason := "session has no proposed outcome to apply"
-		if len(grillProposalViews(msgs)) > 0 {
+		if len(grillProposalViews(cycle)) > 0 {
 			reason = "choose one of the proposals before applying"
 		}
 		writeJSON(w, http.StatusConflict, map[string]string{"error": reason})

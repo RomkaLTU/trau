@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-08
 - **Deciders:** Romas (sole maintainer)
-- **Ticket:** COD-1577
+- **Ticket:** COD-1577, amended by COD-1578
 
 ## Context
 
@@ -29,9 +29,11 @@ own outcome from the same transcript in a headless run of its own, concurrently,
 and never talks to the user. The session finishes when every Challenger has
 submitted or failed.
 
-**Unanimity is the consensus rule** — implemented in the follow-up slice. When
-every proposal agrees, the session settles on that decision without asking the
-user to pick. Anything short of unanimity falls back to the side-by-side review.
+**Unanimity is the consensus rule.** When every remaining panel member endorses
+the same proposal, the session settles on that decision without asking the user
+to pick. Anything short of unanimity falls back to the side-by-side review. The
+drafts alone are almost never unanimous, so the rule is applied over challenge
+rounds rather than over the drafts — see the amendment below.
 
 **Side-by-side review is the fallback, and this slice always takes it.** With
 Challengers present, this slice ends in a review that shows every proposal
@@ -91,3 +93,38 @@ the session finishes exactly as a solo one would, with the notes above it.
 - `GRILL_CHALLENGERS` prefills the start surface's control (ADR 0011 catalog
   key, `Grilling & triage`, web-editable).
 - The glossary gains **Second opinion** and **Challenger**.
+
+## Amendment — challenge rounds (COD-1578)
+
+The drafts phase alone almost never produces unanimity: two providers reading one
+interview rarely word the same disposition the same way, so "unanimity or the user
+picks" was in practice always the user picking. The bounded contest this ADR listed
+under *Considered options* as the follow-up is now the path between them.
+
+- **The panel is the interviewer's provider plus the challengers.** Every challenge
+  turn is a fresh headless run, symmetric for every member: the interviewer's
+  interactive session chain is deliberately not resumed, so its verdict is decided
+  from the same material and against the same contract as everybody else's. Rounds
+  run inside the turn slot the draft phase already holds.
+- **`GRILL_CHALLENGE_ROUNDS` bounds the contest** (int, default 2, minimum 0;
+  `Grilling & triage`, web-editable). Zero skips the rounds, which is exactly the
+  drafts-only behaviour this ADR shipped. Unanimity stops them early.
+- **`submit_decision` gains `endorse` and `challenge_note`**, and the member endpoint
+  gains a round segment — `/api/v1/grill/{sid}/mcp/{member}/{round}` — so a turn can
+  only record its own verdict on the round it was spawned for. A round turn either
+  endorses one member's current proposal or revises with a note saying what it
+  disputes; a revision implicitly endorses its own author. Proposal payloads gain
+  `round`, `endorse` and `challenge_note`.
+- **A consensus is written as the ordinary `kind=outcome` row**, so review and Apply
+  stay a solo session's exactly. The disagreement summary — the opening split, each
+  round's endorsements and revisions, the challenge notes, and any warning notes —
+  is assembled mechanically from the recorded rounds (no extra model run) and rides
+  in that payload as one more key the apply path ignores.
+- **A member that fails a round is dropped** with a system note and unanimity is
+  computed over the rest; a panel down to one member takes that member's proposal as
+  the consensus, with the warning in the summary.
+- **A reopen starts a new cycle.** A finished session that takes a follow-up answer
+  re-runs the whole cycle — drafts and rounds — and the active cycle is everything
+  after the latest reopening answer. Earlier cycles' proposal rows stay in the
+  transcript as history and settle nothing.
+- The glossary gains **Panel**, **Challenge round** and **Consensus proposal**.

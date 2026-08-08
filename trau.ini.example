@@ -640,6 +640,15 @@ KIMI_MODEL=
 # composer drops any name that is unavailable or is the interviewer itself.
 # GRILL_CHALLENGERS=codex,kimi
 
+# Challenge rounds a second-opinion interview runs after every panel member has
+# drafted. In each round every member sees the competing proposals and either
+# endorses one or revises its own with a challenge note; unanimity stops the rounds
+# early and settles the session on a single consensus proposal with a disagreement
+# summary. A panel that never converges falls back to the side-by-side review.
+# Default 2. Set 0 to skip the rounds entirely, so the drafts go straight to the
+# side-by-side review.
+# GRILL_CHALLENGE_ROUNDS=2
+
 # --- artifacts ---
 # Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
 # to ./runs (relative to the working directory). Point it at a stable path if you

@@ -235,6 +235,42 @@ func TestLoadRequiredSkillsVerify(t *testing.T) {
 	t.Error("REQUIRED_SKILLS_VERIFY is missing from the settings catalog")
 }
 
+// Zero challenge rounds is a real setting — the drafts-only flow — so it survives the
+// round trip through the catalog rather than reading back as an unset key.
+func TestLoadGrillChallengeRounds(t *testing.T) {
+	if got := Defaults().GrillChallengeRounds; got != 2 {
+		t.Fatalf("default GrillChallengeRounds = %d, want 2", got)
+	}
+
+	off := filepath.Join(t.TempDir(), ".trau.ini")
+	if err := os.WriteFile(off, []byte("GRILL_CHALLENGE_ROUNDS=0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(off, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GrillChallengeRounds != 0 {
+		t.Errorf("GrillChallengeRounds = %d, want 0 (drafts go straight to side-by-side)", cfg.GrillChallengeRounds)
+	}
+	if got := keyValue(cfg, "GRILL_CHALLENGE_ROUNDS"); got != "0" {
+		t.Errorf("keyValue(GRILL_CHALLENGE_ROUNDS) = %q, want 0", got)
+	}
+
+	var meta KeyMeta
+	for _, m := range KnownKeys() {
+		if m.Key == "GRILL_CHALLENGE_ROUNDS" {
+			meta = m
+		}
+	}
+	if meta.Key == "" {
+		t.Fatal("GRILL_CHALLENGE_ROUNDS is missing from the settings catalog")
+	}
+	if meta.Group != sectionGrilling || meta.Kind != "int" || !meta.WebEditable || meta.Default != "2" {
+		t.Errorf("GRILL_CHALLENGE_ROUNDS meta = %+v", meta)
+	}
+}
+
 func TestLoadProofRetentionDays(t *testing.T) {
 	if got := Defaults().ProofRetentionDays; got != 14 {
 		t.Fatalf("default ProofRetentionDays = %d, want 14", got)

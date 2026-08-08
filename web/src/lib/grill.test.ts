@@ -26,6 +26,8 @@ import {
   isGrillable,
   isOver,
   isSettled,
+  activeGrillCycle,
+  sessionProposals,
   mergeMessages,
   NO_ACTIVITY,
   NO_REPLY,
@@ -1364,6 +1366,53 @@ describe('resumeGrill', () => {
     await expect(resumeGrill('4')).rejects.toThrow('session is not stalled')
   })
 })
+
+describe('sessionProposals', () => {
+  it('keeps each member behind its latest revision and collects its challenge notes', () => {
+    const proposals = sessionProposals([
+      panelTurn('1', { provider: 'claude', round: 0, outcome: { disposition: 'rewrite', summary: 'first' } }),
+      panelTurn('2', { provider: 'codex', round: 0, outcome: { disposition: 'needs_split', summary: 'epic' } }),
+      panelTurn('3', {
+        provider: 'claude',
+        round: 1,
+        outcome: { disposition: 'split', summary: 'conceded' },
+        challenge_note: 'needs_split does not slice it',
+      }),
+      panelTurn('4', { provider: 'codex', round: 1, endorse: 'claude' }),
+    ])
+
+    expect(proposals.map((p) => [p.provider, p.outcome.disposition, p.id])).toEqual([
+      ['claude', 'split', '3'],
+      ['codex', 'needs_split', '2'],
+    ])
+    expect(proposals[0].challengeNotes).toEqual(['needs_split does not slice it'])
+    expect(proposals[1].challengeNotes).toEqual([])
+  })
+})
+
+describe('activeGrillCycle', () => {
+  it('starts the cycle at the answer that reopened the session', () => {
+    const messages = [
+      message('1', 'agent', 'question'),
+      message('2', 'user', 'answer'),
+      message('3', 'agent', 'proposal'),
+      message('4', 'agent', 'outcome'),
+      message('5', 'user', 'answer'),
+      message('6', 'agent', 'proposal'),
+    ]
+
+    expect(activeGrillCycle(messages).map((m) => m.id)).toEqual(['5', '6'])
+    expect(activeGrillCycle(messages.slice(0, 4)).map((m) => m.id)).toEqual(['1', '2', '3', '4'])
+  })
+})
+
+function panelTurn(id: string, payload: Record<string, unknown>): GrillMessage {
+  return { id, role: 'agent', kind: 'proposal', payload, created_at: '' }
+}
+
+function message(id: string, role: GrillMessage['role'], kind: GrillMessage['kind']): GrillMessage {
+  return { id, role, kind, payload: {}, created_at: '' }
+}
 
 function compact(lines: DiffLine[]): string[] {
   return lines.map((l) => `${l.op} ${l.text}`)

@@ -593,6 +593,20 @@ func TestGrillRunnerStreamsActivity(t *testing.T) {
 	}
 }
 
+// appendGrillRunnerConfig adds keys to the repo config newGrillRunnerTest wrote, for
+// a test that turns one knob rather than composing a config of its own.
+func appendGrillRunnerConfig(t *testing.T, repo registry.Repo, extra string) {
+	t.Helper()
+	path := config.ProjectConfigPath(repo.Root)
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read repo config: %v", err)
+	}
+	if err := os.WriteFile(path, append(current, extra...), 0o644); err != nil {
+		t.Fatalf("write repo config: %v", err)
+	}
+}
+
 // newGrillRunnerTest builds a runner over a real store and a repo whose CLAUDE_BIN
 // is a stub claude at script. HOME and CLAUDE_CONFIG_DIR are isolated to temp dirs
 // so config resolution and the --resume transcript check never touch the real ones.
