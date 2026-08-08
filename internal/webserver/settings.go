@@ -219,6 +219,11 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		// The migration runs — and may refuse — before the key that would strand
+		// the old provider's mirror lands.
+		if switchesToInternal(key, req.Value) && !s.guardSwitchToInternal(w, []string{repo.Root}) {
+			return
+		}
 		if err := config.WriteConfigLayer(req.Layer, "", projectPath, userPath, key, req.Value); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write config: " + err.Error()})
 			return
