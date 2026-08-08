@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { Lock, Search } from 'lucide-react'
 
 import { useActiveRepo } from '@/components/trau/active-repo'
@@ -18,6 +18,7 @@ import {
 } from '@/lib/grill'
 import { healthQueryOptions } from '@/lib/health'
 import { useInboxCounts } from '@/lib/inbox'
+import { activeNavIndex, navOrder, rovingIndex } from '@/lib/nav-roving'
 import { isMacPlatform, shortcutLabel } from '@/lib/palette-keys'
 import { useProjectRepo } from '@/lib/projects'
 import {
@@ -145,6 +146,33 @@ export function Sidebar({
       openSwitcher()
     }
   }
+  // One Tab stop: it parks on the item last left off, the active route's until moved.
+  const items = navOrder()
+  const pathname = useRouterState({
+    select: (state) => state.location.pathname,
+  })
+  const [focused, setFocused] = useState<number | null>(null)
+  const stop = focused ?? activeNavIndex(pathname, items)
+  const itemRefs = useRef<(HTMLElement | null)[]>([])
+
+  function focusItem(index: number) {
+    setFocused(index)
+    itemRefs.current[index]?.focus()
+  }
+
+  function onNavKeyDown(event: KeyboardEvent<HTMLElement>) {
+    const next = rovingIndex(event.key, stop, items.length)
+    if (next !== null) {
+      event.preventDefault()
+      focusItem(next)
+      return
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      itemRefs.current[stop]?.click()
+    }
+  }
+
   const host = window.location.host
   const health = useQuery(healthQueryOptions)
   const update = useQuery(updateQueryOptions)
@@ -188,7 +216,11 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-3 py-2">
+      <nav
+        aria-label="Primary"
+        onKeyDown={onNavKeyDown}
+        className="flex-1 overflow-y-auto px-3 py-2"
+      >
         {NAV_GROUPS.map((group) => (
           <div key={group.label} className="mb-5">
             <p className="px-2 pb-1.5 font-mono text-[0.65rem] uppercase tracking-[0.2em] text-muted-foreground">
@@ -204,16 +236,22 @@ export function Sidebar({
                   queue.data,
                 )
                 const disabled = isAll && item.requiresProject
+                const index = items.indexOf(item)
 
                 if (disabled) {
                   return (
                     <li key={item.label}>
                       <button
                         type="button"
+                        ref={(el) => {
+                          itemRefs.current[index] = el
+                        }}
+                        tabIndex={index === stop ? 0 : -1}
+                        onFocus={() => setFocused(index)}
                         onClick={() => recoverTo(item)}
                         aria-disabled="true"
                         title="Select a project to use this page"
-                        className="group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono text-sm text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
+                        className="group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono text-sm text-muted-foreground/40 transition-colors hover:text-muted-foreground/70 focus-visible:text-muted-foreground/70"
                       >
                         <item.icon className="size-4" aria-hidden="true" />
                         <span className="flex-1">{item.label}</span>
@@ -228,11 +266,17 @@ export function Sidebar({
                     <Link
                       to={item.to}
                       search={item.search}
+                      ref={(el: HTMLAnchorElement | null) => {
+                        itemRefs.current[index] = el
+                      }}
+                      tabIndex={index === stop ? 0 : -1}
+                      onFocus={() => setFocused(index)}
                       activeOptions={{ exact: item.exact ?? false }}
-                      className="group relative flex items-center gap-2.5 rounded-md px-2 py-1.5 font-mono text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                      className="group relative flex items-center gap-2.5 rounded-md px-2 py-1.5 font-mono text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:bg-secondary focus-visible:text-foreground"
                       activeProps={{
+                        'aria-current': 'page',
                         className:
-                          'bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary',
+                          'bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary focus-visible:bg-primary/10 focus-visible:text-primary',
                       }}
                     >
                       {({ isActive }) => (
