@@ -3,6 +3,7 @@ package hubclient
 import (
 	"context"
 	"net/http"
+	"time"
 )
 
 // The worktree standings the hub records, mirrored here so a loop naming one does
@@ -34,4 +35,41 @@ func (c *Client) ReportWorktree(ctx context.Context, repo, ticket, path, branch 
 func (c *Client) SettleWorktree(ctx context.Context, repo, ticket, path string) error {
 	return c.do(ctx, http.MethodPost, c.repoPath(repo, "worktrees"),
 		worktreeBody{Ticket: ticket, Path: path, State: WorktreeSettled}, nil)
+}
+
+// worktreeAppHTTP carries the ensure-app call. The hub holds that request open
+// while it waits for the app's port to accept, so the standard budget would cut
+// the answer short of the hub's own readiness window.
+var worktreeAppHTTP = &http.Client{Timeout: 2 * time.Minute}
+
+// WorktreeApp is what the hub reports about the app it serves out of a tree.
+// Serving is false when the repo has no APP_START_CMD at all — the caller keeps
+// its configured browser-verify target — while a true Serving with an empty URL
+// means the app was meant to run and did not come up.
+type WorktreeApp struct {
+	Ticket  string `json:"ticket"`
+	Port    int    `json:"port"`
+	URL     string `json:"url"`
+	State   string `json:"state"`
+	Output  string `json:"output"`
+	Serving bool   `json:"serving"`
+}
+
+// EnsureWorktreeApp asks the hub to have the ticket's worktree app running and
+// hands back where it is. It is the run child's "give me a verify URL": the hub
+// starts the app at first need and waits for its port to accept, so the answer is
+// a URL that is live or a failure that says why.
+func (c *Client) EnsureWorktreeApp(ctx context.Context, repo, ticket string) (WorktreeApp, error) {
+	var out WorktreeApp
+	if err := c.doWith(ctx, worktreeAppHTTP, http.MethodPost, c.repoPath(repo, "worktrees/app"),
+		worktreeAppBody{Ticket: ticket}, &out); err != nil {
+		return WorktreeApp{}, err
+	}
+	return out, nil
+}
+
+// worktreeAppBody names the tree whose app to bring up, by the key the tree was
+// reported under — an epic's own id for the tree its children share.
+type worktreeAppBody struct {
+	Ticket string `json:"ticket"`
 }

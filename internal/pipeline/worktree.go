@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/worktree"
 )
@@ -179,6 +180,64 @@ func (p *Pipeline) parkWorktreeHeld(id string, held *worktree.HeldError) error {
 	p.logf("  ⏸ %s cannot get a worktree — %s", id, held.Error())
 	p.emitState(id, p.State.Get(id, "PHASE"), "paused", "worktree_held")
 	return &PausedError{ID: id, Phase: p.State.Get(id, "PHASE"), Reason: held.Error()}
+}
+
+// adoptWorktreeAppURL points browser verify at the app this run's own worktree
+// serves. With WORKTREES=1 and APP_START_CMD set, the hub starts the target app in
+// the tree on an allocated port and hands back its URL; that URL replaces
+// APP_URL/APP_URLS wholesale for the rest of the run, because the configured one
+// is the human's dev server on the registered checkout, which is showing some other
+// branch entirely once runs are isolated.
+//
+// Called at the top of verify — the first moment a URL is actually needed — and
+// only for a UI slice under an active browser gate, so a backend slice never starts
+// an app it has no use for. It asks the hub once per run.
+//
+// An app that will not boot is never fatal: the targets are cleared so the browser
+// gate takes its advisory no-URL path, an event records why, and the verdict says
+// the UI was not driven — an honest "not driven" beats failing the run over a dev
+// server or quietly driving the developer's own.
+func (p *Pipeline) adoptWorktreeAppURL(ctx context.Context, id string) {
+	if p.worktreeAppAsked || p.EnsureAppURL == nil || !p.worktreesOn() || p.WorkTree == "" {
+		return
+	}
+	if !browserModeOn(p.BrowserVerify) || !p.sliceIsUI(ctx) {
+		return
+	}
+	p.worktreeAppAsked = true
+
+	key := p.worktreeTicket(id)
+	url, serving, err := p.EnsureAppURL(ctx, key)
+	if !serving {
+		if err != nil {
+			p.logf("  ⚠ the hub could not say whether %s serves an app per worktree: %v", key, err)
+		}
+		return
+	}
+	if err != nil || url == "" {
+		p.failWorktreeApp(id, key, err)
+		return
+	}
+	p.worktreeApp = url
+	p.AppURL, p.AppURLs = url, nil
+	p.logf("  ↳ browser verify targets the worktree's own app at %s", url)
+}
+
+// failWorktreeApp records that the tree's app would not come up and clears the
+// browser-verify targets so the gate goes advisory rather than driving the wrong
+// checkout's app.
+func (p *Pipeline) failWorktreeApp(id, key string, err error) {
+	msg := "the app for worktree " + key + " did not start — browser verify has no URL to drive"
+	if err != nil {
+		msg += ": " + err.Error()
+	}
+	p.AppURL, p.AppURLs = "", nil
+	p.logf("  ⚠ %s", msg)
+	if p.Events != nil {
+		p.Events.Emit(event.KindWorktreeAppFailed, "verify", msg, map[string]any{
+			"ticket": id, "worktree": key,
+		})
+	}
 }
 
 // settleTicketWorktree removes the ticket's tree and closes its hub row. Every

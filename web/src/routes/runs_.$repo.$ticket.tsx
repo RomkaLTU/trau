@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { ExternalLink, GitBranch, Loader2, Send, Video } from 'lucide-react'
+import { ExternalLink, GitBranch, Loader2, Play, Send, Video } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -31,6 +31,7 @@ import {
   renderRunVideo,
   runDetailQueryOptions,
   runProofsQueryOptions,
+  startWorktreeApp,
   type Anomaly,
   type PhaseCost,
   type Proof,
@@ -91,6 +92,7 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
         badges={<StatusPill state={pill.state} label={pill.label} />}
         actions={
           <>
+            <WorktreeAppLink repo={repo} ticket={run.ticket} worktree={run.worktree} />
             {openPR}
             <PRStatusBadge status={run.pr_status} />
           </>
@@ -202,6 +204,78 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <p className="font-sans text-sm leading-relaxed text-muted-foreground">{children}</p>
 }
 
+const APP_PILL: Record<string, { state: RunState; label: string }> = {
+  starting: { state: 'verify', label: 'app starting' },
+  failed: { state: 'fail', label: 'app failed' },
+}
+
+/**
+ * The app the run's own worktree serves, beside the PR link. A running app is the
+ * link QA follows — that port is this branch, not whatever the shared checkout is
+ * showing — and a stopped one offers the Start the hub would otherwise do on the
+ * run's first need. Repos with no worktree, or none serving an app, show nothing.
+ */
+function WorktreeAppLink({
+  repo,
+  ticket,
+  worktree,
+}: {
+  repo: string
+  ticket: string
+  worktree?: Worktree
+}) {
+  const queryClient = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: () => startWorktreeApp(repo, worktree?.ticket ?? ticket),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['run', repo, ticket] }),
+  })
+
+  if (!worktree || worktree.state !== 'active') {
+    return null
+  }
+  if (worktree.app_state === 'running' && worktree.app_url) {
+    return (
+      <Button asChild size="sm" variant="outline" className="font-mono">
+        <a href={worktree.app_url} target="_blank" rel="noreferrer">
+          <ExternalLink className="size-3.5" aria-hidden="true" />
+          app :{worktree.port}
+        </a>
+      </Button>
+    )
+  }
+  if (!worktree.serving) {
+    return null
+  }
+  const pill = worktree.app_state ? APP_PILL[worktree.app_state] : undefined
+  return (
+    <span className="inline-flex items-center gap-2">
+      {pill && <StatusPill state={pill.state} label={pill.label} />}
+      <Button
+        size="sm"
+        variant="outline"
+        className="font-mono"
+        disabled={mutation.isPending || worktree.app_state === 'starting'}
+        onClick={() => mutation.mutate()}
+      >
+        {mutation.isPending ? (
+          <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+        ) : (
+          <Play className="size-3.5" aria-hidden="true" />
+        )}
+        {worktree.app_state === 'failed' ? 'Retry app' : 'Start app'}
+      </Button>
+      {mutation.isError && (
+        <span className="font-mono text-[0.7rem] text-fail">
+          {mutation.error instanceof Error
+            ? mutation.error.message
+            : 'start failed'}
+        </span>
+      )}
+    </span>
+  )
+}
+
 /**
  * The per-ticket worktree this run works in, shown only for repos that have
  * worktrees on — a shared-checkout run has no tree and no card. Remove is offered
@@ -249,6 +323,14 @@ function WorktreeCard({
           )}
           <dt className="text-muted-foreground">state</dt>
           <dd className="text-foreground">{worktree.state}</dd>
+          {worktree.port ? (
+            <>
+              <dt className="text-muted-foreground">app</dt>
+              <dd className="text-foreground">
+                {worktree.app_state} on port {worktree.port}
+              </dd>
+            </>
+          ) : null}
         </dl>
         {note && <Empty>{note}</Empty>}
         {standing && (

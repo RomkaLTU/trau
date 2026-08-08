@@ -16,6 +16,16 @@ const (
 	WorktreeOrphaned = "orphaned"
 )
 
+// The standings a worktree's app can hold. An app is stopped until something
+// needs it, starting while its port has yet to accept, running once it has, and
+// failed when the start command never listened.
+const (
+	AppStopped  = "stopped"
+	AppStarting = "starting"
+	AppRunning  = "running"
+	AppFailed   = "failed"
+)
+
 // ErrWorktreeNotFound is returned when a worktree id is not present in the repo.
 var ErrWorktreeNotFound = errors.New("worktree not found")
 
@@ -36,6 +46,20 @@ type Worktree struct {
 	Branch    string
 	CreatedAt string
 	State     string
+	// The app the hub serves out of this tree, when the repo has APP_START_CMD
+	// set: the port it was given, the pid of its process group, its standing, and
+	// when it was last started. Port stays recorded while the app is live so the
+	// next tree is handed a different one.
+	App WorktreeApp
+}
+
+// WorktreeApp is one worktree's served app, as both the store and its readers see
+// it. The zero value is the standing of every tree in a repo that serves no app.
+type WorktreeApp struct {
+	Port      int
+	PID       int
+	State     string
+	StartedAt string
 }
 
 // WorktreeInput is the content a child reports when it creates or adopts a tree.
@@ -61,7 +85,8 @@ func NewWorktrees(db *sql.DB) *Worktrees {
 	return &Worktrees{db: db, now: time.Now}
 }
 
-const worktreeSelect = `SELECT id, repo, ticket, path, branch, created_at, state FROM worktrees`
+const worktreeSelect = `SELECT id, repo, ticket, path, branch, created_at, state,
+	port, app_pid, app_state, app_started_at FROM worktrees`
 
 // Record files the tree a run created or adopted, or updates the row a previous
 // run left for the same ticket. The created stamp survives an update: a resumed
@@ -71,6 +96,9 @@ func (w *Worktrees) Record(repo string, in WorktreeInput) (Worktree, error) {
 	if err != nil {
 		return Worktree{}, err
 	}
+	// The app columns are deliberately left out of the update: a child reporting
+	// the tree it adopted knows nothing about the app the hub serves out of it, and
+	// a resume must not reset a running app to stopped.
 	_, err = w.db.Exec(
 		`INSERT INTO worktrees(repo, ticket, path, branch, created_at, state)
 		 VALUES(?, ?, ?, ?, ?, ?)
@@ -144,6 +172,54 @@ func (w *Worktrees) SettleTicket(repo, ticket string) (bool, error) {
 	return n > 0, err
 }
 
+// SetApp records what the hub's app supervisor did with a tree — the port it
+// allocated, the process it started, and the standing that start reached. It
+// returns ErrWorktreeNotFound when the id is not in the repo.
+func (w *Worktrees) SetApp(repo string, id int64, app WorktreeApp) (Worktree, error) {
+	if app.State == "" {
+		app.State = AppStopped
+	}
+	res, err := w.db.Exec(
+		`UPDATE worktrees SET port = ?, app_pid = ?, app_state = ?, app_started_at = ?
+		 WHERE repo = ? AND id = ?`,
+		app.Port, app.PID, app.State, app.StartedAt, repo, id,
+	)
+	if err != nil {
+		return Worktree{}, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Worktree{}, err
+	}
+	if n == 0 {
+		return Worktree{}, ErrWorktreeNotFound
+	}
+	return w.one(worktreeSelect+` WHERE repo = ? AND id = ?`, repo, id)
+}
+
+// HeldPorts returns the ports live worktree apps hold, across every repo — what a
+// port allocation must skip past. Starting counts as held: the app has the port
+// even though it has yet to accept on it.
+func (w *Worktrees) HeldPorts() (map[int]bool, error) {
+	rows, err := w.db.Query(
+		`SELECT port FROM worktrees WHERE port > 0 AND app_state IN (?, ?)`,
+		AppStarting, AppRunning,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	held := map[int]bool{}
+	for rows.Next() {
+		var port int
+		if err := rows.Scan(&port); err != nil {
+			return nil, err
+		}
+		held[port] = true
+	}
+	return held, rows.Err()
+}
+
 // Delete removes a row outright and reports whether one was deleted.
 func (w *Worktrees) Delete(repo string, id int64) (bool, error) {
 	res, err := w.db.Exec(`DELETE FROM worktrees WHERE repo = ? AND id = ?`, repo, id)
@@ -162,6 +238,7 @@ func (w *Worktrees) one(query string, args ...any) (Worktree, error) {
 	var t Worktree
 	err := w.db.QueryRow(query, args...).Scan(
 		&t.ID, &t.Repo, &t.Ticket, &t.Path, &t.Branch, &t.CreatedAt, &t.State,
+		&t.App.Port, &t.App.PID, &t.App.State, &t.App.StartedAt,
 	)
 	return t, err
 }
@@ -175,7 +252,10 @@ func (w *Worktrees) scan(query string, args ...any) (out []Worktree, err error) 
 	out = []Worktree{}
 	for rows.Next() {
 		var t Worktree
-		if err := rows.Scan(&t.ID, &t.Repo, &t.Ticket, &t.Path, &t.Branch, &t.CreatedAt, &t.State); err != nil {
+		if err := rows.Scan(
+			&t.ID, &t.Repo, &t.Ticket, &t.Path, &t.Branch, &t.CreatedAt, &t.State,
+			&t.App.Port, &t.App.PID, &t.App.State, &t.App.StartedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, t)

@@ -1103,6 +1103,12 @@ func (c *Client) issuePath(repo, id, verb string) string {
 // decoding a JSON response into out. A 404 becomes ErrNotFound; any other non-2xx
 // carries the hub's error message.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doWith(ctx, c.http, method, path, body, out)
+}
+
+// doWith is do over a caller-chosen client, for the few calls whose answer the hub
+// legitimately takes longer to produce than the standard budget allows.
+func (c *Client) doWith(ctx context.Context, client *http.Client, method, path string, body, out any) error {
 	var reader io.Reader
 	if body != nil {
 		buf, err := json.Marshal(body)
@@ -1121,7 +1127,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	resp, err := c.http.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return &transportError{op: method + " " + path, err: err}
 	}

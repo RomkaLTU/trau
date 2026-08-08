@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/proc"
@@ -26,6 +27,17 @@ type SpawnSpec struct {
 	Env  []string
 }
 
+// AppSpec describes the app a worktree serves: the shell command to run, the tree
+// to run it in, the environment it starts with, and the file its output is
+// captured to. Unlike SpawnSpec the binary is not trau's own — it is whatever
+// APP_START_CMD names, handed to the host shell.
+type AppSpec struct {
+	Dir     string
+	Command string
+	Env     []string
+	LogPath string
+}
+
 // Supervisor is the hub's process-control seam. It isolates OS process
 // management — spawning children, running one to completion, and stopping or
 // killing processes — so the control layer never reaches for os/exec or the
@@ -33,6 +45,7 @@ type SpawnSpec struct {
 // records the calls instead of touching real processes.
 type Supervisor interface {
 	Spawn(SpawnSpec) (pid int, err error)
+	SpawnApp(AppSpec) (pid int, err error)
 	Capture(context.Context, SpawnSpec) (stdout []byte, err error)
 	Stop(pid int) error
 	Kill(pid int) error
@@ -55,6 +68,34 @@ func (osSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	cmd := exec.Command(exe, spec.Args...)
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
+	cmd.SysProcAttr = proc.Detached()
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	go func() { _ = cmd.Wait() }()
+	return cmd.Process.Pid, nil
+}
+
+// SpawnApp starts a worktree's app under the host shell, detached in its own
+// process group exactly as Spawn is, so stopping it later kills the whole tree of
+// processes a dev server spawns rather than only the shell. Its output goes
+// straight to a file the child owns for its lifetime — not through a pipe the hub
+// holds — because a detached app outlives the hub, and a hub exit must not leave
+// it writing into a closed pipe. The file is truncated at every start, so what it
+// holds is this run of the app and nothing older.
+func (osSupervisor) SpawnApp(spec AppSpec) (int, error) {
+	if err := os.MkdirAll(filepath.Dir(spec.LogPath), 0o755); err != nil {
+		return 0, err
+	}
+	log, err := os.OpenFile(spec.LogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = log.Close() }()
+	cmd := hostShell(context.Background(), spec.Command)
+	cmd.Dir = spec.Dir
+	cmd.Env = spec.Env
+	cmd.Stdout, cmd.Stderr = log, log
 	cmd.SysProcAttr = proc.Detached()
 	if err := cmd.Start(); err != nil {
 		return 0, err

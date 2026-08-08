@@ -964,9 +964,20 @@ type Pipeline struct {
 	// its own rows at boot, so a dropped report costs a record, never a run.
 	ReportWorktree func(ctx context.Context, ticket, path, branch string) error
 	SettleWorktree func(ctx context.Context, ticket, path string) error
+	// EnsureAppURL asks the hub to have this tree's app running and hands back the
+	// URL to drive. serving reports whether the repo serves an app per worktree at
+	// all (APP_START_CMD set): false leaves the configured APP_URL/APP_URLS exactly
+	// as they are, and a true serving with an empty URL means the app was meant to
+	// run and would not come up.
+	EnsureAppURL func(ctx context.Context, ticket string) (url string, serving bool, err error)
 	// worktreeNoticed keeps the "WORKTREES=1 ignored on a folder repo" notice to
 	// one line per session rather than one per ticket.
 	worktreeNoticed bool
+	// worktreeApp is the per-worktree app URL this run drives, and worktreeAppAsked
+	// records that the hub has already been asked — the app is started at first
+	// need, and exactly once per run.
+	worktreeApp      string
+	worktreeAppAsked bool
 
 	TimelogEnabled      bool
 	TimelogStorage      string
@@ -2443,6 +2454,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	}
 
 	verdictPath := verifyPath(id)
+	p.adoptWorktreeAppURL(ctx, id)
 	appURL := p.sliceAppURL(ctx)
 	note := browserNote(p.BrowserVerify, appURL)
 	if note != "" && appURL != p.AppURL {
@@ -2694,6 +2706,17 @@ func (p *Pipeline) proofsEnabled() bool {
 		return false
 	}
 	switch strings.ToLower(strings.TrimSpace(p.BrowserVerify)) {
+	case "auto", "always":
+		return true
+	default:
+		return false
+	}
+}
+
+// browserModeOn reports whether BROWSER_VERIFY names a driving mode at all — auto
+// or always, with never and empty reading as off.
+func browserModeOn(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "auto", "always":
 		return true
 	default:
@@ -4896,7 +4919,7 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) str
 		return ""
 	}
 	roster, err := p.FetchQAAccounts(ctx)
-	p.qaAppURLID = drivenAppURLID(roster.AppURLs, p.sliceAppURL(ctx))
+	p.qaAppURLID = p.rosterAppURLID(roster.AppURLs, p.sliceAppURL(ctx))
 	roster.Accounts = sliceQAAccounts(roster, p.qaAppURLID)
 	p.reportQARoster(id, roster, err)
 	if err != nil {
@@ -4907,11 +4930,39 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) str
 	return qaRosterNote(id, roster.Accounts, roster.Notes)
 }
 
+// rosterAppURLID picks the stored app URL entry the QA roster is resolved
+// against. Normally that is the entry holding the URL being driven, but a
+// per-worktree app URL is trau's own localhost address on an allocated port, so no
+// stored entry will ever hold it. The accounts are still the ones for this app —
+// the tree serves the same product on a different port — so the repo's default
+// (workspace-less) entry stands in for it. Anything else would drop a repo's whole
+// roster the moment it started serving per worktree.
+func (p *Pipeline) rosterAppURLID(entries []hubclient.AppURL, url string) int64 {
+	if id := drivenAppURLID(entries, url); id != 0 {
+		return id
+	}
+	if url != "" && url == p.worktreeApp {
+		return defaultAppURLID(entries)
+	}
+	return 0
+}
+
 // drivenAppURLID identifies the stored entry holding url, zero when none does —
 // a repo storing no entries, or one whose target the ini still supplies.
 func drivenAppURLID(entries []hubclient.AppURL, url string) int64 {
 	for _, e := range entries {
 		if e.URL == url {
+			return e.ID
+		}
+	}
+	return 0
+}
+
+// defaultAppURLID is the repo's workspace-less app URL entry — the one that is the
+// app rather than one workspace's app — zero when the repo stores none.
+func defaultAppURLID(entries []hubclient.AppURL) int64 {
+	for _, e := range entries {
+		if e.Workspace == "" {
 			return e.ID
 		}
 	}

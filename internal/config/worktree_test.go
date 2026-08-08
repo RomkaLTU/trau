@@ -339,3 +339,72 @@ func TestResolveRunWorkTreeAcceptsATreeNotYetProvisioned(t *testing.T) {
 		t.Errorf("ResolveRunWorkTree on an existing tree = (%q, %v), want %q", got, err, missing)
 	}
 }
+
+// TestAppStartCmdAndPortBaseLoadFromTheWorktreesSection covers the two keys that
+// make a tree serve its own app: the command, which is off by default, and the
+// port base every tree's allocation starts from.
+func TestAppStartCmdAndPortBaseLoadFromTheWorktreesSection(t *testing.T) {
+	def, err := LoadLayered("", "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.AppStartCmd != "" {
+		t.Errorf("APP_START_CMD default = %q, want empty (no app served)", def.AppStartCmd)
+	}
+	if def.WorktreePortBase != DefaultWorktreePortBase {
+		t.Errorf("WORKTREE_PORT_BASE default = %d, want %d", def.WorktreePortBase, DefaultWorktreePortBase)
+	}
+
+	local := filepath.Join(t.TempDir(), ".trau.ini")
+	body := "APP_START_CMD=npm run dev -- --port $PORT\nWORKTREE_PORT_BASE=5100\n"
+	if err := os.WriteFile(local, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppStartCmd != "npm run dev -- --port $PORT" {
+		t.Errorf("AppStartCmd = %q, want the configured command", cfg.AppStartCmd)
+	}
+	if cfg.AppPortBase() != 5100 {
+		t.Errorf("AppPortBase() = %d, want 5100", cfg.AppPortBase())
+	}
+}
+
+// TestAppPortBaseClampsBelowTheUnprivilegedRange: a base a repo left at zero, or
+// set into the privileged range, must not send the hub probing ports it cannot
+// bind — it reads as the default instead.
+func TestAppPortBaseClampsBelowTheUnprivilegedRange(t *testing.T) {
+	for _, base := range []int{0, -1, 80, WorktreePortFloor - 1} {
+		if got := (Config{WorktreePortBase: base}).AppPortBase(); got != DefaultWorktreePortBase {
+			t.Errorf("AppPortBase() with base %d = %d, want %d", base, got, DefaultWorktreePortBase)
+		}
+	}
+	if got := (Config{WorktreePortBase: WorktreePortFloor}).AppPortBase(); got != WorktreePortFloor {
+		t.Errorf("AppPortBase() at the floor = %d, want %d", got, WorktreePortFloor)
+	}
+}
+
+// TestWorktreeAppKeysAreWebEditable keeps both keys in the settings catalog under
+// Worktrees, which is what puts them in the web settings page.
+func TestWorktreeAppKeysAreWebEditable(t *testing.T) {
+	want := map[string]bool{"APP_START_CMD": false, "WORKTREE_PORT_BASE": false}
+	for _, meta := range KnownKeys() {
+		if _, ok := want[meta.Key]; !ok {
+			continue
+		}
+		if !meta.WebEditable {
+			t.Errorf("%s is not web-editable", meta.Key)
+		}
+		if meta.Group != sectionWorktrees {
+			t.Errorf("%s is in group %q, want %q", meta.Key, meta.Group, sectionWorktrees)
+		}
+		want[meta.Key] = true
+	}
+	for key, found := range want {
+		if !found {
+			t.Errorf("%s is missing from the settings catalog", key)
+		}
+	}
+}

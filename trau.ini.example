@@ -695,6 +695,23 @@ KIMI_MODEL=
 # give each tree its own.
 # WORKTREE_PARALLEL=4
 
+# Shell command that serves the app from inside a worktree. Runs under `sh -c` with
+# the tree as its working directory and TRAU_APP_PORT and PORT both set to the port
+# the hub allocated for that tree; the command must serve on that port on localhost.
+# The hub starts it at first need — the first time a run asks for a verify URL, or
+# when you press Start on the run page — and keeps it up until the tree is removed.
+# Browser verify then drives http://localhost:<port>, i.e. the branch under test,
+# instead of whatever your own dev server on the registered checkout is showing.
+# Empty = no app is served per worktree and the browser gate keeps APP_URL/APP_URLS.
+# A command that never listens is marked failed with its output kept, and the run
+# carries on with the advisory no-URL path rather than failing over a dev server.
+# APP_START_CMD=npm run dev -- --port $PORT
+
+# Lowest port a worktree app may be given. Each tree takes the lowest free port at
+# or above it that no other live worktree app holds, probed by binding, so two lanes
+# serve two apps side by side. Default 4300.
+# WORKTREE_PORT_BASE=4300
+
 # --- artifacts ---
 # Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
 # to ./runs (relative to the working directory). Point it at a stable path if you

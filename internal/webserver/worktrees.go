@@ -43,6 +43,17 @@ type WorktreeView struct {
 	Branch    string `json:"branch"`
 	State     string `json:"state"`
 	CreatedAt string `json:"created_at,omitempty"`
+	// The app the hub serves out of this tree: the port it holds, the URL browser
+	// verify drives, and its standing. AppState is stopped for every tree in a repo
+	// with no APP_START_CMD, which is why Serving is carried beside it — a stopped
+	// app in a repo that serves one is a Start away, while a repo with no
+	// APP_START_CMD has nothing to start and shows no app control at all.
+	Port         int    `json:"port,omitempty"`
+	AppURL       string `json:"app_url,omitempty"`
+	AppState     string `json:"app_state,omitempty"`
+	AppPID       int    `json:"app_pid,omitempty"`
+	AppStartedAt string `json:"app_started_at,omitempty"`
+	Serving      bool   `json:"serving"`
 }
 
 // handleWorktrees lists (GET) or records (POST) the repo's per-ticket worktrees.
@@ -69,9 +80,10 @@ func (s *Server) listWorktrees(w http.ResponseWriter, repo registry.Repo) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list worktrees: " + err.Error()})
 		return
 	}
+	serving := repoServesApp(repo.Root)
 	views := make([]WorktreeView, 0, len(rows))
 	for _, row := range rows {
-		views = append(views, worktreeView(row))
+		views = append(views, worktreeView(row, serving))
 	}
 	writeJSON(w, http.StatusOK, views)
 }
@@ -94,6 +106,7 @@ func (s *Server) recordWorktree(w http.ResponseWriter, r *http.Request, repo reg
 	// A settle the child already performed locally still passes through here, so a
 	// tree its own removal missed is finished off; the row lands either way.
 	if strings.TrimSpace(req.State) == hubstore.WorktreeSettled {
+		s.stopWorktreeAppFor(repo.Root, req.Ticket)
 		if err := s.removeWorktreeTree(repo, req.Path); err != nil {
 			logger.Verbosef("settle worktree %s: %v", req.Ticket, err)
 		}
@@ -109,7 +122,7 @@ func (s *Server) recordWorktree(w http.ResponseWriter, r *http.Request, repo reg
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "record worktree: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, worktreeView(row))
+	writeJSON(w, http.StatusOK, worktreeView(row, repoServesApp(repo.Root)))
 }
 
 // handleWorktree reads (GET) or removes (DELETE) a single worktree row. DELETE is
@@ -137,7 +150,7 @@ func (s *Server) handleWorktree(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, worktreeView(row))
+		writeJSON(w, http.StatusOK, worktreeView(row, repoServesApp(repo.Root)))
 	case http.MethodDelete:
 		s.deleteWorktree(w, repo, row)
 	default:
@@ -153,6 +166,7 @@ func (s *Server) deleteWorktree(w http.ResponseWriter, repo registry.Repo, row h
 		})
 		return
 	}
+	s.stopWorktreeApp(repo.Root, row)
 	if err := s.removeWorktreeTree(repo, row.Path); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -162,7 +176,7 @@ func (s *Server) deleteWorktree(w http.ResponseWriter, repo registry.Repo, row h
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "settle worktree: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, worktreeView(settled))
+	writeJSON(w, http.StatusOK, worktreeView(settled, repoServesApp(repo.Root)))
 }
 
 // settleWorktree is what every hub-side settle calls: the ticket finished, so its
@@ -177,6 +191,7 @@ func (s *Server) settleWorktree(repo registry.Repo, ticket string) {
 	if !exists || row.State != hubstore.WorktreeActive {
 		return
 	}
+	s.stopWorktreeApp(repo.Root, row)
 	if err := s.removeWorktreeTree(repo, row.Path); err != nil {
 		logger.Verbosef("settle worktree %s: %v", ticket, err)
 		return
@@ -206,11 +221,11 @@ func (s *Server) removeWorktreeTree(repo registry.Repo, path string) error {
 	return nil
 }
 
-// reconcileWorktrees squares the worktrees table with git's registry and the disk
-// at boot. A settled row whose directory survived — a hub killed between the
-// removal and the row update — is pruned now; an active row whose directory is gone
-// is marked orphaned, because there is nothing left to remove and a stale active row
-// would make the run detail promise a tree that is not there.
+// reconcileWorktrees squares the worktrees table with git's registry, the disk and
+// the apps it recorded at boot. A settled row whose directory survived — a hub
+// killed between the removal and the row update — is pruned now; an active row whose
+// directory is gone is marked orphaned, because there is nothing left to remove and a
+// stale active row would make the run detail promise a tree that is not there.
 func (s *Server) reconcileWorktrees() {
 	for _, repo := range s.knownRepos(s.liveInstances()) {
 		rows, err := s.stores.Worktrees().AllForRepo(repo.Root)
@@ -225,13 +240,20 @@ func (s *Server) reconcileWorktrees() {
 			present := row.Path != "" && dirExists(row.Path)
 			switch {
 			case row.State == hubstore.WorktreeActive && !present:
+				s.stopWorktreeApp(repo.Root, row)
 				if _, err := s.stores.Worktrees().SetState(repo.Root, row.ID, hubstore.WorktreeOrphaned); err != nil {
 					logger.Verbosef("reconcile worktrees %s: orphan %s: %v", repo.Name, row.Ticket, err)
 				}
 			case row.State != hubstore.WorktreeActive && present:
+				s.stopWorktreeApp(repo.Root, row)
 				if err := s.removeWorktreeTree(repo, row.Path); err != nil {
 					logger.Verbosef("reconcile worktrees %s: %v", repo.Name, err)
 				}
+			default:
+				// The tree stands: an app its pid says is still up is this hub's to
+				// adopt, and one whose process is gone leaves a row promising a URL
+				// nothing answers.
+				s.reconcileWorktreeApp(repo.Root, row)
 			}
 		}
 		// Whatever the rows said, git's own registry must not keep a tree the disk
@@ -259,14 +281,33 @@ func dirExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-func worktreeView(row hubstore.Worktree) WorktreeView {
+func worktreeView(row hubstore.Worktree, serving bool) WorktreeView {
 	return WorktreeView{
-		ID:        row.ID,
-		Repo:      filepath.Base(row.Repo),
-		Ticket:    row.Ticket,
-		Path:      row.Path,
-		Branch:    row.Branch,
-		State:     row.State,
-		CreatedAt: row.CreatedAt,
+		ID:           row.ID,
+		Repo:         filepath.Base(row.Repo),
+		Ticket:       row.Ticket,
+		Path:         row.Path,
+		Branch:       row.Branch,
+		State:        row.State,
+		CreatedAt:    row.CreatedAt,
+		Port:         row.App.Port,
+		AppURL:       appURLForPort(row.App),
+		AppState:     appStateOr(row.App.State),
+		AppPID:       row.App.PID,
+		AppStartedAt: row.App.StartedAt,
+		Serving:      serving,
 	}
+}
+
+// repoServesApp reports whether the repo has an APP_START_CMD for its worktrees to
+// serve. A config that will not read answers no: a reader that cannot know reads
+// the same as a repo that serves nothing, and offers no app control rather than a
+// control that can do nothing.
+func repoServesApp(root string) bool {
+	cfg, err := repoConfig(root)
+	if err != nil {
+		logger.Verbosef("read the app start command for %s: %v", root, err)
+		return false
+	}
+	return strings.TrimSpace(cfg.AppStartCmd) != ""
 }
