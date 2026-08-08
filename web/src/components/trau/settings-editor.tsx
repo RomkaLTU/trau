@@ -387,7 +387,7 @@ function ValueEditor({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           aria-label={`${item.key} value`}
-          className="w-full max-w-xs rounded-md border border-border bg-card px-2 py-1.5 font-mono text-xs text-foreground focus-visible:border-ring focus-visible:outline-none dark:bg-input"
+          className="w-full max-w-xs rounded-md border border-border bg-card px-2 py-1.5 font-mono text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-input"
         >
           {item.options!.map((o) => (
             <option key={o} value={o}>

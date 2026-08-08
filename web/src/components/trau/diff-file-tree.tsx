@@ -20,7 +20,7 @@ const STATUS: Record<RunDiffStatus, { glyph: string; className: string }> = {
 }
 
 const ROW =
-  'flex w-full items-center gap-1.5 rounded-md py-1 pr-1.5 text-left font-mono text-xs transition-colors hover:bg-accent/60 focus-visible:outline-none focus-visible:bg-accent/60'
+  'flex w-full items-center gap-1.5 rounded-md py-1 pr-1.5 text-left font-mono text-xs transition-colors hover:bg-accent/60 focus-visible:bg-accent/60'
 
 // A filter renders the folders against this empty set so every match shows, leaving
 // the collapsed one untouched to restore the shape the tree had once the box clears.
