@@ -472,12 +472,15 @@ export function isActiveSessionConflict(err: unknown): boolean {
 // turn, the session type, and whether the agent's recommendations are auto-accepted.
 // An omitted provider or model leaves the hub to resolve the repo's default; an
 // omitted mode opens an interview and an omitted autoAccept asks every question.
+// fromSession names the research session whose report seeds the interview — the hub
+// writes the opening note and grounds the first turn in the report itself.
 export interface GrillStartOpening {
   seed?: string
   model?: string
   provider?: string
   mode?: GrillMode
   autoAccept?: boolean
+  fromSession?: string
 }
 
 // startGrillSession opens a session. An empty issueId with a seed starts a
@@ -499,6 +502,7 @@ export async function startGrillSession(
       provider: opening.provider ?? '',
       mode: opening.mode ?? 'interview',
       auto_accept: opening.autoAccept ?? false,
+      from_session: opening.fromSession ?? '',
     }),
   })
   if (!res.ok) {

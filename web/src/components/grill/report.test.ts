@@ -4,7 +4,14 @@ import {
   QueryClient,
   QueryClientProvider,
 } from "@tanstack/react-query";
-import { act, createElement } from "react";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  RouterContextProvider,
+} from "@tanstack/react-router";
+import { act, createElement, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -40,9 +47,25 @@ const outcome: OutcomePayload = {
   summary: "The SDK backs off exponentially.",
 };
 
+// The document links an anchored report back to its issue and Draft an issue leaves
+// for the Inbox, so the render needs a router even where nothing navigates.
+const rootRoute = createRootRoute();
+type TestRouter = ComponentProps<typeof RouterContextProvider>["router"];
+
+function testRouter(): TestRouter {
+  return createRouter({
+    routeTree: rootRoute.addChildren([
+      createRoute({ getParentRoute: () => rootRoute, path: "/inbox" }),
+      createRoute({ getParentRoute: () => rootRoute, path: "/backlog" }),
+    ]),
+    history: createMemoryHistory({ initialEntries: ["/research"] }),
+  }) as unknown as TestRouter;
+}
+
 async function render(
   container: HTMLElement,
   props: Omit<Parameters<typeof ReportDocument>[0], "repo">,
+  router: TestRouter = testRouter(),
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -54,7 +77,10 @@ async function render(
       createElement(
         QueryClientProvider,
         { client },
-        createElement(ReportDocument, { repo: "loop", ...props }),
+        createElement(RouterContextProvider, {
+          router,
+          children: createElement(ReportDocument, { repo: "loop", ...props }),
+        }),
       ),
     );
   });
@@ -341,6 +367,58 @@ describe("ReportDocument", () => {
     expect(url).toBe("/api/v1/grill/7");
     expect(init.method).toBe("DELETE");
     expect(deleted).toBe(1);
+    unmount();
+  });
+
+  it("drafts an issue from the report and lands on the new Inbox draft", async () => {
+    const started: GrillSession = {
+      id: "12",
+      repo: "loop",
+      state: "running",
+      mode: "interview",
+      created_at: "2026-07-19T15:00:00Z",
+      updated_at: "2026-07-19T15:00:00Z",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, started));
+    vi.stubGlobal("fetch", fetchMock);
+    const router = testRouter();
+    const navigate = vi.spyOn(router, "navigate");
+    const container = document.createElement("div");
+    const unmount = await render(
+      container,
+      { session, outcome, warnings: [] },
+      router,
+    );
+
+    await act(async () => buttonNamed(container, "Draft an issue").click());
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/repos/loop/grill");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      issue_id: "",
+      mode: "interview",
+      from_session: "7",
+      auto_accept: false,
+    });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate.mock.calls[0][0]).toMatchObject({
+      to: "/inbox",
+      search: { issue: "draft:12", repo: "loop" },
+    });
+    unmount();
+  });
+
+  it("keeps drafting available on an applied report", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      session: { ...session, state: "applied" },
+      outcome,
+      warnings: [],
+    });
+    expect(
+      [...container.querySelectorAll("button")].map((b) => b.textContent),
+    ).toContain("Draft an issue");
     unmount();
   });
 

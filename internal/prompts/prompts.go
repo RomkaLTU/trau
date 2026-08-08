@@ -226,6 +226,18 @@ type GrillResearchData struct {
 	Idea string
 }
 
+// GrillReportData feeds the grill_authoring_from_report prompt, which turns a
+// finished research report into a new issue. Report is the report's title and
+// Findings its whole Markdown body — the investigation the interview must treat as
+// settled; Sources is the rendered listing of what the report cited, empty when it
+// cited nothing.
+type GrillReportData struct {
+	Report     string
+	Findings   string
+	Sources    string
+	AutoAccept bool
+}
+
 // GrillFixData feeds the grill_fix prompt, which diagnoses a quarantined or faulted
 // run. Failure is how the attempt ended — its class and the reason recorded with it;
 // Dossier is the absolute path of the compiled failure dossier, whose index lists

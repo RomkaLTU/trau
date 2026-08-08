@@ -119,6 +119,34 @@ const grillAuthoringDefault = `You are helping the user turn a rough idea into a
   - Use "no_change" only if the user decides not to file anything after all.
   Always include a short summary of what you specified. Nothing is created on the tracker until the user approves.`
 
+const grillAuthoringFromReportDefault = `You are helping the user turn a finished research report into a clear, implementable software issue for the repository you are running inside; read the code before asking when it sharpens a question.
+
+The report this session starts from:
+{{.Report}}
+
+{{.Findings}}
+{{.Sources}}
+What the report settles and what it does not:
+- The investigation is done. Every finding above is settled: never ask the user a question the report already answers, and never open the session by summarizing it back to them.
+- A claim the report itself leaves unconfirmed, and anything that may have changed since it was written, is yours to settle — by reading the repository, or with your web search and fetch tools. Never hand it to the user as a question.
+- What the report cannot settle is the work: whether to build on it at all, how wide the scope reaches, which trade-off to live with, what "done" means, and how the work is sliced. That is what you grill for.
+
+How to run the session:
+- Interview round by round, and only by calling the tools — never ask in plain assistant text. Ask a whole round with one ask_round call and wait for its answers before posing the next round; drop to ask_user only when what remains is a genuine single follow-up.
+- Open on the decisions, not on the findings: your first round asks what the report's conclusions should become — the scope to take, the product choices it leaves open, the acceptance criteria the work is measured by.
+- Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why — the report gives you a view, so use it. Omit the recommendation only for pure-preference questions where no option is objectively better.
+{{if .AutoAccept}}- Your recommendations are auto-accepted as the answer: a question carrying recommended is answered with it at once and never reaches the user, so omit recommended only where the choice genuinely needs their taste — that is the only way a question gets asked.
+{{end}}- Ask only what genuinely blocks a clean specification: the goal, scope, acceptance criteria, edge cases, affected files, dependencies.
+- Ask at the frontier. Map the open unknowns as a decision tree; the frontier is every question whose prerequisites are already settled, and a round is that whole frontier asked at once. A question whose answer depends on another question still open in the current round belongs to a later round, never this one. Recompute the frontier from the round's answers — an answer often prunes whole branches and promotes questions that were blocked — and the interview is done when the frontier is empty.
+- When settling a repo fact takes broad reconnaissance — sweeping many files, mapping call sites, checking how a convention is applied across the tree — dispatch a read-only exploration subagent (the Explore agent type) and work from what it reports back, instead of reading everything inline; keep your own context for the interview.
+- If an ask_user or ask_round call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answers later.
+- When you can specify the work fully, call finish_session with disposition "create":
+  - For a single issue: pass a title and a proposed_description an agent can implement without guessing, and leave sub_issues empty. This is the common case.
+  - For epic-shaped work: pass a title and proposed_description framing the epic's goal, and sub_issues as the breakdown — one implementable slice per agent session, each with a title and a full description, and blocked_by listing the earlier sibling indices it depends on. Every slice must be a thin VERTICAL slice: end-to-end and independently verifiable on its own. A horizontal layer is not a slice — "schema", "backend", "UI" are layers.
+  - Carry the report's conclusions into the description itself: an agent implementing this issue never sees the report, so every fact it must not rediscover belongs in the text you write.
+  - Use "no_change" only if the user decides not to file anything after all.
+  Always include a short summary of what you specified. Nothing is created on the tracker until the user approves.`
+
 const grillResearchDefault = `You are answering a research question for the user. What this session delivers is a report, not a change to an issue body. You are running inside the repository the question concerns; the code and its history are one of your sources.
 
 {{if .ID}}The issue this research is anchored to:
@@ -238,6 +266,15 @@ var grillResearchPlaceholders = []Placeholder{
 	{Field: "Attachments", Description: "materialized attachment listing; empty when the issue has no files", Sample: "\n--- Attachments ---\n/tmp/trau-attachments-COD-4242/shot.png — shot.png (image/png, 2.0KB)\n"},
 	grillFocusPlaceholder,
 	{Field: "Idea", Description: "question an unanchored session was opened with; empty opens by asking what to research", Sample: "Which OAuth flow the desktop client should use."},
+	grillAutoAcceptPlaceholder,
+}
+
+// A session drafted from a research report anchors to no issue at all: the report
+// itself is its whole context, embedded in the prompt rather than shown in the thread.
+var grillReportPlaceholders = []Placeholder{
+	{Field: "Report", Description: "title of the research report the draft is seeded from", Required: true, Sample: "How the SDK retries"},
+	{Field: "Findings", Description: "the report's findings, the whole Markdown body it delivered", Required: true, Sample: "## Conclusion\n\nThe SDK backs off exponentially."},
+	{Field: "Sources", Description: "rendered listing of the sources the report cited; empty when it cited none", Sample: "\n--- Sources the report cited ---\n1. SDK retry policy — https://example.com/docs — states the backoff schedule\n"},
 	grillAutoAcceptPlaceholder,
 }
 
@@ -522,6 +559,13 @@ var registry = []Prompt{
 			grillAutoAcceptPlaceholder,
 		},
 		Default: grillAuthoringDefault,
+	},
+	{
+		Name:         "grill_authoring_from_report",
+		Title:        "Interview: draft from report",
+		Description:  "First-turn interview prompt turning a finished research report into a new issue.",
+		Placeholders: grillReportPlaceholders,
+		Default:      grillAuthoringFromReportDefault,
 	},
 	{
 		Name:         "grill_research",
