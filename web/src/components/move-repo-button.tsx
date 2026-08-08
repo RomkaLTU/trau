@@ -15,6 +15,7 @@ import {
   type MoveTarget,
   type ProjectView,
 } from '@/lib/projects'
+import { useRovingGroup, type RovingItemProps } from '@/lib/use-roving-group'
 import { cn } from '@/lib/utils'
 
 // Joining is the hub's own move — the repo leaves its old project and that
@@ -131,6 +132,34 @@ function MoveTargets({
   // The last member out empties the project it leaves: joining another prunes it
   // on the way, leaving every project keeps it for the delete prompt.
   const empties = holder !== null && holder.repos.length === 1
+  const others = otherProjects(repo.root, projects)
+  // The project ids share the option list with two options of the hub's own, so
+  // they are keyed apart from them rather than trusted not to collide.
+  const keys = [
+    ...others.map((project) => `project:${project.id}`),
+    'new',
+    ...(holder ? ['none'] : []),
+  ]
+  // Clicking "New project…" drops the reader straight into the name field, which
+  // an arrow onto it must not do: the arrow after that one would be typed into
+  // the field instead of walking on to the option below it.
+  const [keyed, setKeyed] = useState(false)
+  const pick = (key: string) => {
+    setKeyed(true)
+    if (key === 'new') onPick({ kind: 'new', name: '' })
+    else if (key === 'none') {
+      if (holder) onPick({ kind: 'none', from: holder.id })
+    } else onPick({ kind: 'project', id: key.slice('project:'.length) })
+  }
+  const clickPick = (target: MoveTarget) => {
+    setKeyed(false)
+    onPick(target)
+  }
+  const roving = useRovingGroup({
+    keys,
+    selected: targetKey(target),
+    onSelect: pick,
+  })
   return (
     <>
       {holder
@@ -138,24 +167,31 @@ function MoveTargets({
         : `${repo.name} is in no project.`}{' '}
       Its runs and tracker seeding follow the project it lands in — nothing on
       disk moves.
-      <span className="mt-3 flex flex-col gap-1">
-        {otherProjects(repo.root, projects).map((project) => (
+      <span
+        role="radiogroup"
+        aria-label="Move target"
+        {...roving.groupProps}
+        className="mt-3 flex flex-col gap-1"
+      >
+        {others.map((project) => (
           <TargetOption
             key={project.id}
             label={project.name}
             hint={`${project.repos.length} ${project.repos.length === 1 ? 'repo' : 'repos'}`}
             selected={target?.kind === 'project' && target.id === project.id}
-            onSelect={() => onPick({ kind: 'project', id: project.id })}
+            item={roving.itemProps(`project:${project.id}`)}
+            onSelect={() => clickPick({ kind: 'project', id: project.id })}
           />
         ))}
         <TargetOption
           label="New project…"
           selected={target?.kind === 'new'}
-          onSelect={() => onPick({ kind: 'new', name: '' })}
+          item={roving.itemProps('new')}
+          onSelect={() => clickPick({ kind: 'new', name: '' })}
         />
         {target?.kind === 'new' && (
           <Input
-            autoFocus
+            autoFocus={!keyed}
             value={target.name}
             aria-label="New project name"
             placeholder="Project name"
@@ -168,7 +204,8 @@ function MoveTargets({
             label={`Leave ${holder.name}`}
             hint="no project"
             selected={target?.kind === 'none'}
-            onSelect={() => onPick({ kind: 'none', from: holder.id })}
+            item={roving.itemProps('none')}
+            onSelect={() => clickPick({ kind: 'none', from: holder.id })}
           />
         )}
       </span>
@@ -183,15 +220,22 @@ function MoveTargets({
   )
 }
 
+function targetKey(target: MoveTarget | null): string | null {
+  if (target === null) return null
+  return target.kind === 'project' ? `project:${target.id}` : target.kind
+}
+
 function TargetOption({
   label,
   hint,
   selected,
+  item,
   onSelect,
 }: {
   label: string
   hint?: string
   selected: boolean
+  item: RovingItemProps
   onSelect: () => void
 }) {
   return (
@@ -199,6 +243,7 @@ function TargetOption({
       type="button"
       role="radio"
       aria-checked={selected}
+      {...item}
       onClick={onSelect}
       className={cn(
         'flex w-full items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-left font-mono text-sm transition-colors',

@@ -1,3 +1,4 @@
+import { useRovingGroup } from '@/lib/use-roving-group'
 import { cn } from '@/lib/utils'
 
 export interface SegmentOption<T extends string | number> {
@@ -18,10 +19,20 @@ export function SegmentedControl<T extends string | number>({
   className?: string
   'aria-label'?: string
 }) {
+  const roving = useRovingGroup({
+    keys: options.map((option) => String(option.value)),
+    selected: String(value),
+    onSelect: (key) => {
+      const picked = options.find((option) => String(option.value) === key)
+      if (picked) onChange(picked.value)
+    },
+  })
+
   return (
     <div
       role="radiogroup"
       aria-label={ariaLabel}
+      {...roving.groupProps}
       className={cn(
         'inline-flex w-fit rounded-md border border-border bg-input p-0.5',
         className,
@@ -35,6 +46,7 @@ export function SegmentedControl<T extends string | number>({
             type="button"
             role="radio"
             aria-checked={active}
+            {...roving.itemProps(String(option.value))}
             onClick={() => onChange(option.value)}
             className={cn(
               'rounded-[calc(var(--radius)-6px)] px-3 py-1 font-mono text-xs transition-colors',
