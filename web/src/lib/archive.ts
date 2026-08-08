@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useRef } from 'react'
 
 import { apiFetch } from './api'
 import { invalidateRepoBoard } from './backlog'
@@ -66,12 +67,30 @@ export function useArchiveIssue(
   onArchived: (result: ArchiveResult, vars: ArchiveVars) => void,
 ) {
   const client = useQueryClient()
-  return useMutation({
+  // The same archive asked for twice running is asked once. isPending cannot say
+  // so: it is state, and a held 'a' repeats faster than a render — and on a local
+  // hub the first request is even answered before the second keystroke lands. The
+  // ref remembers the decision instead, from the tick the request leaves until it
+  // fails, and a different decision — the unarchive after an archive — passes.
+  const asked = useRef<string | null>(null)
+  const archive = useMutation({
     mutationFn: (vars: ArchiveVars) => archiveIssue(repo, vars.id, vars.archived),
     onSuccess: (result, vars) => {
       client.setQueryData(issueQueryOptions(repo, vars.id).queryKey, result)
       invalidateRepoBoard(client, repo)
       onArchived(result, vars)
     },
+    onError: () => {
+      asked.current = null
+    },
   })
+  return {
+    ...archive,
+    mutate: (vars: ArchiveVars) => {
+      const decision = `${vars.id}:${vars.archived}`
+      if (asked.current === decision) return
+      asked.current = decision
+      archive.mutate(vars)
+    },
+  }
 }

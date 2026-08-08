@@ -57,6 +57,7 @@ import {
   type IssueComment,
 } from "@/lib/issues";
 import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
+import { TICKET_DRAWER_LAYER } from "@/lib/drawer-keys";
 import { pinProvider, publishProviderPin } from "@/lib/provider-pin";
 import { activeSessionForIssue, grillSessionsQueryOptions } from "@/lib/grill";
 import { attemptsFor, checkpointLabel, formatAge } from "@/lib/ledger";
@@ -86,11 +87,15 @@ export function IssueDrawer({
   issueId,
   onOpenChange,
   onSelectIssue,
+  onCloseAutoFocus,
 }: {
   repo: string;
   issueId: string | null;
   onOpenChange: (open: boolean) => void;
   onSelectIssue: (id: string) => void;
+  // The drawer walks the list under it, so only the caller holding that list knows
+  // which row a close should return focus to.
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   // shownId lags issueId so the panel keeps rendering the closing issue through
   // Radix's exit animation instead of flashing empty; the keyed body resets its
@@ -102,7 +107,12 @@ export function IssueDrawer({
 
   return (
     <Sheet open={issueId !== null} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-xl">
+      <SheetContent
+        side="right"
+        data-key-layer={TICKET_DRAWER_LAYER}
+        onCloseAutoFocus={onCloseAutoFocus}
+        className="w-full gap-0 p-0 sm:max-w-xl"
+      >
         {shownId !== null && (
           <IssueDrawerBody
             key={shownId}

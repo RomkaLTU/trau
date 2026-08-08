@@ -2,7 +2,9 @@ import {
   Fragment,
   useCallback,
   useEffect,
+  useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
@@ -83,7 +85,9 @@ import {
   toggleStateGroup,
 } from "@/lib/backlog-filters";
 import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
+import { drawerKeyAction } from "@/lib/drawer-keys";
 import { NEW_DRAFT_ID } from "@/lib/inbox";
+import { readKeyStroke } from "@/lib/keys";
 import { internalIssueQueryOptions, type InternalIssue } from "@/lib/issues";
 import { labelsQueryOptions } from "@/lib/labels";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
@@ -93,6 +97,12 @@ import {
   queueActiveIds,
   queueQueryOptions,
 } from "@/lib/queue";
+import { nextIndex, prevIndex, rowActionKey } from "@/lib/roving-list";
+import {
+  rovingRowIds,
+  useRovingList,
+  type RovingRowProps,
+} from "@/lib/use-roving-list";
 import { cn } from "@/lib/utils";
 
 interface BacklogSearch {
@@ -166,6 +176,42 @@ function BacklogPage() {
     parseAsString.withOptions({ history: "push" }),
   );
 
+  // The board is one keyboard list: a single Tab stop over every row on screen,
+  // whichever section or expanded parent rendered it.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const rows = useRovingList({
+    container: listRef,
+    onActivate: (id) => void setPeek(id),
+  });
+
+  // The row the drawer is reading, kept past the close so Escape can land focus on
+  // it — j/k walk the list, so it is rarely the row the drawer opened from.
+  const lastPeek = useRef<string | null>(null);
+  useEffect(() => {
+    if (peek !== null) lastPeek.current = peek;
+  }, [peek]);
+
+  // Replace rather than push: a walk of twenty tickets is one Back, not twenty.
+  useEffect(() => {
+    if (peek === null) return;
+    function onKeyDown(e: KeyboardEvent) {
+      const action = drawerKeyAction(readKeyStroke(e));
+      if (action === null) return;
+      const ids = rovingRowIds(listRef.current);
+      const at = ids.indexOf(peek!);
+      if (at === -1) return;
+      const to =
+        action === "next"
+          ? nextIndex(at, ids.length)
+          : prevIndex(at, ids.length);
+      if (to === null || ids[to] === peek) return;
+      e.preventDefault();
+      void setPeek(ids[to], { history: "replace" });
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [peek, setPeek]);
+
   const [text, setText] = useState(q);
 
   useEffect(() => setText(q), [q]);
@@ -210,15 +256,24 @@ function BacklogPage() {
   );
   const hidden = hiddenStateGroups(counts, effectiveStateGroups(state));
 
-  const renderNode = (node: BacklogRowNode, depth = 0): ReactNode => {
+  // An expanded parent renders a child that may also stand in its own status
+  // section, so a row's place in the tree — not its id — names the rendering.
+  const renderNode = (
+    node: BacklogRowNode,
+    depth = 0,
+    under = "",
+  ): ReactNode => {
     const { entry } = node;
     const expandable = rowExpandable(node);
     const open = expandable && expanded.has(entry.id);
+    const key = under + entry.id;
     return (
       <Fragment key={entry.id}>
         <BacklogRow
           repo={repo}
           entry={entry}
+          rowProps={rows.rowProps(entry.id, key)}
+          controlProps={rows.controlProps}
           editing={editing === entry.id}
           inQueue={queued.has(entry.id)}
           highlight={created?.id === entry.id}
@@ -244,6 +299,7 @@ function BacklogPage() {
             archived={archived}
             fallback={node.children}
             depth={depth + 1}
+            under={`${key}/`}
             renderNode={renderNode}
           />
         )}
@@ -372,7 +428,11 @@ function BacklogPage() {
           )}
 
           {backlog.data && (
-            <div className="flex flex-col gap-6">
+            <div
+              ref={listRef}
+              {...rows.listProps}
+              className="flex flex-col gap-6"
+            >
               {sections.map((section) => (
                 <section key={section.group} className="flex flex-col gap-2">
                   {!section.continuation && (
@@ -490,6 +550,16 @@ function BacklogPage() {
           if (!open) void setPeek(null);
         }}
         onSelectIssue={(id) => void setPeek(id)}
+        onCloseAutoFocus={(event) => {
+          // The Sheet is controlled and has no trigger, so Radix has nothing of its
+          // own to restore to and would drop focus on <body>. Land on the last-viewed
+          // ticket's row, or — for a ticket reached from inside the drawer, a parent
+          // or a blocker with no row here — on the row the Tab stop still sits on.
+          event.preventDefault();
+          const id = lastPeek.current;
+          if (id !== null && rows.focusRow(id)) return;
+          rows.focusTabStop();
+        }}
       />
     </ProjectScopeGate>
   );
@@ -796,6 +866,7 @@ function ChildRows({
   archived,
   fallback,
   depth,
+  under,
   renderNode,
 }: {
   repo: string;
@@ -803,7 +874,8 @@ function ChildRows({
   archived: boolean;
   fallback: BacklogRowNode[];
   depth: number;
-  renderNode: (node: BacklogRowNode, depth: number) => ReactNode;
+  under: string;
+  renderNode: (node: BacklogRowNode, depth: number, under: string) => ReactNode;
 }) {
   const children = useQuery(
     backlogQueryOptions(repo, { parent: parentId, archived }),
@@ -815,12 +887,14 @@ function ChildRows({
     children.data?.items.map(
       (entry) => nested.get(entry.id) ?? { entry, children: [] },
     ) ?? fallback;
-  return <>{rows.map((node) => renderNode(node, depth))}</>;
+  return <>{rows.map((node) => renderNode(node, depth, under))}</>;
 }
 
 function BacklogRow({
   repo,
   entry,
+  rowProps,
+  controlProps,
   editing,
   inQueue,
   highlight = false,
@@ -837,6 +911,8 @@ function BacklogRow({
 }: {
   repo: string;
   entry: BacklogEntry;
+  rowProps: RovingRowProps;
+  controlProps: { tabIndex: number };
   editing: boolean;
   inQueue: boolean;
   highlight?: boolean;
@@ -871,8 +947,27 @@ function BacklogRow({
   // archived view.
   const showArchiveAction = archivedView ? !nested : true;
 
+  // The row answers the single-key actions only while it is the focused thing
+  // itself; a control inside it keeps every key of its own.
+  function onKeyDown(event: ReactKeyboardEvent<HTMLLIElement>) {
+    if (event.target !== event.currentTarget) return;
+    const key = rowActionKey(readKeyStroke(event.nativeEvent));
+    if (key === "e" && expandable) {
+      event.preventDefault();
+      onToggle();
+      return;
+    }
+    if (key === "a" && showArchiveAction) {
+      event.preventDefault();
+      archive.mutate({ id: entry.id, archived: !archivedView });
+    }
+  }
+
   return (
     <li
+      {...rowProps}
+      onKeyDown={onKeyDown}
+      aria-label={`Open ${entry.id}`}
       style={{ marginLeft: `${depth * 1.5}rem` }}
       className={cn(
         "group rounded-lg border bg-card transition-colors hover:border-ring/40",
@@ -883,6 +978,7 @@ function BacklogRow({
         {expandable && (
           <button
             type="button"
+            {...controlProps}
             onClick={onToggle}
             aria-expanded={expanded}
             aria-label={
@@ -900,6 +996,7 @@ function BacklogRow({
         {!nested && entry.parent && (
           <button
             type="button"
+            {...controlProps}
             onClick={() => onOpenParent(entry.parent!)}
             aria-label={`Open parent ${entry.parent}`}
             className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-ring/40 hover:text-foreground"
@@ -910,6 +1007,7 @@ function BacklogRow({
         )}
         <button
           type="button"
+          {...controlProps}
           onClick={onOpen}
           aria-label={`Open ${entry.id}`}
           className="flex min-w-0 flex-1 items-center gap-3 text-left"
@@ -968,6 +1066,7 @@ function BacklogRow({
         {internal && (
           <button
             type="button"
+            {...controlProps}
             onClick={onToggleEdit}
             className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
@@ -980,6 +1079,7 @@ function BacklogRow({
             {(begin) => (
               <button
                 type="button"
+                {...controlProps}
                 onClick={begin}
                 disabled={inQueue || addToQueue.isPending}
                 className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
@@ -993,6 +1093,7 @@ function BacklogRow({
         {showArchiveAction && (
           <button
             type="button"
+            {...controlProps}
             onClick={() =>
               archive.mutate({ id: entry.id, archived: !archivedView })
             }

@@ -49,13 +49,25 @@ export function ShortcutsDialog({
               <ul className="flex flex-col">
                 {section.items.map((shortcut) => (
                   <li
-                    key={`${section.group}-${shortcut.keys.join('-')}`}
+                    key={`${section.group}-${shortcut.where}-${shortcut.keys.join('-')}`}
                     data-slot="shortcut-row"
                     className="flex items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-secondary"
                   >
-                    <KbdHint
-                      keys={shortcut.keys.map((key) => keyLabel(key, mac))}
-                    />
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      <KbdHint
+                        keys={shortcut.keys.map((key) => keyLabel(key, mac))}
+                      />
+                      {shortcut.alt && (
+                        <>
+                          <span className="font-mono text-[0.65rem] text-muted-foreground">
+                            or
+                          </span>
+                          <KbdHint
+                            keys={shortcut.alt.map((key) => keyLabel(key, mac))}
+                          />
+                        </>
+                      )}
+                    </span>
                     <span className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
                       {shortcut.label}
                     </span>
