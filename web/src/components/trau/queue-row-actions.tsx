@@ -19,16 +19,19 @@ export function RemoveFromQueueButton({
   item,
   disabled,
   onRemove,
+  tabIndex,
 }: {
   item: QueueItem
   disabled: boolean
   onRemove: (id: string) => void
+  tabIndex?: number
 }) {
   if (!removableFromQueue(item)) return null
 
   return (
     <button
       type="button"
+      tabIndex={tabIndex}
       onClick={() => onRemove(item.id)}
       disabled={disabled}
       title="Remove from queue (the ticket goes back to Ready)"
@@ -48,10 +51,12 @@ export function StopRunButton({
   id,
   stopping,
   onStop,
+  tabIndex,
 }: {
   id: string
   stopping: boolean
   onStop: () => void
+  tabIndex?: number
 }) {
   return (
     <ConfirmDialog
@@ -59,6 +64,7 @@ export function StopRunButton({
       trigger={
         <button
           type="button"
+          tabIndex={tabIndex}
           disabled={stopping}
           title={stopping ? 'Stopping…' : STOP_RUN_HINT}
           aria-label={stopping ? `Stopping ${id}…` : STOP_RUN_HINT}
@@ -86,17 +92,31 @@ export function QueueRowAction({
   stopping,
   onRemove,
   onStop,
+  tabIndex,
 }: {
   item: QueueItem
   busy: boolean
   stopping: boolean
   onRemove: (id: string) => void
   onStop: () => void
+  tabIndex?: number
 }) {
   if (item.status === 'running') {
-    return <StopRunButton id={item.id} stopping={stopping} onStop={onStop} />
+    return (
+      <StopRunButton
+        id={item.id}
+        stopping={stopping}
+        onStop={onStop}
+        tabIndex={tabIndex}
+      />
+    )
   }
   return (
-    <RemoveFromQueueButton item={item} disabled={busy} onRemove={onRemove} />
+    <RemoveFromQueueButton
+      item={item}
+      disabled={busy}
+      onRemove={onRemove}
+      tabIndex={tabIndex}
+    />
   )
 }

@@ -48,37 +48,28 @@ const NAVIGATION: Shortcut[] = G_TARGETS.map((target) => ({
   where: 'Anywhere',
 }))
 
+// Every roving list is walked the same way, so the walk is declared once per
+// surface and only the row's own actions are spelled out beside it.
+function rowWalk(where: string, open: string): Shortcut[] {
+  return [
+    { keys: ['↓'], alt: ['j'], label: 'Next row', group: 'Lists', where },
+    { keys: ['↑'], alt: ['k'], label: 'Previous row', group: 'Lists', where },
+    { keys: ['Home'], label: 'First row', group: 'Lists', where },
+    { keys: ['End'], label: 'Last row', group: 'Lists', where },
+    { keys: ['Enter'], label: open, group: 'Lists', where },
+    {
+      keys: ['Tab'],
+      label: "Step into the row's own actions",
+      group: 'Lists',
+      where,
+    },
+  ]
+}
+
 const LISTS: Shortcut[] = [
   { keys: ['j'], label: 'Next issue', group: 'Lists', where: 'Inbox' },
   { keys: ['k'], label: 'Previous issue', group: 'Lists', where: 'Inbox' },
-  {
-    keys: ['↓'],
-    alt: ['j'],
-    label: 'Next row',
-    group: 'Lists',
-    where: 'Backlog',
-  },
-  {
-    keys: ['↑'],
-    alt: ['k'],
-    label: 'Previous row',
-    group: 'Lists',
-    where: 'Backlog',
-  },
-  { keys: ['Home'], label: 'First row', group: 'Lists', where: 'Backlog' },
-  { keys: ['End'], label: 'Last row', group: 'Lists', where: 'Backlog' },
-  {
-    keys: ['Enter'],
-    label: 'Open the ticket',
-    group: 'Lists',
-    where: 'Backlog',
-  },
-  {
-    keys: ['Tab'],
-    label: "Step into the row's own actions",
-    group: 'Lists',
-    where: 'Backlog',
-  },
+  ...rowWalk('Backlog', 'Open the ticket'),
   {
     keys: ['e'],
     label: 'Expand or collapse the row',
@@ -86,6 +77,32 @@ const LISTS: Shortcut[] = [
     where: 'Backlog',
   },
   { keys: ['a'], label: 'Archive the row', group: 'Lists', where: 'Backlog' },
+  ...rowWalk('Loop', 'Open the ticket, or a finished row’s run'),
+  {
+    keys: ['Space'],
+    label: 'Include the row in a batch',
+    group: 'Lists',
+    where: 'Loop',
+  },
+  {
+    keys: ['Alt', '↑'],
+    label: 'Move the row up the queue',
+    group: 'Lists',
+    where: 'Loop',
+  },
+  {
+    keys: ['Alt', '↓'],
+    label: 'Move the row down the queue',
+    group: 'Lists',
+    where: 'Loop',
+  },
+  { keys: ['r'], label: 'Run the row now', group: 'Lists', where: 'Loop' },
+  {
+    keys: ['x'],
+    label: 'Remove the row from the queue',
+    group: 'Lists',
+    where: 'Loop',
+  },
   {
     keys: ['j'],
     label: 'Next ticket',

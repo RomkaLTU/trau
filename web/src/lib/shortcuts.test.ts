@@ -65,6 +65,32 @@ describe('SHORTCUTS', () => {
     expect(backlog[1].alt).toEqual(['k'])
   })
 
+  it('registers every loop row binding', () => {
+    const loop = SHORTCUTS.filter((shortcut) => shortcut.where === 'Loop')
+    expect(loop.map((shortcut) => shortcut.keys)).toEqual([
+      ['↓'],
+      ['↑'],
+      ['Home'],
+      ['End'],
+      ['Enter'],
+      ['Tab'],
+      ['Space'],
+      ['Alt', '↑'],
+      ['Alt', '↓'],
+      ['r'],
+      ['x'],
+    ])
+    expect(loop[0].alt).toEqual(['j'])
+    expect(loop[1].alt).toEqual(['k'])
+    expect(loop.map((shortcut) => shortcut.label).slice(6)).toEqual([
+      'Include the row in a batch',
+      'Move the row up the queue',
+      'Move the row down the queue',
+      'Run the row now',
+      'Remove the row from the queue',
+    ])
+  })
+
   it('registers the drawer walk beside the inbox one', () => {
     const drawer = SHORTCUTS.filter(
       (shortcut) => shortcut.where === 'Ticket drawer',
