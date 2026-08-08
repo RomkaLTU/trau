@@ -140,8 +140,15 @@ export function LayerHint({
 }
 
 // A queue_busy refusal gets the blocking ids a line each; anything else is a
-// plain failure line.
-export function WriteError({ error }: { error: unknown }) {
+// plain failure line. repoNames maps a blocker's root to the repo's display
+// name, which a project-wide switch needs to say whose queue is in the way.
+export function WriteError({
+  error,
+  repoNames,
+}: {
+  error: unknown
+  repoNames?: ReadonlyMap<string, string>
+}) {
   const blocked =
     error instanceof ConfigWriteError && error.reason === 'queue_busy'
       ? (error.blocked ?? [])
@@ -173,6 +180,9 @@ export function WriteError({ error }: { error: unknown }) {
           >
             <span className="text-fail">{b.id}</span>
             <span className="text-muted-foreground">{b.status}</span>
+            {repoNames?.get(b.repo) && (
+              <span className="text-faint">{repoNames.get(b.repo)}</span>
+            )}
           </li>
         ))}
       </ul>
