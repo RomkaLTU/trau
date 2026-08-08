@@ -12,6 +12,8 @@ export type ShortcutGroup = (typeof SHORTCUT_GROUPS)[number]
 export interface Shortcut {
   /** Keys in press order. 'mod' stands for ⌘ on a Mac and Ctrl everywhere else. */
   keys: string[]
+  /** A second key bound to the same thing, listed beside the first as an "or". */
+  alt?: string[]
   label: string
   group: ShortcutGroup
   /** The surface the binding applies to. */
@@ -49,6 +51,53 @@ const NAVIGATION: Shortcut[] = G_TARGETS.map((target) => ({
 const LISTS: Shortcut[] = [
   { keys: ['j'], label: 'Next issue', group: 'Lists', where: 'Inbox' },
   { keys: ['k'], label: 'Previous issue', group: 'Lists', where: 'Inbox' },
+  {
+    keys: ['↓'],
+    alt: ['j'],
+    label: 'Next row',
+    group: 'Lists',
+    where: 'Backlog',
+  },
+  {
+    keys: ['↑'],
+    alt: ['k'],
+    label: 'Previous row',
+    group: 'Lists',
+    where: 'Backlog',
+  },
+  { keys: ['Home'], label: 'First row', group: 'Lists', where: 'Backlog' },
+  { keys: ['End'], label: 'Last row', group: 'Lists', where: 'Backlog' },
+  {
+    keys: ['Enter'],
+    label: 'Open the ticket',
+    group: 'Lists',
+    where: 'Backlog',
+  },
+  {
+    keys: ['Tab'],
+    label: "Step into the row's own actions",
+    group: 'Lists',
+    where: 'Backlog',
+  },
+  {
+    keys: ['e'],
+    label: 'Expand or collapse the row',
+    group: 'Lists',
+    where: 'Backlog',
+  },
+  { keys: ['a'], label: 'Archive the row', group: 'Lists', where: 'Backlog' },
+  {
+    keys: ['j'],
+    label: 'Next ticket',
+    group: 'Lists',
+    where: 'Ticket drawer',
+  },
+  {
+    keys: ['k'],
+    label: 'Previous ticket',
+    group: 'Lists',
+    where: 'Ticket drawer',
+  },
 ]
 
 const PALETTE: Shortcut[] = [

@@ -49,6 +49,33 @@ describe('SHORTCUTS', () => {
     expect(labels).toContain("Open the highlighted ticket's actions")
   })
 
+  it('registers every backlog row binding', () => {
+    const backlog = SHORTCUTS.filter((shortcut) => shortcut.where === 'Backlog')
+    expect(backlog.map((shortcut) => shortcut.keys[0])).toEqual([
+      '↓',
+      '↑',
+      'Home',
+      'End',
+      'Enter',
+      'Tab',
+      'e',
+      'a',
+    ])
+    expect(backlog[0].alt).toEqual(['j'])
+    expect(backlog[1].alt).toEqual(['k'])
+  })
+
+  it('registers the drawer walk beside the inbox one', () => {
+    const drawer = SHORTCUTS.filter(
+      (shortcut) => shortcut.where === 'Ticket drawer',
+    )
+    expect(drawer.map((shortcut) => shortcut.keys)).toEqual([['j'], ['k']])
+    expect(drawer.map((shortcut) => shortcut.label)).toEqual([
+      'Next ticket',
+      'Previous ticket',
+    ])
+  })
+
   it('registers one navigation binding per g target', () => {
     const nav = SHORTCUTS.filter((shortcut) => shortcut.group === 'Navigation')
     expect(nav).toHaveLength(G_TARGETS.length)
